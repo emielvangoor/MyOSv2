@@ -10,8 +10,9 @@ TARGET  := $(BUILD)/kernel.elf
 # -nostdlib/-nostartfiles: we provide our own _start, no C runtime
 # -mgeneral-regs-only: don't touch FP/SIMD regs (not set up yet)
 # -MMD -MP: generate header dependency files
+# -g: emit DWARF debug info so GDB can do source-level stepping
 CFLAGS  := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only \
-           -Wall -Wextra -O2 -ffunction-sections -MMD -MP
+           -Wall -Wextra -O2 -g -ffunction-sections -MMD -MP
 LDFLAGS := -nostdlib -nostartfiles -T linker.ld -Wl,--gc-sections
 
 CSRC := $(wildcard src/*.c)
