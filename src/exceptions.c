@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include "exceptions.h"
 #include "kprintf.h"
+#include "gic.h"
+#include "timer.h"
 
 extern char vector_table[];
 
@@ -23,10 +25,14 @@ void sync_handler(struct trapframe *tf)
     tf->elr += 4;
 }
 
-// Real body added in Task 6 (needs GIC + timer). Stub keeps the build green.
 void irq_handler(struct trapframe *tf)
 {
     (void)tf;
+    uint32_t id = gic_ack();
+    if (id == 30) {            // timer
+        timer_handle_irq();
+    }
+    gic_eoi(id);
 }
 
 void unhandled_exception(struct trapframe *tf)
