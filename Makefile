@@ -39,9 +39,14 @@ $(BUILD)/%.o: src/%.S | $(BUILD)
 $(TARGET): $(OBJ) linker.ld
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
 
-# Run. Quit QEMU with: Ctrl-A then X
+# Run in the terminal. Quit QEMU with: Ctrl-A then X
 run: $(TARGET)
 	$(QEMU) $(QEMU_FLAGS)
+
+# Run in a separate macOS window (close the window to quit).
+# -serial vc routes our serial output to a console shown inside the QEMU window.
+win: $(TARGET)
+	$(QEMU) -machine virt -cpu cortex-a72 -display cocoa -serial vc -kernel $(TARGET)
 
 # Boot frozen, exposing the GDB stub on :1234
 debug: $(TARGET)
