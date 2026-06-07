@@ -43,10 +43,11 @@ $(TARGET): $(OBJ) linker.ld
 run: $(TARGET)
 	$(QEMU) $(QEMU_FLAGS)
 
-# Run in a separate macOS window (close the window to quit).
-# -serial vc routes our serial output to a console shown inside the QEMU window.
+# Run in a separate macOS Terminal window (close the window to quit).
+# `exec` replaces the shell with QEMU so closing the window kills QEMU directly.
 win: $(TARGET)
-	$(QEMU) -machine virt -cpu cortex-a72 -display cocoa -serial vc -kernel $(TARGET)
+	osascript -e 'tell application "Terminal" to do script "cd $(CURDIR) && clear && exec $(QEMU) $(QEMU_FLAGS)"' \
+	          -e 'tell application "Terminal" to activate'
 
 # Boot frozen, exposing the GDB stub on :1234
 debug: $(TARGET)
