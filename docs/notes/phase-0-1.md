@@ -75,7 +75,11 @@ Verified at runtime by reading `CurrentEL` (bits [3:2]) — see `current_el()` i
 
 ## Quitting QEMU
 
-`-nographic` routes serial to the terminal; quit with `Ctrl-A` then `X`.
+We run with `-display none -serial stdio` (not `-nographic`). This routes serial
+to the terminal AND lets `Ctrl-C` (SIGINT) terminate QEMU normally. `-nographic`
+instead muxes the monitor onto stdio and swallows `Ctrl-C` (it goes to the
+guest), forcing the awkward `Ctrl-A X` quit — which also tends to be eaten by
+terminal emulators like Emacs vterm.
 
 ## Surprises / gotchas
 

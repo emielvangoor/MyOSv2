@@ -22,7 +22,9 @@ OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
 DEP  := $(OBJ:.o=.d)
 
 QEMU       := qemu-system-aarch64
-QEMU_FLAGS := -machine virt -cpu cortex-a72 -nographic -kernel $(TARGET)
+# -display none: no graphical window. -serial stdio: serial to terminal AND
+# lets Ctrl-C (SIGINT) terminate QEMU normally (unlike -nographic).
+QEMU_FLAGS := -machine virt -cpu cortex-a72 -display none -serial stdio -kernel $(TARGET)
 
 .PHONY: all run debug gdb clean objdump compile_commands
 all: $(TARGET)
@@ -39,15 +41,9 @@ $(BUILD)/%.o: src/%.S | $(BUILD)
 $(TARGET): $(OBJ) linker.ld
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
 
-# Run in the terminal. Quit QEMU with: Ctrl-A then X
+# Run in the terminal. Quit QEMU with: Ctrl-C
 run: $(TARGET)
 	$(QEMU) $(QEMU_FLAGS)
-
-# Run in a separate macOS Terminal window (close the window to quit).
-# `exec` replaces the shell with QEMU so closing the window kills QEMU directly.
-win: $(TARGET)
-	osascript -e 'tell application "Terminal" to do script "cd $(CURDIR) && clear && exec $(QEMU) $(QEMU_FLAGS)"' \
-	          -e 'tell application "Terminal" to activate'
 
 # Boot frozen, exposing the GDB stub on :1234
 debug: $(TARGET)
