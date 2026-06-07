@@ -1,7 +1,9 @@
-// Kernel entry from boot.S. For now, just spin so we can prove the build +
-// QEMU pipeline works before adding any device code.
+#include "uart.h"
+
 void kmain(void)
 {
+    uart_init();
+    uart_puts("UART online.\n");
     for (;;) {
         __asm__ volatile("wfe");
     }
