@@ -1,0 +1,27 @@
+// pipe.h -- an in-kernel unidirectional byte channel (a pipe).
+// ===========================================================
+//
+// A pipe is a fixed ring buffer with two ends: a read end and a write end (each
+// a `struct file`). Reading blocks until bytes arrive or all writers close (then
+// it returns 0 = EOF); writing blocks until space frees or all readers close
+// (then -1 = broken pipe). The `readers`/`writers` counts track how many open
+// ends remain, so the pipe is freed only when both reach zero.
+#pragma once
+#include <stdint.h>
+
+#define PIPE_SIZE 4096
+
+struct file;   // from vfs.h (a pipe end is a file with ->pipe set)
+
+struct pipe {
+    char     buf[PIPE_SIZE];
+    uint32_t r, w;        // ring read/write positions
+    uint32_t count;       // bytes currently buffered
+    int      readers;     // number of open read ends
+    int      writers;     // number of open write ends
+};
+
+struct pipe *pipe_alloc(void);                                  // readers=writers=1
+int  pipe_read(struct file *f, void *buf, uint64_t len);        // blocks; 0 = EOF
+int  pipe_write(struct file *f, const void *buf, uint64_t len); // blocks; -1 = broken
+void pipe_close(struct file *f);                                // drop an end; free when 0/0

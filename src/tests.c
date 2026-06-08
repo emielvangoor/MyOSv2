@@ -24,6 +24,7 @@
 #include "proc.h"
 #include "elf.h"
 #include "shm.h"
+#include "pipe.h"
 
 #define PAGE 0x1000UL
 
@@ -978,6 +979,56 @@ static void test_shm_survives_unmap(void)
     KASSERT(page_refcount(pa) == 1);                     // table keeps it alive
 }
 
+// --- pipes (Phase 17) ---
+
+static void test_pipe_write_then_read(void)
+{
+    pmm_init(); kheap_init();
+    struct pipe *p = pipe_alloc();
+    struct file wf = { .pipe = p, .writable = 1, .ref = 1 };
+    struct file rf = { .pipe = p, .writable = 0, .ref = 1 };
+    KASSERT(pipe_write(&wf, "hello", 5) == 5);
+    char b[8] = {0};
+    KASSERT(pipe_read(&rf, b, 8) == 5);
+    KASSERT(b[0] == 'h' && b[4] == 'o');
+    KASSERT(p->count == 0);
+}
+
+static void test_pipe_eof(void)
+{
+    pmm_init(); kheap_init();
+    struct pipe *p = pipe_alloc();
+    p->writers = 0;                          // no writers, buffer empty
+    struct file rf = { .pipe = p, .writable = 0, .ref = 1 };
+    char b[4];
+    KASSERT(pipe_read(&rf, b, 4) == 0);      // EOF
+}
+
+static void test_pipe_broken(void)
+{
+    pmm_init(); kheap_init();
+    struct pipe *p = pipe_alloc();
+    p->readers = 0;                          // no readers
+    p->count = PIPE_SIZE; p->w = 0; p->r = 0;  // full
+    struct file wf = { .pipe = p, .writable = 1, .ref = 1 };
+    char big[8]; for (int i = 0; i < 8; i++) { big[i] = 'x'; }
+    KASSERT(pipe_write(&wf, big, 8) == -1);  // broken pipe
+}
+
+static void test_pipe_wraps(void)
+{
+    pmm_init(); kheap_init();
+    struct pipe *p = pipe_alloc();
+    struct file wf = { .pipe = p, .writable = 1, .ref = 1 };
+    struct file rf = { .pipe = p, .writable = 0, .ref = 1 };
+    p->r = p->w = PIPE_SIZE - 10;            // force a wrap mid-transfer
+    char buf[50]; for (int i = 0; i < 50; i++) { buf[i] = (char)i; }
+    KASSERT(pipe_write(&wf, buf, 50) == 50);
+    char out[50]; for (int i = 0; i < 50; i++) { out[i] = 0; }
+    KASSERT(pipe_read(&rf, out, 50) == 50);
+    for (int i = 0; i < 50; i++) { KASSERT(out[i] == (char)i); }
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1045,6 +1096,10 @@ static const struct ktest tests[] = {
     { "shm: create returns handle",       test_shm_create_handle },
     { "shm: maps shared across spaces",   test_shm_shared_pages },
     { "shm: survives a mapper exiting",   test_shm_survives_unmap },
+    { "pipe: write then read",            test_pipe_write_then_read },
+    { "pipe: read EOF when no writers",   test_pipe_eof },
+    { "pipe: write -1 when no readers",   test_pipe_broken },
+    { "pipe: ring buffer wraps",          test_pipe_wraps },
 };
 
 int run_self_tests(void)
