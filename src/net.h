@@ -16,3 +16,4 @@ void     net_stack_init(void);                       // initialise the stack
 uint16_t inet_csum(const void *buf, int len);        // internet (one's-complement) checksum
 int      net_pump(void);                             // process one inbound frame; 1=did, 0=idle
 int      arp_resolve(uint32_t ip, uint8_t mac[6]);   // IP -> MAC (yields/pumps); 0 ok, -1 timeout
+int      net_ping(uint32_t ip, int *ms);             // ICMP echo; 0 + round-trip ms, -1 on timeout

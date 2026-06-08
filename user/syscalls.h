@@ -23,3 +23,4 @@
 #define SYS_KILL   20
 #define SYS_SIGNAL 21
 #define SYS_SIGRETURN 22
+#define SYS_PING   28

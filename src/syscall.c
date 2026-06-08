@@ -17,6 +17,7 @@
 #include "pipe.h"
 #include "kheap.h"
 #include "signal.h"
+#include "net.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -169,6 +170,9 @@ long do_syscall(struct trapframe *tf)
         } else { ret = -1; }
         break;
     }
+    case SYS_PING:                            // x0 = ip (host order), x1 = int* ms
+        ret = net_ping((uint32_t)tf->x[0], (int *)(uintptr_t)tf->x[1]);
+        break;
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame
         const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
         uint64_t *d = (uint64_t *)tf;

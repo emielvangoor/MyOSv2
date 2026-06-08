@@ -1267,6 +1267,13 @@ static void test_arp_resolve(void)
     KASSERT(mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]);
 }
 
+static void test_icmp_ping(void)
+{
+    pmm_init(); kheap_init(); vm_init(); virtio_net_init(); net_stack_init();
+    int ms = -1;
+    KASSERT(net_ping(IP_GATEWAY, &ms) == 0);                  // gateway answers echo
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1354,6 +1361,7 @@ static const struct ktest tests[] = {
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },
     { "net: ARP resolve gateway",         test_arp_resolve },
+    { "net: ICMP ping gateway",           test_icmp_ping },
 };
 
 int run_self_tests(void)

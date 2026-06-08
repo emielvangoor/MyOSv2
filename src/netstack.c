@@ -122,6 +122,98 @@ static void arp_input(const uint8_t *f, int len)
     }
 }
 
+// ---- IPv4 ----
+
+// Send an IPv4 packet (proto, payload) to dst_ip. Resolves the next hop (the
+// gateway unless dst is on our /24) and builds the IPv4 header + checksum.
+static int ip_send(uint32_t dst_ip, uint8_t proto, const uint8_t *payload, int len)
+{
+    uint32_t nexthop = ((dst_ip ^ IP_OURS) & 0xffffff00u) ? IP_GATEWAY : dst_ip;
+    uint8_t mac[6];
+    if (arp_resolve(nexthop, mac) != 0) { return -1; }
+
+    static uint8_t pkt[1500];
+    pkt[0] = 0x45;                       // IPv4, IHL 5 (20 bytes)
+    pkt[1] = 0;
+    put16(pkt + 2, (uint16_t)(20 + len));// total length
+    put16(pkt + 4, 0);                   // id
+    put16(pkt + 6, 0);                   // flags/fragment
+    pkt[8] = 64;                         // TTL
+    pkt[9] = proto;
+    put16(pkt + 10, 0);                  // checksum (computed next)
+    put32(pkt + 12, IP_OURS);
+    put32(pkt + 16, dst_ip);
+    put16(pkt + 10, inet_csum(pkt, 20));
+    for (int i = 0; i < len; i++) { pkt[20 + i] = payload[i]; }
+    return eth_send(mac, 0x0800, pkt, 20 + len);
+}
+
+static void icmp_input(uint32_t src_ip, const uint8_t *p, int len);
+
+static void ip_input(const uint8_t *pkt, int len)
+{
+    if (len < 20) { return; }
+    int ihl = (pkt[0] & 0x0f) * 4;
+    if (ihl < 20 || ihl > len) { return; }
+    uint8_t proto = pkt[9];
+    uint32_t src = get32(pkt + 12);
+    uint32_t dst = get32(pkt + 16);
+    if (dst != IP_OURS) { return; }      // not addressed to us
+    int total = get16(pkt + 2);
+    if (total > len) { total = len; }
+    const uint8_t *payload = pkt + ihl;
+    int paylen = total - ihl;
+    if (paylen < 0) { return; }
+
+    if (proto == 1) { icmp_input(src, payload, paylen); }
+    // proto 17 (UDP) / 6 (TCP) demux are added in later tasks.
+}
+
+// ---- ICMP (ping) ----
+
+static volatile int ping_id;
+static volatile int ping_got;
+
+static void icmp_input(uint32_t src_ip, const uint8_t *p, int len)
+{
+    if (len < 8) { return; }
+    uint8_t type = p[0];
+    if (type == 8) {                     // echo request -> reply (we're pingable)
+        static uint8_t reply[1500];
+        for (int i = 0; i < len; i++) { reply[i] = p[i]; }
+        reply[0] = 0;                    // echo reply
+        put16(reply + 2, 0);
+        put16(reply + 2, inet_csum(reply, len));
+        ip_send(src_ip, 1, reply, len);
+    } else if (type == 0) {              // echo reply -> wake our waiter if it matches
+        if (get16(p + 4) == (uint16_t)ping_id) { ping_got = 1; }
+    }
+}
+
+int net_ping(uint32_t ip, int *ms)
+{
+    static int seq;
+    ping_id = (ping_id + 1) & 0xffff;
+    ping_got = 0;
+
+    uint8_t icmp[64];
+    for (int i = 0; i < 64; i++) { icmp[i] = 0; }
+    icmp[0] = 8;                         // echo request
+    put16(icmp + 4, (uint16_t)ping_id);
+    put16(icmp + 6, (uint16_t)(++seq));
+    for (int i = 0; i < 32; i++) { icmp[8 + i] = (uint8_t)i; }   // payload
+    put16(icmp + 2, inet_csum(icmp, 40));
+    if (ip_send(ip, 1, icmp, 40) != 0) { return -1; }
+
+    extern uint64_t sched_jiffies(void);  // milliseconds since boot (TIMER_HZ=1000)
+    uint64_t start = sched_jiffies();
+    for (long tries = 0; tries < 50000000L; tries++) {
+        net_pump();
+        if (ping_got) { if (ms) { *ms = (int)(sched_jiffies() - start); } return 0; }
+    }
+    return -1;                           // no reply
+}
+
 // ---- inbound dispatch ----
 
 static void net_input(const uint8_t *f, int len)
@@ -129,7 +221,7 @@ static void net_input(const uint8_t *f, int len)
     if (len < 14) { return; }
     uint16_t ethertype = get16(f + 12);
     if (ethertype == 0x0806) { arp_input(f, len); }
-    // IPv4 (0x0800) dispatch is added with the IP layer (Task 2).
+    else if (ethertype == 0x0800) { ip_input(f + 14, len - 14); }
 }
 
 static uint8_t rxframe[2048];

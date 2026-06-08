@@ -203,6 +203,8 @@ static int started;
 static int slice_left = SCHED_TIME_SLICE;   // ticks remaining for `current`
 static uint64_t jiffies;                    // ticks since sched_init (sleep clock)
 
+uint64_t sched_jiffies(void) { return jiffies; }   // ms since boot (TIMER_HZ = 1000)
+
 void sched_init(void)
 {
     // The boot context becomes the idle thread: always runnable, lowest
