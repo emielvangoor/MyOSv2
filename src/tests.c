@@ -15,6 +15,7 @@
 #include "pmm.h"
 #include "kheap.h"
 #include "sched.h"
+#include "syscall.h"
 
 #define PAGE 0x1000UL
 
@@ -226,6 +227,119 @@ static void test_sleep_wakes_after_ticks(void)
     KASSERT(slp_log[1] == 'W');
 }
 
+// --- System calls (do_syscall dispatch) ---
+
+static void test_syscall_write_returns_len(void)
+{
+    struct trapframe tf;
+    const char *s = "hello";
+    tf.x[8] = SYS_WRITE;
+    tf.x[0] = (uint64_t)(uintptr_t)s;
+    tf.x[1] = 5;
+    do_syscall(&tf);
+    KASSERT(tf.x[0] == 5);   // returns bytes written
+}
+
+static void test_syscall_unknown(void)
+{
+    struct trapframe tf;
+    tf.x[8] = 999;
+    do_syscall(&tf);
+    KASSERT(tf.x[0] == (uint64_t)-1);
+}
+
+static void test_syscall_yield(void)
+{
+    pmm_init(); kheap_init();
+    sched_init();
+    struct trapframe tf;
+    tf.x[8] = SYS_YIELD;
+    do_syscall(&tf);
+    KASSERT(tf.x[0] == 0);
+}
+
+static void test_syscall_return_in_x0(void)
+{
+    pmm_init(); kheap_init();
+    sched_init();
+    struct trapframe tf;
+    tf.x[8] = SYS_GETPID;
+    tf.x[0] = 0xDEAD;          // do_syscall must overwrite this with the result
+    do_syscall(&tf);
+    KASSERT(tf.x[0] == 0);     // GETPID from the idle thread (id 0)
+}
+
+static long sc_pid;
+static void sc_getpid_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    tf.x[8] = SYS_GETPID;
+    do_syscall(&tf);
+    sc_pid = (long)tf.x[0];
+}
+static void test_syscall_getpid(void)
+{
+    pmm_init(); kheap_init();
+    sc_pid = -999;
+    sched_init();
+    thread_create(sc_getpid_worker, 0, 1);   // first created -> id 1
+    while (sc_pid == -999) {
+        yield();
+    }
+    KASSERT(sc_pid == 1);                     // getpid returned the worker's id
+}
+
+static char sc_slp_log[8];
+static int sc_slp_n;
+static void sc_sleep_worker(void *a)
+{
+    (void)a;
+    sc_slp_log[sc_slp_n++] = 'S';
+    struct trapframe tf;
+    tf.x[8] = SYS_SLEEP;
+    tf.x[0] = 3;
+    do_syscall(&tf);
+    sc_slp_log[sc_slp_n++] = 'W';
+}
+static void test_syscall_sleep_blocks(void)
+{
+    pmm_init(); kheap_init();
+    sc_slp_n = 0;
+    sched_init();
+    thread_create(sc_sleep_worker, 0, 1);
+    yield(); KASSERT(sc_slp_n == 1); KASSERT(sc_slp_log[0] == 'S');
+    sched_tick(); yield(); KASSERT(sc_slp_n == 1);
+    sched_tick(); yield(); KASSERT(sc_slp_n == 1);
+    sched_tick(); yield();
+    KASSERT(sc_slp_n == 2); KASSERT(sc_slp_log[1] == 'W');
+}
+
+static char sc_exit_log[4];
+static int sc_exit_n;
+static void sc_exit_worker(void *a)
+{
+    (void)a;
+    sc_exit_log[sc_exit_n++] = 'B';
+    struct trapframe tf;
+    tf.x[8] = SYS_EXIT;
+    do_syscall(&tf);                       // never returns
+    sc_exit_log[sc_exit_n++] = 'A';        // unreachable
+}
+static void test_syscall_exit_ends_thread(void)
+{
+    pmm_init(); kheap_init();
+    sc_exit_n = 0;
+    sched_init();
+    thread_create(sc_exit_worker, 0, 1);
+    while (sc_exit_n < 1) {
+        yield();
+    }
+    yield(); yield();                      // give 'A' a chance to (wrongly) run
+    KASSERT(sc_exit_n == 1);
+    KASSERT(sc_exit_log[0] == 'B');
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -239,6 +353,13 @@ static const struct ktest tests[] = {
     { "sched: time slice expiry",         test_time_slice_expiry },
     { "sched: priority order",            test_priority_order },
     { "sched: sleep wakes after ticks",   test_sleep_wakes_after_ticks },
+    { "syscall: write returns len",       test_syscall_write_returns_len },
+    { "syscall: unknown returns -1",      test_syscall_unknown },
+    { "syscall: yield returns 0",         test_syscall_yield },
+    { "syscall: result written to x0",    test_syscall_return_in_x0 },
+    { "syscall: getpid returns id",       test_syscall_getpid },
+    { "syscall: sleep blocks N ticks",    test_syscall_sleep_blocks },
+    { "syscall: exit ends thread",        test_syscall_exit_ends_thread },
 };
 
 int run_self_tests(void)

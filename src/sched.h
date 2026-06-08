@@ -43,6 +43,7 @@ void yield(void);                                                 // cooperative
 void schedule(void);                                             // pick highest-prio + switch
 void thread_exit(void);                                          // end current thread
 int  sched_started(void);
+int  sched_current_id(void);                                     // id of running thread (-1 if none)
 int  sched_tick(void);                                           // per-tick: wake sleepers + slice
 void sleep_ticks(uint64_t ticks);                                // block for N ticks
 void sleep_ms(uint64_t ms);                                      // block for N ms (1 ms == 1 tick)

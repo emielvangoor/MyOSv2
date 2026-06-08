@@ -82,6 +82,11 @@ int sched_started(void)
     return started;
 }
 
+int sched_current_id(void)
+{
+    return current ? current->id : -1;
+}
+
 // Advance the current thread's time slice by one tick. When it runs out, reset
 // it and tell the caller (the timer IRQ) to reschedule. Decoupling this from the
 // timer tick is the Linux model: a fast tick, a slower scheduling quantum.
@@ -155,6 +160,10 @@ void schedule(void)
         }
         t = t->next;
     } while (t != current->next);
+
+    if (!best) {
+        return;   // nothing runnable (shouldn't happen: idle is always runnable)
+    }
 
     best->state = THREAD_RUNNING;
     if (best == current) {
