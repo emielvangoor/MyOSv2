@@ -10,6 +10,7 @@
 
 struct addrspace {
     uint64_t *l0;   // top-level table (a PMM page); load into TTBR0_EL1
+    uint16_t  asid; // address-space ID; tags this space's TLB entries
 };
 
 void vm_init(void);                              // (no-op; kept for callers)
@@ -23,3 +24,7 @@ uint64_t user_entry_va(void);                    // entry VA of a loaded program
 struct addrspace *as_clone(struct addrspace *parent);   // COW-share parent's pages
 int      cow_fault(struct addrspace *as, uint64_t va);  // copy a COW page on write; 1=handled
 int      page_refcount(uint64_t pa);                    // shared-page reference count
+
+// ASID support (Phase 11): tag TLB entries per address space.
+uint16_t  asid_alloc(void);                              // next ASID (1..ASID_MAX, then wrap)
+uint64_t *as_pte(struct addrspace *as, uint64_t va);     // L3 entry pointer for va (0 if unmapped)

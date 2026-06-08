@@ -128,7 +128,8 @@ static void enable_mmu(void)
         (3UL  << 12) |   // SH0=inner shareable
         (0UL  << 14) |   // TG0=0    -> 4 KiB granule
         (1UL  << 23) |   // EPD1=1   -> disable TTBR1 (we only use the low/TTBR0 half)
-        (2UL  << 32);    // IPS=2    -> 40-bit physical address size
+        (2UL  << 32) |   // IPS=2    -> 40-bit physical address size
+        (1UL  << 36);    // AS=1     -> 16-bit ASIDs (tag lives in TTBR0[63:48])
 
     // Point the hardware at our tree and load the control regs.
     __asm__ volatile("msr mair_el1,  %0" :: "r"(mair));

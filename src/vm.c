@@ -28,6 +28,7 @@
 #define AP_RO_ALL       (3UL << 6)    // EL1+EL0 read-only
 #define ATTR_UXN        (1UL << 54)
 #define ATTR_PXN        (1UL << 53)
+#define ATTR_NG         (1UL << 11)   // non-global: entry is tagged by the current ASID
 
 #define PAGE 4096UL
 #define PA_MASK 0x0000FFFFFFFFF000UL    // physical address bits [47:12] of a descriptor
@@ -38,6 +39,30 @@
 #define RAM_TOP   0x50000000UL
 #define NPAGES    ((RAM_TOP - RAM_BASE) / PAGE)
 static uint16_t page_ref[NPAGES];
+
+// ---- ASIDs: tag TLB entries per address space (Phase 11) ----
+// Each address space gets a small ID; the CPU tags its cached translations with
+// that ID and only uses entries whose tag matches the current ASID (in
+// TTBR0_EL1[63:48]). So a context switch just changes the ASID -- no TLB flush.
+#define ASID_MAX 0xFFFF
+static uint32_t next_asid = 1;        // 0 is reserved (boot/unused TTBR0 value)
+
+static void flush_all_tlb(void)       // drop EVERY EL1 TLB entry (rollover only)
+{
+    __asm__ volatile("dsb ish");
+    __asm__ volatile("tlbi vmalle1");
+    __asm__ volatile("dsb ish");
+    __asm__ volatile("isb");
+}
+
+uint16_t asid_alloc(void)
+{
+    if (next_asid > ASID_MAX) {       // handed out every ID -> recycle from 1
+        next_asid = 1;
+        flush_all_tlb();              // clear any dead space's entries under reused IDs
+    }
+    return (uint16_t)(next_asid++);
+}
 
 // The embedded user program (a flat binary linked at USER_CODE_VA), generated
 // from user/ by the Makefile (build/user_blob.c).
@@ -59,6 +84,7 @@ static uint64_t *alloc_table(void)
 void vm_init(void)
 {
     for (uint64_t i = 0; i < NPAGES; i++) { page_ref[i] = 0; }   // reset refcounts
+    next_asid = 1;                                               // reset ASID allocator
 }
 
 uint64_t user_entry_va(void)
@@ -98,13 +124,16 @@ struct addrspace *as_create_image(const void *img, uint64_t len)
 {
     struct addrspace *as = (struct addrspace *)pmm_alloc();
     as->l0 = alloc_table();
+    as->asid = asid_alloc();
 
     // Share the kernel mapping (identity, EL1-only) at L0[0].
     as->l0[0] = mmu_kernel_l0_entry();
 
-    uint64_t code_attr = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RO_ALL;  // RO, EL0-exec
+    // User pages are non-global (ATTR_NG): they're tagged by this space's ASID,
+    // so they stay isolated even though we no longer flush on every switch.
+    uint64_t code_attr = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RO_ALL | ATTR_NG;  // RO, EL0-exec
     uint64_t rw_attr   = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
-                         ATTR_UXN | ATTR_PXN;                                     // RW, no-exec
+                         ATTR_UXN | ATTR_PXN | ATTR_NG;                                     // RW, no-exec
 
     // Private code pages: copy the image in, padding the last page with zeros.
     uint64_t npages = (len + PAGE - 1) / PAGE;
@@ -162,10 +191,11 @@ uint64_t as_translate(struct addrspace *as, uint64_t va)
 
 void as_switch(struct addrspace *as)
 {
-    __asm__ volatile("msr ttbr0_el1, %0" :: "r"((uint64_t)(uintptr_t)as->l0));
-    __asm__ volatile("isb");
-    __asm__ volatile("tlbi vmalle1");
-    __asm__ volatile("dsb ish");
+    // The ASID rides in the top 16 bits of TTBR0, so loading the register sets
+    // both the page-table base and the active ASID at once. No TLB flush: the
+    // ASID keeps the previous space's (non-global) entries from matching.
+    uint64_t ttbr = ((uint64_t)as->asid << 48) | (uint64_t)(uintptr_t)as->l0;
+    __asm__ volatile("msr ttbr0_el1, %0" :: "r"(ttbr));
     __asm__ volatile("isb");
 }
 
@@ -211,10 +241,19 @@ static uint64_t *pte_ptr(uint64_t *l0, uint64_t va)
     return &l3[(va >> 12) & 511];
 }
 
-static void flush_tlb(void)
+// Public wrapper over the internal walk: the L3 entry pointer for `va`, or 0.
+uint64_t *as_pte(struct addrspace *as, uint64_t va)
 {
+    return pte_ptr(as->l0, va);
+}
+
+// Invalidate only THIS address space's TLB entries (by ASID), not the whole TLB.
+// `tlbi aside1, Xt` drops entries whose tag equals Xt[63:48].
+static void flush_tlb_asid(uint16_t asid)
+{
+    uint64_t arg = (uint64_t)asid << 48;
     __asm__ volatile("dsb ish");
-    __asm__ volatile("tlbi vmalle1");
+    __asm__ volatile("tlbi aside1, %0" :: "r"(arg));
     __asm__ volatile("dsb ish");
     __asm__ volatile("isb");
 }
@@ -227,6 +266,7 @@ struct addrspace *as_clone(struct addrspace *parent)
     struct addrspace *child = (struct addrspace *)pmm_alloc();
     child->l0 = alloc_table();
     child->l0[0] = mmu_kernel_l0_entry();
+    child->asid = asid_alloc();      // a clone is its own address space -> own ASID
 
     // Walk every user VA we know about: code (until unmapped), stack, data.
     uint64_t vas[64];
@@ -239,9 +279,9 @@ struct addrspace *as_clone(struct addrspace *parent)
     for (uint64_t i = 1; i <= 16; i++) { vas[nv++] = USER_STACK_TOP - i * PAGE; }
     vas[nv++] = USER_DATA_VA;
 
-    uint64_t ro_code = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RO_ALL;
+    uint64_t ro_code = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RO_ALL | ATTR_NG;
     uint64_t ro_cow  = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RO_ALL |
-                       ATTR_UXN | ATTR_PXN | PTE_COW;
+                       ATTR_UXN | ATTR_PXN | PTE_COW | ATTR_NG;
 
     for (int i = 0; i < nv; i++) {
         uint64_t va = vas[i];
@@ -261,7 +301,7 @@ struct addrspace *as_clone(struct addrspace *parent)
         }
         page_incref(pa);
     }
-    flush_tlb();
+    flush_tlb_asid(parent->asid);   // parent's writable entries were demoted to COW
     return child;
 }
 
@@ -280,9 +320,9 @@ int cow_fault(struct addrspace *as, uint64_t va)
     for (uint64_t i = 0; i < PAGE; i++) { dst[i] = src[i]; }
 
     uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
-                  ATTR_UXN | ATTR_PXN;
+                  ATTR_UXN | ATTR_PXN | ATTR_NG;
     *pte = (newpa & ~0xFFFUL) | rw | (3UL << 0);   // page descriptor, RW, no COW
     page_decref(oldpa);
-    flush_tlb();
+    flush_tlb_asid(as->asid);
     return 1;
 }

@@ -689,6 +689,50 @@ static void test_syscall_readdir(void)
     KASSERT(rd_r1 == -1);    // past the end
 }
 
+// --- ASIDs (Phase 11) ---
+
+static void test_asid_assigned_nonzero(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    KASSERT(a->asid != 0);             // 0 is reserved (boot/unused TTBR0)
+}
+
+static void test_asid_unique(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    struct addrspace *b = as_create();
+    KASSERT(a->asid != b->asid);       // distinct address spaces, distinct IDs
+}
+
+static void test_asid_clone_distinct(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *p = as_create();
+    struct addrspace *c = as_clone(p);
+    KASSERT(c->asid != p->asid);       // a clone is its own address space
+}
+
+static void test_asid_user_page_nonglobal(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    uint64_t *pte = as_pte(a, USER_DATA_VA);
+    KASSERT(pte != 0);
+    KASSERT((*pte & (1UL << 11)) != 0);   // nG set -> ASID-tagged
+}
+
+static void test_asid_rollover_recycles(void)
+{
+    vm_init();                            // next_asid = 1
+    uint16_t first = asid_alloc();        // 1
+    for (uint32_t i = 1; i < 0xFFFF; i++) { asid_alloc(); }   // consume up to ASID_MAX
+    uint16_t wrapped = asid_alloc();      // ASID_MAX+1 -> wrap
+    KASSERT(first == 1);
+    KASSERT(wrapped == 1);                // recycled from the bottom
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -733,6 +777,11 @@ static const struct ktest tests[] = {
     { "cow: fault drops refcount",        test_cow_fault_refcount },
     { "cow: fault on non-cow -> 0",       test_cow_fault_non_cow },
     { "syscall: readdir lists dir",       test_syscall_readdir },
+    { "asid: assigned nonzero",           test_asid_assigned_nonzero },
+    { "asid: unique per space",           test_asid_unique },
+    { "asid: clone gets own asid",        test_asid_clone_distinct },
+    { "asid: user page is non-global",    test_asid_user_page_nonglobal },
+    { "asid: rollover recycles",          test_asid_rollover_recycles },
 };
 
 int run_self_tests(void)
