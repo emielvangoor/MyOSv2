@@ -22,6 +22,7 @@
 #include "ramfs.h"
 #include "initrd.h"
 #include "proc.h"
+#include "fwcfg.h"
 
 #define PAGE 0x1000UL
 
@@ -733,6 +734,16 @@ static void test_asid_rollover_recycles(void)
     KASSERT(wrapped == 1);                // recycled from the bottom
 }
 
+// --- Graphics: fw_cfg / framebuffer / draw (Phase 12) ---
+
+static void test_bswap_roundtrip(void)
+{
+    KASSERT(bswap16(0x1234) == 0x3412);
+    KASSERT(bswap32(0x11223344) == 0x44332211);
+    KASSERT(bswap64(0x1122334455667788ULL) == 0x8877665544332211ULL);
+    KASSERT(bswap32(bswap32(0xDEADBEEF)) == 0xDEADBEEF);   // involution
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -782,6 +793,7 @@ static const struct ktest tests[] = {
     { "asid: clone gets own asid",        test_asid_clone_distinct },
     { "asid: user page is non-global",    test_asid_user_page_nonglobal },
     { "asid: rollover recycles",          test_asid_rollover_recycles },
+    { "gfx: bswap roundtrip",             test_bswap_roundtrip },
 };
 
 int run_self_tests(void)
