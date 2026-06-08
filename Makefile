@@ -24,7 +24,8 @@ DEP  := $(OBJ:.o=.d)
 QEMU       := qemu-system-aarch64
 # -display none: no graphical window. -serial stdio: serial to terminal AND
 # lets Ctrl-C (SIGINT) terminate QEMU normally (unlike -nographic).
-QEMU_FLAGS := -machine virt -cpu cortex-a72 -display none -serial stdio -kernel $(TARGET)
+# -m 256M: fix the RAM size so the page allocator knows where RAM ends (0x50000000).
+QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial stdio -kernel $(TARGET)
 
 .PHONY: all run debug gdb clean objdump compile_commands
 all: $(TARGET)

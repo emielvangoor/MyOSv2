@@ -70,4 +70,12 @@ SECTIONS
     . = ALIGN(16);
     . = . + 0x4000;   /* reserve 16 KiB */
     stack_top = .;
+
+    /*
+     * Everything above is the kernel image. __kernel_end marks the first byte
+     * AFTER it: the physical RAM from here to the end of RAM is free for the
+     * page allocator (pmm.c) to manage. Page-align it so pages start clean.
+     */
+    . = ALIGN(4096);
+    __kernel_end = .;
 }
