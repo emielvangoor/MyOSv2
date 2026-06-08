@@ -386,6 +386,7 @@ int sched_wait(int *status)
             if (status) { *status = child->exit_status; }
             int pid = child->id;
             prev->next = child->next;             // unlink from the circular ring
+            if (foreground == child) { foreground = 0; }
             kfree(child->stack);
             if (child->as) { as_destroy(child->as); }
             kfree(child);
@@ -394,6 +395,7 @@ int sched_wait(int *status)
         }
         if (!any) { irq_restore(flags); return -1; }   // no children to wait for
 
+        foreground = any;                   // Ctrl-C targets the child we wait on
         current->state = THREAD_SLEEPING;   // block until a child exits (wakes us)
         schedule();
         irq_restore(flags);

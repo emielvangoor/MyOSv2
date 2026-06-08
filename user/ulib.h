@@ -21,5 +21,12 @@ int   shm_create(unsigned long len);
 void *shm_map(int handle);
 int   pipe(int fd[2]);
 int   dup2(int oldfd, int newfd);
+int   kill(int pid, int sig);
+int   signal(int sig, void (*handler)(int));
+void  __sigreturn(void);
+
+#define SIGINT  2
+#define SIGKILL 9
+#define SIGTERM 15
 long ustrlen(const char *s);
 int  umain(void);   // the program's entry (defined per-program); returns exit status

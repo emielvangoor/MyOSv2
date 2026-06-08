@@ -20,3 +20,6 @@
 #define SYS_SHM_MAP    17
 #define SYS_PIPE   18
 #define SYS_DUP2   19
+#define SYS_KILL   20
+#define SYS_SIGNAL 21
+#define SYS_SIGRETURN 22

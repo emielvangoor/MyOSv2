@@ -16,6 +16,7 @@
 #include "shm.h"
 #include "pipe.h"
 #include "kheap.h"
+#include "signal.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -153,6 +154,26 @@ long do_syscall(struct trapframe *tf)
             fds[n] = file_dup(fds[o]);
         }
         ret = (long)n;
+        break;
+    }
+    case SYS_KILL:                           // x0 = pid, x1 = sig
+        ret = sched_kill((int)tf->x[0], (int)tf->x[1]);
+        break;
+    case SYS_SIGNAL: {                        // x0 = sig, x1 = handler, x2 = trampoline
+        struct thread *t = sched_current();
+        int sig = (int)tf->x[0];
+        if (t && sig > 0 && sig < 32) {
+            t->sig_handler[sig] = (uint64_t (*)(int))(uintptr_t)tf->x[1];
+            t->sig_tramp = tf->x[2];
+            ret = 0;
+        } else { ret = -1; }
+        break;
+    }
+    case SYS_SIGRETURN: {                     // restore the pre-signal trap frame
+        const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
+        uint64_t *d = (uint64_t *)tf;
+        for (unsigned i = 0; i < sizeof(struct trapframe) / 8; i++) { d[i] = saved[i]; }
+        ret = (long)tf->x[0];                 // keep the restored x0 (don't clobber below)
         break;
     }
     case SYS_REPORT:                         // x0 = pid, x1 = value read back

@@ -12,6 +12,8 @@
 #include "sched.h"
 #include "syscall.h"
 #include "vm.h"
+#include "signal.h"
+#include "uart.h"
 
 // Defined in vectors.S: the start of our 16-entry vector table.
 extern char vector_table[];
@@ -68,8 +70,6 @@ void sync_handler(struct trapframe *tf)
 // unrelated to what the CPU was doing.
 void irq_handler(struct trapframe *tf)
 {
-    (void)tf;  // we don't need the saved state for this simple handler
-
     // Ask the interrupt controller which interrupt fired (and acknowledge it).
     uint32_t id = gic_ack();
 
@@ -77,6 +77,15 @@ void irq_handler(struct trapframe *tf)
     if (id == 30) {            // 30 = the physical timer's interrupt id
         timer_handle_irq();    // heartbeat: re-arm + count this tick
         resched = sched_tick(); // 1 only when the current thread's slice expired
+
+        // Poll the console for Ctrl-C while a foreground program runs (it isn't
+        // reading stdin itself, so stealing the byte here is fine). 0x03 posts
+        // SIGINT to it.
+        struct thread *fg = sched_foreground();
+        if (fg) {
+            int c = uart_getc();
+            if (c == 3) { signal_send(fg, SIGINT); }
+        }
     }
 
     // Tell the controller we're done so it can deliver the next one.
@@ -88,6 +97,12 @@ void irq_handler(struct trapframe *tf)
     // this thread's own stack, so its in-progress trap frame travels with it.
     if (resched) {
         schedule();
+    }
+
+    // If this IRQ interrupted user mode (SPSR.M == EL0t), deliver any signal now
+    // pending on the (resumed) current thread before we return to it.
+    if ((tf->spsr & 0xF) == 0) {
+        signals_deliver(tf);
     }
 }
 
@@ -102,6 +117,7 @@ void el0_sync_handler(struct trapframe *tf)
 
     if (ec == 0x15) {            // EC 0x15 = SVC executed in AArch64
         do_syscall(tf);
+        signals_deliver(tf);     // deliver any pending signal as we return to EL0
     } else if (ec == 0x24) {     // EC 0x24 = data abort from a lower EL
         uint64_t far;
         __asm__ volatile("mrs %0, far_el1" : "=r"(far));

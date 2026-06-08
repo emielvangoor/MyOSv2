@@ -29,6 +29,16 @@ int   shm_create(unsigned long len)           { return (int)syscall3(SYS_SHM_CRE
 void *shm_map(int handle)                     { return (void *)syscall3(SYS_SHM_MAP, handle, 0, 0); }
 int   pipe(int fd[2])                         { return (int)syscall3(SYS_PIPE, (long)fd, 0, 0); }
 int   dup2(int o, int n)                      { return (int)syscall3(SYS_DUP2, o, n, 0); }
+int   kill(int pid, int sig)                  { return (int)syscall3(SYS_KILL, pid, sig, 0); }
+
+// A signal handler returns into this stub, which asks the kernel to restore the
+// pre-signal context.
+void __sigreturn(void) { syscall3(SYS_SIGRETURN, 0, 0, 0); }
+
+int signal(int sig, void (*handler)(int))
+{
+    return (int)syscall3(SYS_SIGNAL, sig, (long)handler, (long)__sigreturn);
+}
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 
 // --- minimal user-space malloc: a first-fit free list over sbrk ---

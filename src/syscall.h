@@ -23,6 +23,9 @@
 #define SYS_SHM_MAP    17 // x0=handle -> base VA of the mapped object (or -1)
 #define SYS_PIPE   18  // x0=int fd[2] -> fills {readfd, writefd}; 0 / -1
 #define SYS_DUP2   19  // x0=old, x1=new -> new (or -1)
+#define SYS_KILL   20  // x0=pid, x1=sig -> 0 / -1
+#define SYS_SIGNAL 21  // x0=sig, x1=handler, x2=trampoline -> 0 / -1
+#define SYS_SIGRETURN 22 // restore the pre-signal context (used by the trampoline)
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.
