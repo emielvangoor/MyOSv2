@@ -13,7 +13,13 @@ deadlines; just building it one piece at a time and enjoying the ride.
 - **Exceptions & interrupts** — vector table, syscalls (`svc`), GIC, 1000 Hz timer.
 - **Memory** — physical page allocator, a coalescing kernel heap, the MMU with
   per-process page tables, ASID-tagged TLB entries (flush-free context switch).
-- **Scheduler** — preemptive threads with priorities, sleep, round-robin.
+- **Scheduler** — preemptive threads with priorities, sleep, round-robin, and a
+  V6-style **sleep/wakeup** (`sched_block`/`sched_wake`) so blocking I/O sleeps
+  instead of spinning.
+- **Interrupt-driven I/O** — the console and NIC are driven by interrupts, not
+  polling: a UART receive IRQ feeds the **tty line discipline** (Ctrl-C → SIGINT),
+  `read` blocks until a key is pressed, and the virtio-net IRQ wakes the network
+  stack (a blocked `ping` is woken by the reply, or aborted instantly by Ctrl-C).
 - **Filesystem** — a VFS (vnode/fs_type) with an in-memory `ramfs` and an initrd.
 - **Processes** — user mode at EL0, `fork` + copy-on-write, an **ELF64 loader**,
   and the full lifecycle: `exec`, `exit(status)`, `wait`/reap (with ASID + page
