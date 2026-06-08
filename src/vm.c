@@ -47,6 +47,12 @@ static uint16_t page_ref[NPAGES];
 #define ASID_MAX 0xFFFF
 static uint32_t next_asid = 1;        // 0 is reserved (boot/unused TTBR0 value)
 
+// Freed ASIDs (from destroyed address spaces) are recycled before bumping the
+// counter, so a fork/exec/exit-heavy workload doesn't burn through the space.
+#define ASID_FREE_MAX 256
+static uint16_t asid_free_list[ASID_FREE_MAX];
+static int      asid_free_n;
+
 static void flush_all_tlb(void)       // drop EVERY EL1 TLB entry (rollover only)
 {
     __asm__ volatile("dsb ish");
@@ -55,8 +61,16 @@ static void flush_all_tlb(void)       // drop EVERY EL1 TLB entry (rollover only
     __asm__ volatile("isb");
 }
 
+void asid_free(uint16_t a)
+{
+    if (a != 0 && asid_free_n < ASID_FREE_MAX) { asid_free_list[asid_free_n++] = a; }
+}
+
 uint16_t asid_alloc(void)
 {
+    if (asid_free_n > 0) {            // reuse a freed ASID first
+        return asid_free_list[--asid_free_n];
+    }
     if (next_asid > ASID_MAX) {       // handed out every ID -> recycle from 1
         next_asid = 1;
         flush_all_tlb();              // clear any dead space's entries under reused IDs
@@ -85,6 +99,7 @@ void vm_init(void)
 {
     for (uint64_t i = 0; i < NPAGES; i++) { page_ref[i] = 0; }   // reset refcounts
     next_asid = 1;                                               // reset ASID allocator
+    asid_free_n = 0;                                             // empty the recycle list
 }
 
 uint64_t user_entry_va(void)

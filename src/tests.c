@@ -733,6 +733,18 @@ static void test_asid_rollover_recycles(void)
     KASSERT(wrapped == 1);                // recycled from the bottom
 }
 
+// --- Process lifecycle: exec + exit + wait (Phase 13) ---
+
+static void test_asid_free_recycles(void)
+{
+    vm_init();
+    uint16_t a = asid_alloc();
+    uint16_t b = asid_alloc();
+    asid_free(a);
+    KASSERT(asid_alloc() == a);   // a freed ASID is handed back before a fresh one
+    (void)b;
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -782,6 +794,7 @@ static const struct ktest tests[] = {
     { "asid: clone gets own asid",        test_asid_clone_distinct },
     { "asid: user page is non-global",    test_asid_user_page_nonglobal },
     { "asid: rollover recycles",          test_asid_rollover_recycles },
+    { "asid: free recycles",              test_asid_free_recycles },
 };
 
 int run_self_tests(void)

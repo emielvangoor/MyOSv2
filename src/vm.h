@@ -26,5 +26,9 @@ int      cow_fault(struct addrspace *as, uint64_t va);  // copy a COW page on wr
 int      page_refcount(uint64_t pa);                    // shared-page reference count
 
 // ASID support (Phase 11): tag TLB entries per address space.
-uint16_t  asid_alloc(void);                              // next ASID (1..ASID_MAX, then wrap)
+uint16_t  asid_alloc(void);                              // next ASID (recycled, then 1..ASID_MAX)
+void      asid_free(uint16_t a);                         // recycle a freed ASID (Phase 13)
 uint64_t *as_pte(struct addrspace *as, uint64_t va);     // L3 entry pointer for va (0 if unmapped)
+
+// Process teardown (Phase 13): free a process's user pages, page tables, and ASID.
+void      as_destroy(struct addrspace *as);
