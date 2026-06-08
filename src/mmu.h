@@ -1,4 +1,6 @@
+// mmu.h -- interface to the memory-management unit (MMU) setup.
+// Calling mmu_init() builds page tables and turns on virtual-memory
+// translation, after which every address goes through the tables we built.
 #pragma once
 
-// Build identity page tables (+ one demo mapping) and enable the MMU.
 void mmu_init(void);
