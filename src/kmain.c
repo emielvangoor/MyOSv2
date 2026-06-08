@@ -52,13 +52,18 @@ void kmain(void)
     mmu_init();
     kprintf("MMU enabled.\n");
 
-    // --- Self-tests: only in the `make test` build (-DTEST_EXIT). They run the
-    // whole suite -- including disk/filesystem tests that reformat the disk -- so
-    // we keep them out of a normal boot (which would wipe persistent data and
-    // slow startup). `make test` runs them and exits QEMU with a status code.
-#ifdef TEST_EXIT
+    // --- Self-tests: verify the foundations before anything else. The disk/FS
+    // tests that REFORMAT the disk are skipped on a normal boot (so persistent
+    // data survives) but run under `make test` (-DTEST_EXIT), which also exits
+    // QEMU with a status code. A normal boot halts on any failure.
     int failed = run_self_tests();
+#ifdef TEST_EXIT
     qemu_exit(failed == 0 ? 0 : 1);
+#else
+    if (failed) {
+        kprintf("SELF-TESTS FAILED -- halting.\n");
+        for (;;) { __asm__ volatile("wfi"); }
+    }
 #endif
 
     // --- 3. Dynamic memory: page allocator, then the heap on top ---

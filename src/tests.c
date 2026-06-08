@@ -32,6 +32,15 @@
 
 #define PAGE 0x1000UL
 
+// Disk-MUTATING tests (block writes, mkfs) reformat the persistent disk, so they
+// run only in the `make test` build -- a normal boot skips them to keep its data.
+// They begin with `if (!DISK_TESTS) return;` so they pass trivially when skipped.
+#ifdef TEST_EXIT
+#define DISK_TESTS 1
+#else
+#define DISK_TESTS 0
+#endif
+
 // --- PMM ---
 
 static void test_pmm_aligned_and_contiguous(void)
@@ -1084,6 +1093,7 @@ static void test_sig_default_vs_handler(void)
 
 static void test_block_present(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init();
     virtio_blk_init();
     KASSERT(block_present());
@@ -1091,6 +1101,7 @@ static void test_block_present(void)
 
 static void test_block_write_read(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init();
     virtio_blk_init();
     static uint8_t w[512], r[512];
@@ -1102,6 +1113,7 @@ static void test_block_write_read(void)
 
 static void test_block_two_sectors(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init();
     virtio_blk_init();
     static uint8_t a[512], b[512], ra[512], rb[512];
@@ -1117,6 +1129,7 @@ static void test_block_two_sectors(void)
 
 static void test_sfs_create_write_read(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
     struct vnode *r = sfs_mount();
     KASSERT(r && r->type == VN_DIR);
@@ -1133,6 +1146,7 @@ static void test_sfs_create_write_read(void)
 
 static void test_sfs_persists_remount(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
     struct vnode *r = sfs_mount();
     struct vnode *f = r->ops->create(r, "p", VN_FILE);
@@ -1149,6 +1163,7 @@ static void test_sfs_persists_remount(void)
 
 static void test_sfs_readdir(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
     struct vnode *r = sfs_mount();
     r->ops->create(r, "aa", VN_FILE);
@@ -1163,6 +1178,7 @@ static void test_sfs_readdir(void)
 
 static void test_sfs_multiblock(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
     struct vnode *r = sfs_mount();
     struct vnode *f = r->ops->create(r, "big", VN_FILE);
@@ -1177,6 +1193,7 @@ static void test_sfs_multiblock(void)
 
 static void test_vfs_mount_at(void)
 {
+    if (!DISK_TESTS) { return; }
     pmm_init(); kheap_init(); virtio_blk_init();
     vfs_mount_root(ramfs_type());
     sfs_mkfs();
@@ -1230,6 +1247,24 @@ static void test_net_arp_roundtrip(void)
         }
     }
     KASSERT(got);
+}
+
+// --- TCP/IP stack (Phase 22) ---
+
+static void test_inet_checksum(void)
+{
+    uint8_t d[20] = {0x45,0,0,0x1c, 0,0,0,0, 0x40,1,0,0, 10,0,2,15, 10,0,2,2};
+    uint16_t c = inet_csum(d, 20);
+    d[10] = (uint8_t)(c >> 8); d[11] = (uint8_t)(c & 0xff);   // place it in the csum field
+    KASSERT(inet_csum(d, 20) == 0);                            // now the header verifies as 0
+}
+
+static void test_arp_resolve(void)
+{
+    pmm_init(); kheap_init(); vm_init(); virtio_net_init(); net_stack_init();
+    uint8_t mac[6];
+    KASSERT(arp_resolve(IP_GATEWAY, mac) == 0);               // 10.0.2.2 -> gateway MAC
+    KASSERT(mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]);
 }
 
 // The registry of all tests.
@@ -1317,6 +1352,8 @@ static const struct ktest tests[] = {
     { "vfs: mount at /disk",              test_vfs_mount_at },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
+    { "net: internet checksum",           test_inet_checksum },
+    { "net: ARP resolve gateway",         test_arp_resolve },
 };
 
 int run_self_tests(void)
