@@ -22,6 +22,7 @@
 #include "ramfs.h"
 #include "initrd.h"
 #include "proc.h"
+#include "elf.h"
 
 #define PAGE 0x1000UL
 
@@ -810,6 +811,61 @@ static void test_as_map_segment_bss_zeroed(void)
     KASSERT(p[4] == 0 && p[15] == 0);        // bss tail (beyond filesz) zeroed
 }
 
+// Construct a minimal valid ELF64/AArch64 image: header + one PT_LOAD segment of
+// `clen` bytes at `vaddr`, with the bytes at file offset 128. Returns the total
+// image length.
+static int build_min_elf(uint8_t *buf, uint64_t vaddr, const uint8_t *code, int clen)
+{
+    for (int i = 0; i < 256; i++) { buf[i] = 0; }
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)buf;
+    eh->e_ident[0] = 0x7f; eh->e_ident[1] = 'E'; eh->e_ident[2] = 'L'; eh->e_ident[3] = 'F';
+    eh->e_ident[4] = 2;            // ELFCLASS64
+    eh->e_ident[5] = 1;            // ELFDATA2LSB
+    eh->e_type = 2;                // ET_EXEC
+    eh->e_machine = 0xB7;          // EM_AARCH64
+    eh->e_entry = vaddr;
+    eh->e_phoff = 64;
+    eh->e_ehsize = 64;
+    eh->e_phentsize = 56;
+    eh->e_phnum = 1;
+    Elf64_Phdr *ph = (Elf64_Phdr *)(buf + 64);
+    ph->p_type = PT_LOAD;
+    ph->p_flags = PF_R | PF_X;
+    ph->p_offset = 128;
+    ph->p_vaddr = vaddr;
+    ph->p_filesz = (uint64_t)clen;
+    ph->p_memsz = (uint64_t)clen;
+    for (int i = 0; i < clen; i++) { buf[128 + i] = code[i]; }
+    return 128 + clen;
+}
+
+static void test_elf_rejects_bad_magic(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = (struct addrspace *)pmm_alloc();
+    as->l0 = as_alloc_l0(); as->asid = asid_alloc();
+    uint8_t junk[64];
+    for (int i = 0; i < 64; i++) { junk[i] = 0; }
+    uint64_t entry = 0;
+    KASSERT(elf_load(as, junk, sizeof(junk), &entry) == -1);
+}
+
+static void test_elf_entry_and_segment(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = (struct addrspace *)pmm_alloc();
+    as->l0 = as_alloc_l0(); as->asid = asid_alloc();
+    uint8_t code[4] = {0x11, 0x22, 0x33, 0x44};
+    static uint8_t img[256];
+    int len = build_min_elf(img, USER_CODE_VA, code, 4);
+    uint64_t entry = 0;
+    KASSERT(elf_load(as, img, (uint64_t)len, &entry) == 0);
+    KASSERT(entry == USER_CODE_VA);
+    uint64_t pa = as_translate(as, USER_CODE_VA);
+    uint8_t *p = (uint8_t *)(uintptr_t)pa;
+    KASSERT(p[0] == 0x11 && p[3] == 0x44);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -866,6 +922,8 @@ static const struct ktest tests[] = {
     { "proc: wait with no children -> -1",test_wait_no_children },
     { "proc: exec missing path -> -1",    test_exec_missing_returns_neg1 },
     { "elf: map_segment zeroes bss",      test_as_map_segment_bss_zeroed },
+    { "elf: rejects bad magic",           test_elf_rejects_bad_magic },
+    { "elf: loads entry + segment",       test_elf_entry_and_segment },
 };
 
 int run_self_tests(void)

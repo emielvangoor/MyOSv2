@@ -17,6 +17,7 @@
 #include "vm.h"
 #include "pmm.h"
 #include "mmu.h"
+#include "elf.h"
 
 // Descriptor bits (4 KiB granule).
 #define DESC_TABLE      (3UL << 0)
@@ -215,6 +216,31 @@ struct addrspace *as_create_image(const void *img, uint64_t len)
 struct addrspace *as_create(void)
 {
     return as_create_image(init_bin, (uint64_t)init_bin_len);
+}
+
+// Build an address space from an ELF image: map its PT_LOAD segments at their
+// own virtual addresses with proper permissions, add a private user stack, and
+// return the program's entry point in *entry. Returns 0 if the ELF is invalid.
+struct addrspace *as_create_elf(const void *img, uint64_t len, uint64_t *entry)
+{
+    struct addrspace *as = (struct addrspace *)pmm_alloc();
+    as->l0   = as_alloc_l0();
+    as->asid = asid_alloc();
+
+    if (elf_load(as, img, len, entry) != 0) {
+        as_destroy(as);
+        return 0;
+    }
+
+    // Private stack: 16 pages ending at USER_STACK_TOP, freshly allocated.
+    uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
+                  ATTR_UXN | ATTR_PXN | ATTR_NG;
+    for (uint64_t i = 1; i <= 16; i++) {
+        uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
+        map_page(as->l0, USER_STACK_TOP - i * PAGE, pa, rw);
+        page_incref(pa);
+    }
+    return as;
 }
 
 uint64_t as_translate(struct addrspace *as, uint64_t va)
