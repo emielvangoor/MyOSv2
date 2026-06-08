@@ -45,6 +45,55 @@ static void cmd_cat(const char *path)
     sys_close(fd);
 }
 
+// Print a small non-negative integer followed by a newline.
+static void put_int(long v)
+{
+    char b[16];
+    int i = 0;
+    if (v == 0) { b[i++] = '0'; }
+    while (v > 0) { b[i++] = (char)('0' + v % 10); v /= 10; }
+    while (i > 0) { sys_write(1, &b[--i], 1); }
+    sys_write(1, "\n", 1);
+}
+
+// fork a child, exec /bin/<cmd> in it, and wait for it. With no /bin programs yet
+// (they arrive in Phase 14) exec fails and the child exits 127 -- but this drives
+// the full fork -> exec -> exit -> wait -> reap path the Unix way.
+static void run_external(const char *cmd)
+{
+    char path[64];
+    const char *pre = "/bin/";
+    int i = 0;
+    while (pre[i]) { path[i] = pre[i]; i++; }
+    int j = 0;
+    while (cmd[j] && i < 62) { path[i++] = cmd[j++]; }
+    path[i] = 0;
+
+    long pid = sys_fork();
+    if (pid == 0) {                 // child
+        sys_exec(path);             // returns only if exec failed
+        puts1("exec: not found\n");
+        sys_exit(127);
+    }
+    int st = 0;
+    sys_wait(&st);                  // parent reaps the child
+}
+
+// Demonstrate the exit-status path: a child exits with a fixed code; the parent
+// waits and prints it.
+static void cmd_spawn(void)
+{
+    long pid = sys_fork();
+    if (pid == 0) {
+        puts1("  [child] running, exiting with status 3\n");
+        sys_exit(3);
+    }
+    int st = -1;
+    long reaped = sys_wait(&st);
+    puts1("  [parent] reaped pid "); put_int(reaped);
+    puts1("  [parent] child status "); put_int(st);
+}
+
 void umain(void)
 {
     puts1("MyOSv2 shell. Type 'help'.\n");
@@ -60,11 +109,12 @@ void umain(void)
         if (*arg == ' ') { *arg = 0; arg++; } else { arg = (char *)""; }
 
         if (cmd[0] == 0)            { continue; }
-        else if (streq(cmd, "help")) { puts1("commands: help echo ls cat <f> exit\n"); }
+        else if (streq(cmd, "help")) { puts1("commands: help echo ls cat <f> spawn exit; others run /bin/<cmd>\n"); }
         else if (streq(cmd, "echo")) { puts1(arg); puts1("\n"); }
         else if (streq(cmd, "ls"))   { cmd_ls(); }
         else if (streq(cmd, "cat"))  { cmd_cat(arg); }
+        else if (streq(cmd, "spawn")){ cmd_spawn(); }
         else if (streq(cmd, "exit")) { sys_exit(0); }
-        else                         { puts1("unknown command: "); puts1(cmd); puts1("\n"); }
+        else                         { run_external(cmd); }   // fork + exec + wait
     }
 }

@@ -11,3 +11,5 @@
 #define SYS_CLOSE  8
 #define SYS_FORK   9
 #define SYS_READDIR 10
+#define SYS_EXEC   11
+#define SYS_WAIT   12

@@ -12,6 +12,7 @@
 #include "sched.h"
 #include "kprintf.h"
 #include "vfs.h"
+#include "proc.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -97,6 +98,12 @@ long do_syscall(struct trapframe *tf)
         break;
     case SYS_FORK:
         ret = sched_fork(tf);                // child pid (parent); child gets 0
+        break;
+    case SYS_EXEC:                           // x0 = path
+        ret = proc_exec(tf, (const char *)(uintptr_t)tf->x[0]);
+        break;                               // on success tf is rewritten to the new image
+    case SYS_WAIT:                           // x0 = int *status
+        ret = sched_wait((int *)(uintptr_t)tf->x[0]);
         break;
     case SYS_REPORT:                         // x0 = pid, x1 = value read back
         kprintf("  [user] process %d read %d  (%s)\n",

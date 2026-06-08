@@ -8,6 +8,8 @@ void sys_exit(int code);
 long sys_getpid(void);
 void sys_sleep(long ms);
 long sys_fork(void);
+long sys_exec(const char *path);
+long sys_wait(int *status);
 long sys_readdir(const char *path, int index, char *name);
 int  sys_getc(void);
 long ustrlen(const char *s);

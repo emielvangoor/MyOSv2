@@ -20,6 +20,8 @@ void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }
 void sys_sleep(long ms)                       { syscall3(SYS_SLEEP, ms, 0, 0); }
 long sys_fork(void)                           { return syscall3(SYS_FORK, 0, 0, 0); }
+long sys_exec(const char *p)                  { return syscall3(SYS_EXEC, (long)p, 0, 0); }
+long sys_wait(int *status)                    { return syscall3(SYS_WAIT, (long)status, 0, 0); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 long sys_readdir(const char *p, int i, char *name) { return syscall3(SYS_READDIR, (long)p, i, (long)name); }
 int  sys_getc(void) { char c; long n = syscall3(SYS_READ, 0, (long)&c, 1); return n == 1 ? (int)(unsigned char)c : -1; }
