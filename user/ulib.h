@@ -13,4 +13,4 @@ long sys_wait(int *status);
 long sys_readdir(const char *path, int index, char *name);
 int  sys_getc(void);
 long ustrlen(const char *s);
-void umain(void);   // the program's entry (defined per-program)
+int  umain(void);   // the program's entry (defined per-program); returns exit status

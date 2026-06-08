@@ -94,7 +94,7 @@ static void cmd_spawn(void)
     puts1("  [parent] child status "); put_int(st);
 }
 
-void umain(void)
+int umain(void)
 {
     puts1("MyOSv2 shell. Type 'help'.\n");
     char line[128];

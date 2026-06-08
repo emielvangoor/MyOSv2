@@ -79,10 +79,11 @@ uint16_t asid_alloc(void)
     return (uint16_t)(next_asid++);
 }
 
-// The embedded user program (a flat binary linked at USER_CODE_VA), generated
-// from user/ by the Makefile (build/user_blob.c).
-extern unsigned char init_bin[];
-extern unsigned int  init_bin_len;
+// An embedded user program (ELF), generated from user/ by the Makefile
+// (build/user_blob.c). Used only by the flat test loader as_create()/_image();
+// real program loading goes through as_create_elf().
+extern unsigned char sh_elf[];
+extern unsigned int  sh_elf_len;
 
 static void page_incref(uint64_t pa);   // defined in the COW section below
 
@@ -215,7 +216,7 @@ struct addrspace *as_create_image(const void *img, uint64_t len)
 // Convenience: build an address space from the embedded user program.
 struct addrspace *as_create(void)
 {
-    return as_create_image(init_bin, (uint64_t)init_bin_len);
+    return as_create_image(sh_elf, (uint64_t)sh_elf_len);
 }
 
 // Build an address space from an ELF image: map its PT_LOAD segments at their

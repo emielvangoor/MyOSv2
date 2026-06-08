@@ -367,9 +367,10 @@ static void test_as_image_maps_code(void)
     struct addrspace *a = as_create();
     uint64_t pa = as_translate(a, USER_CODE_VA);
     KASSERT(pa != 0);
-    // The first code byte at USER_CODE_VA equals the embedded program's start.
-    extern unsigned char init_bin[];
-    KASSERT(*(volatile uint8_t *)(uintptr_t)pa == init_bin[0]);
+    // The first byte at USER_CODE_VA equals the embedded program's start
+    // (as_create() flat-loads sh_elf; for this test only the mapping matters).
+    extern unsigned char sh_elf[];
+    KASSERT(*(volatile uint8_t *)(uintptr_t)pa == sh_elf[0]);
 }
 
 static void test_as_kernel_shared(void)
@@ -866,6 +867,18 @@ static void test_elf_entry_and_segment(void)
     KASSERT(p[0] == 0x11 && p[3] == 0x44);
 }
 
+static void test_as_create_elf_has_stack(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    extern unsigned char sh_elf[]; extern unsigned int sh_elf_len;
+    uint64_t entry = 0;
+    struct addrspace *as = as_create_elf(sh_elf, sh_elf_len, &entry);
+    KASSERT(as != 0);
+    KASSERT(entry == USER_CODE_VA);                         // sh's _start
+    KASSERT(as_translate(as, USER_STACK_TOP - 0x1000) != 0); // a stack page exists
+    KASSERT(as_translate(as, USER_CODE_VA) != 0);          // code segment mapped
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -924,6 +937,7 @@ static const struct ktest tests[] = {
     { "elf: map_segment zeroes bss",      test_as_map_segment_bss_zeroed },
     { "elf: rejects bad magic",           test_elf_rejects_bad_magic },
     { "elf: loads entry + segment",       test_elf_entry_and_segment },
+    { "elf: as_create_elf maps stack",    test_as_create_elf_has_stack },
 };
 
 int run_self_tests(void)

@@ -22,10 +22,13 @@ OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
         $(BUILD)/user_blob.o          # the embedded user program
 DEP  := $(OBJ:.o=.d)
 
-# User programs are separate flat binaries linked at USER_CODE_VA (so every
-# address -- code and strings -- is correct with no relocation), then embedded
-# into the kernel image as a C byte array.
-USER_SRC    := user/crt0.S user/ulib.c user/sh.c
+# User programs are separate ELF64 executables linked at USER_CODE_VA, each
+# embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
+# and unpacked into /bin by the initrd. The kernel's ELF loader maps their
+# segments at load/exec time.
+PROGS       := sh true false hello
+USER_COMMON := user/crt0.S user/ulib.c
+USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall -O2
 
 QEMU       := qemu-system-aarch64
@@ -46,16 +49,15 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 $(BUILD)/%.o: src/%.S | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Build the user program -> flat binary -> embedded C array (init_bin / init_bin_len).
-$(BUILD)/user/init.elf: $(USER_SRC) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
+# Build each user program as an ELF executable: crt0 + ulib + <prog>.c.
+$(BUILD)/user/%.elf: user/%.c $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
 	mkdir -p $(BUILD)/user
-	$(CC) $(USER_CFLAGS) -T user/user.ld -o $@ $(USER_SRC)
+	$(CC) $(USER_CFLAGS) -T user/user.ld -o $@ $(USER_COMMON) user/$*.c
 
-$(BUILD)/user/init.bin: $(BUILD)/user/init.elf
-	$(OBJCOPY) -O binary $< $@
-
-$(BUILD)/user_blob.c: $(BUILD)/user/init.bin
-	cd $(BUILD)/user && xxd -i init.bin > ../user_blob.c
+# Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
+$(BUILD)/user_blob.c: $(USER_ELFS)
+	cd $(BUILD)/user && : > ../user_blob.c && \
+	  for p in $(PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@
