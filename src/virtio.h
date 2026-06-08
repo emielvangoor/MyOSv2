@@ -27,6 +27,7 @@ struct virtq {
     volatile uint16_t *used;            // used ring:      flags, idx, {id,len}[num], ...
     uint32_t num;                       // queue size (entries)
     uint16_t last_used;                 // last used-ring index we consumed
+    uint32_t notify_idx;                // queue index to write to QueueNotify
 };
 
 // One buffer to submit (addr is physical; write = the device writes it).
@@ -37,6 +38,11 @@ uint64_t virtio_find(uint32_t device_id);
 
 // Reset, negotiate features, and set up queue 0 on a device. Returns 0 on success.
 int virtio_setup_queue(uint64_t base, struct virtq *q);
+
+// Granular bring-up (for multi-queue devices like virtio-net):
+int  virtio_init(uint64_t base);                              // reset + feature negotiation
+int  virtio_queue_init(uint64_t base, struct virtq *q, int index);  // set up one queue
+void virtio_driver_ok(uint64_t base);                         // final DRIVER_OK
 
 // Submit a descriptor chain and POLL until the device finishes it. Returns 0.
 int virtq_submit(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n);

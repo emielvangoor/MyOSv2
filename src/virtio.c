@@ -64,14 +64,22 @@ uint64_t virtio_find(uint32_t device_id)
 
 int virtio_setup_queue(uint64_t base, struct virtq *q)
 {
-    // Reset, then announce ourselves as a driver.
+    if (virtio_init(base) != 0) { return -1; }
+    if (virtio_queue_init(base, q, 0) != 0) { return -1; }
+    virtio_driver_ok(base);
+    return 0;
+}
+
+// Reset the device and negotiate features (accept only VIRTIO_F_VERSION_1).
+// Leaves the device in the DRIVER + FEATURES_OK state, ready for queue setup.
+int virtio_init(uint64_t base)
+{
     wr(base, R_STATUS, 0);
     uint32_t status = S_ACKNOWLEDGE;
     wr(base, R_STATUS, status);
     status |= S_DRIVER;
     wr(base, R_STATUS, status);
 
-    // Negotiate: accept only VIRTIO_F_VERSION_1 (required for a modern device).
     wr(base, R_DEV_FEAT_SEL, 1);  (void)rd(base, R_DEV_FEAT);   // feature bits 32..63
     wr(base, R_DRV_FEAT_SEL, 1);
     wr(base, R_DRV_FEAT, 1u << (VIRTIO_F_VERSION_1 - 32));
@@ -79,12 +87,15 @@ int virtio_setup_queue(uint64_t base, struct virtq *q)
     wr(base, R_DRV_FEAT, 0);
     status |= S_FEATURES_OK;
     wr(base, R_STATUS, status);
-    if (!(rd(base, R_STATUS) & S_FEATURES_OK)) { return -1; }  // device rejected us
+    if (!(rd(base, R_STATUS) & S_FEATURES_OK)) { return -1; }
+    return 0;
+}
 
-    // Set up queue 0. The three rings each get their own zeroed page (a 4 KiB
-    // page is aligned enough for all of them, and its physical address is also
-    // its kernel pointer because RAM is identity-mapped).
-    wr(base, R_QUEUE_SEL, 0);
+// Set up queue `index`. The three rings each get a zeroed page (4 KiB aligns all
+// of them; identity-mapped, so the physical address is the kernel pointer).
+int virtio_queue_init(uint64_t base, struct virtq *q, int index)
+{
+    wr(base, R_QUEUE_SEL, (uint32_t)index);
     if (rd(base, R_QUEUE_NUM_MAX) < QUEUE_SIZE) { return -1; }
     wr(base, R_QUEUE_NUM, QUEUE_SIZE);
 
@@ -101,6 +112,7 @@ int virtio_setup_queue(uint64_t base, struct virtq *q)
     q->used = (volatile uint16_t *)(uintptr_t)usedp;
     q->num = QUEUE_SIZE;
     q->last_used = 0;
+    q->notify_idx = (uint32_t)index;
 
     wr(base, R_QUEUE_DESC_LO, (uint32_t)descp);
     wr(base, R_QUEUE_DESC_HI, (uint32_t)(descp >> 32));
@@ -109,10 +121,13 @@ int virtio_setup_queue(uint64_t base, struct virtq *q)
     wr(base, R_QUEUE_DEV_LO, (uint32_t)usedp);
     wr(base, R_QUEUE_DEV_HI, (uint32_t)(usedp >> 32));
     wr(base, R_QUEUE_READY, 1);
-
-    status |= S_DRIVER_OK;
-    wr(base, R_STATUS, status);
     return 0;
+}
+
+void virtio_driver_ok(uint64_t base)
+{
+    uint32_t status = rd(base, R_STATUS);
+    wr(base, R_STATUS, status | S_DRIVER_OK);
 }
 
 // avail ring layout (uint16_t units): [0]=flags, [1]=idx, [2+]=ring[].
@@ -136,7 +151,7 @@ int virtq_submit(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n)
     barrier();
 
     // Notify the device and poll the used ring for completion.
-    wr(base, R_QUEUE_NOTIFY, 0);
+    wr(base, R_QUEUE_NOTIFY, q->notify_idx);
     barrier();
     while (q->used[1] == q->last_used) { barrier(); }
     q->last_used = q->used[1];

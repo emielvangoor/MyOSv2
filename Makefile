@@ -43,8 +43,11 @@ QEMU       := qemu-system-aarch64
 QEMU_DISK  := -global virtio-mmio.force-legacy=false \
               -drive file=$(BUILD)/disk.img,if=none,format=raw,id=hd0 \
               -device virtio-blk-device,drive=hd0
+# QEMU user-mode networking: a virtual LAN (gateway 10.0.2.2, guest 10.0.2.15)
+# with a built-in ARP/ICMP/DHCP responder -- no host setup needed.
+QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
 QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial stdio \
-              -kernel $(TARGET) $(QEMU_DISK)
+              -kernel $(TARGET) $(QEMU_DISK) $(QEMU_NET)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
 all: $(TARGET)
