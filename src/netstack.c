@@ -1,11 +1,12 @@
 // netstack.c -- a small TCP/IP stack on top of virtio-net.
 // ========================================================
 //
-// Frames are processed by POLLING: each blocking call (arp_resolve, ping,
-// recvfrom, ...) "pumps" the receive path itself -- net_pump() pulls one frame
-// and dispatches it. This suits our cooperative single-core kernel and works in
-// the test harness (where the timer isn't running). Layers are added file-by-
-// file: this part is Ethernet framing + ARP.
+// Layers, bottom-up: Ethernet framing, ARP, IPv4 (+ checksum + routing), ICMP
+// (ping), UDP, and a DNS resolver. A blocking call (arp_resolve, net_ping,
+// net_resolve) sends, then SLEEPS on the NIC wait-channel (net_wait) until the
+// receive interrupt wakes it; net_pump() then pulls the frame and dispatches it
+// up the stack. A pending signal aborts the wait (EINTR -> Ctrl-C). During the
+// boot self-tests (no IRQs yet) net_wait() is a no-op so the loops just poll.
 
 #include <stdint.h>
 #include "net.h"
