@@ -23,6 +23,7 @@
 #include "initrd.h"
 #include "proc.h"
 #include "elf.h"
+#include "shm.h"
 
 #define PAGE 0x1000UL
 
@@ -942,6 +943,41 @@ static void test_munmap_unmaps(void)
     KASSERT(as_translate(as, va) == 0);
 }
 
+// --- shared memory (Phase 16) ---
+
+static void test_shm_create_handle(void)
+{
+    pmm_init(); kheap_init(); vm_init(); shm_init();
+    KASSERT(shm_create(4096) >= 0);
+}
+
+static void test_shm_shared_pages(void)
+{
+    pmm_init(); kheap_init(); vm_init(); shm_init();
+    struct addrspace *as1 = fresh_elf_as();
+    struct addrspace *as2 = fresh_elf_as();
+    int h = shm_create(4096);
+    KASSERT(h >= 0);
+    uint64_t v1 = shm_map(as1, h), v2 = shm_map(as2, h);
+    KASSERT(v1 && v2);
+    uint64_t p1 = as_translate(as1, v1), p2 = as_translate(as2, v2);
+    KASSERT(p1 == p2);                                   // SAME physical page
+    *(volatile uint8_t *)(uintptr_t)p1 = 0x5A;           // write via as1
+    KASSERT(*(volatile uint8_t *)(uintptr_t)p2 == 0x5A); // visible via as2
+}
+
+static void test_shm_survives_unmap(void)
+{
+    pmm_init(); kheap_init(); vm_init(); shm_init();
+    struct addrspace *as = fresh_elf_as();
+    int h = shm_create(4096);
+    uint64_t v = shm_map(as, h);
+    uint64_t pa = as_translate(as, v);
+    KASSERT(page_refcount(pa) == 2);                     // table ref + this mapping
+    as_destroy(as);
+    KASSERT(page_refcount(pa) == 1);                     // table keeps it alive
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1006,6 +1042,9 @@ static const struct ktest tests[] = {
     { "mem: mmap maps zeroed page",       test_mmap_maps_zeroed },
     { "mem: mmap returns distinct pages", test_mmap_two_distinct },
     { "mem: munmap unmaps",               test_munmap_unmaps },
+    { "shm: create returns handle",       test_shm_create_handle },
+    { "shm: maps shared across spaces",   test_shm_shared_pages },
+    { "shm: survives a mapper exiting",   test_shm_survives_unmap },
 };
 
 int run_self_tests(void)
