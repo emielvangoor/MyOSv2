@@ -41,16 +41,21 @@ deadlines; just building it one piece at a time and enjoying the ride.
 - **Network interface** — a **virtio-net** driver that sends and receives raw
   Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
 - **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum
-  + next-hop routing), **ICMP** echo, and **UDP**, driven by a polled pump.
+  + next-hop routing), **ICMP** echo, **UDP**, and a minimal **TCP** client.
+- **Sockets** — a BSD-style socket API: `socket`/`bind`/`sendto`/`recvfrom` for
+  UDP datagrams, and `socket(SOCK_STREAM)`/`connect` + `read`/`write` for TCP.
+  `/bin/dnsq` does a DNS lookup over UDP sockets; `/bin/http` fetches a page over
+  TCP (`GET example.com` → `HTTP/1.1 200 OK`) — out to the real internet.
 - **DNS + ping** — a **DNS resolver** over UDP and a user-space `ping` that takes
   a hostname: `ping https://www.google.com` strips the scheme, resolves the name,
-  and ICMP-echoes the address — out to the real internet via QEMU's user-net.
+  and ICMP-echoes the address.
 - **Program arguments** — `exec` passes `argv` to programs; the shell tokenizes
   the command line, so `/bin/ping <host>` and friends get their arguments.
+- **`shutdown`** — a shell command that halts the machine via PSCI (QEMU exits).
 
-Where it goes next — a real socket API and TCP, and beyond — lives in
-**[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a capable, Unix-like OS;
-graphics is deferred.
+Where it goes next — a TCP *server* (listen/accept), more of the socket API,
+and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a
+capable, Unix-like OS; graphics is deferred.
 
 ## Try it
 
