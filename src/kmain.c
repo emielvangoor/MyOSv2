@@ -14,6 +14,7 @@
 #include "mmu.h"
 #include "pmm.h"
 #include "kheap.h"
+#include "tests.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -90,6 +91,19 @@ void kmain(void)
     // --- 2. Virtual memory ---
     mmu_init();
     kprintf("MMU enabled.\n");
+
+    // --- Self-tests: verify the foundations before doing anything else. ---
+    // On a normal build, a failure halts the kernel (don't limp forward broken).
+    // The `make test` build (-DTEST_EXIT) instead exits QEMU with a status code.
+    int failed = run_self_tests();
+#ifndef TEST_EXIT
+    if (failed) {
+        kprintf("SELF-TESTS FAILED -- halting.\n");
+        for (;;) {
+            __asm__ volatile("wfi");
+        }
+    }
+#endif
 
     // --- 3. Dynamic memory: page allocator, then the heap on top ---
     pmm_init();
