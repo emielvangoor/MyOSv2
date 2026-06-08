@@ -27,6 +27,7 @@
 #include "pipe.h"
 #include "signal.h"
 #include "block.h"
+#include "sfs.h"
 
 #define PAGE 0x1000UL
 
@@ -1111,6 +1112,68 @@ static void test_block_two_sectors(void)
     for (int i = 0; i < 512; i++) { KASSERT(ra[i] == a[i] && rb[i] == b[i]); }
 }
 
+// --- on-disk filesystem (Phase 20) ---
+
+static void test_sfs_create_write_read(void)
+{
+    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
+    struct vnode *r = sfs_mount();
+    KASSERT(r && r->type == VN_DIR);
+    struct vnode *f = r->ops->create(r, "f", VN_FILE);
+    KASSERT(f != 0);
+    struct file fh = { .vnode = f, .off = 0 };
+    KASSERT(vfs_write(&fh, "hello", 5) == 5);
+    char b[8] = {0};
+    struct file fr = { .vnode = f, .off = 0 };
+    KASSERT(vfs_read(&fr, b, 8) == 5);
+    KASSERT(b[0] == 'h' && b[4] == 'o');
+    KASSERT(f->size == 5);
+}
+
+static void test_sfs_persists_remount(void)
+{
+    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
+    struct vnode *r = sfs_mount();
+    struct vnode *f = r->ops->create(r, "p", VN_FILE);
+    struct file fh = { .vnode = f, .off = 0 };
+    vfs_write(&fh, "persist", 7);
+    struct vnode *r2 = sfs_mount();                  // fresh vnodes from disk
+    struct vnode *f2 = r2->ops->lookup(r2, "p");
+    KASSERT(f2 != 0);
+    char b[8] = {0};
+    struct file fr = { .vnode = f2, .off = 0 };
+    KASSERT(vfs_read(&fr, b, 8) == 7);
+    KASSERT(b[0] == 'p' && b[6] == 't');
+}
+
+static void test_sfs_readdir(void)
+{
+    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
+    struct vnode *r = sfs_mount();
+    r->ops->create(r, "aa", VN_FILE);
+    r->ops->create(r, "bb", VN_FILE);
+    char n[32]; int seen = 0;
+    for (int i = 0; r->ops->readdir(r, i, n) == 0; i++) {
+        if (n[0] == 'a' && n[1] == 'a') { seen |= 1; }
+        if (n[0] == 'b' && n[1] == 'b') { seen |= 2; }
+    }
+    KASSERT(seen == 3);
+}
+
+static void test_sfs_multiblock(void)
+{
+    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
+    struct vnode *r = sfs_mount();
+    struct vnode *f = r->ops->create(r, "big", VN_FILE);
+    static uint8_t w[600], rb[600];
+    for (int i = 0; i < 600; i++) { w[i] = (uint8_t)(i * 3 + 1); rb[i] = 0; }
+    struct file fh = { .vnode = f, .off = 0 };
+    KASSERT(vfs_write(&fh, w, 600) == 600);          // spans direct[0] and direct[1]
+    struct file fr = { .vnode = f, .off = 0 };
+    KASSERT(vfs_read(&fr, rb, 600) == 600);
+    for (int i = 0; i < 600; i++) { KASSERT(rb[i] == w[i]); }
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1189,6 +1252,10 @@ static const struct ktest tests[] = {
     { "block: disk present",              test_block_present },
     { "block: write then read sector",    test_block_write_read },
     { "block: two sectors independent",   test_block_two_sectors },
+    { "sfs: create write read",           test_sfs_create_write_read },
+    { "sfs: persists across remount",     test_sfs_persists_remount },
+    { "sfs: readdir lists entries",       test_sfs_readdir },
+    { "sfs: multi-block file",            test_sfs_multiblock },
 };
 
 int run_self_tests(void)
