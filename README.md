@@ -19,8 +19,10 @@ deadlines; just building it one piece at a time and enjoying the ride.
   and the full lifecycle: `exec`, `exit(status)`, `wait`/reap (with ASID + page
   recycling).
 - **Userland** — an interactive shell (`/bin/init`) that runs real ELF programs
-  from `/bin` (`true`, `false`, `hello`) via fork→exec→wait and reports their
-  exit status.
+  from `/bin` (`true`, `false`, `hello`, `mtest`) via fork→exec→wait and reports
+  their exit status.
+- **User-space memory** — `sbrk`-grown per-process heap (demand-zeroed pages) and
+  a small `malloc`/`free` in the user library.
 
 Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
 and eventually a TCP/IP network stack — lives in
