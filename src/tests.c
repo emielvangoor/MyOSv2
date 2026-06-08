@@ -14,6 +14,7 @@
 #include "ktest.h"
 #include "pmm.h"
 #include "kheap.h"
+#include "sched.h"
 
 #define PAGE 0x1000UL
 
@@ -91,6 +92,29 @@ static void test_kheap_coalesce(void)
     KASSERT(big == a);         // only fits because the two coalesced
 }
 
+// --- Threads / scheduler ---
+
+// A no-op thread body used only to take its address in the test below.
+static void noop_thread(void *arg) { (void)arg; }
+
+static void test_thread_create_context(void)
+{
+    pmm_init();
+    kheap_init();
+    void *arg = (void *)(uintptr_t)0xABCD;
+    struct thread *t = thread_create(noop_thread, arg);
+
+    KASSERT(t != 0);
+    KASSERT(t->stack != 0);
+    KASSERT(t->state == THREAD_RUNNABLE);
+    // The initial stack pointer must sit inside the allocated stack.
+    KASSERT(t->ctx.sp > (uint64_t)(uintptr_t)t->stack);
+    // First switch must land in the trampoline, with fn/arg staged in x19/x20.
+    KASSERT(t->ctx.lr  == (uint64_t)(uintptr_t)thread_trampoline);
+    KASSERT(t->ctx.x19 == (uint64_t)(uintptr_t)noop_thread);
+    KASSERT(t->ctx.x20 == (uint64_t)(uintptr_t)arg);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -99,6 +123,7 @@ static const struct ktest tests[] = {
     { "kheap: alloc write/read",         test_kheap_write_read },
     { "kheap: freed block reused",       test_kheap_free_reuse },
     { "kheap: coalesce adjacent blocks", test_kheap_coalesce },
+    { "thread: create sets up context",  test_thread_create_context },
 };
 
 int run_self_tests(void)
