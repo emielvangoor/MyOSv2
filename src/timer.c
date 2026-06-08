@@ -16,8 +16,9 @@
 #include "gic.h"
 
 #define TIMER_IRQ 30   // the EL1 physical timer's interrupt id on the GIC
+#define TIMER_HZ 1000  // timer interrupts per second (the Linux-style "tick")
 
-static uint64_t interval;   // ticks per period (one second's worth)
+static uint64_t interval;   // counter ticks per timer period (1/TIMER_HZ second)
 static uint64_t ticks;      // how many periods have elapsed
 
 // Read the timer's frequency (ticks per second).
@@ -43,8 +44,8 @@ static inline void enable_timer(void)
 
 void timer_init(void)
 {
-    interval = read_cntfrq();   // one second = 'frequency' ticks
-    write_tval(interval);       // schedule the first interrupt one second out
+    interval = read_cntfrq() / TIMER_HZ;   // fire every 1/TIMER_HZ second (1 ms)
+    write_tval(interval);       // schedule the first interrupt one tick out
     enable_timer();             // start counting
     gic_enable_irq(TIMER_IRQ);  // allow the timer's interrupt through the GIC
 }
@@ -52,7 +53,7 @@ void timer_init(void)
 // Called from irq_handler each time the timer fires.
 void timer_handle_irq(void)
 {
-    write_tval(interval);       // re-arm for the next second (this also clears
+    write_tval(interval);       // re-arm for the next tick (this also clears
                                 //   the timer's pending condition)
     ticks++;
     // Phase 5: no longer prints -- the timer now drives the scheduler, and the

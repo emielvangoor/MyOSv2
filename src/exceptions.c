@@ -59,18 +59,20 @@ void irq_handler(struct trapframe *tf)
     // Ask the interrupt controller which interrupt fired (and acknowledge it).
     uint32_t id = gic_ack();
 
+    int resched = 0;
     if (id == 30) {            // 30 = the physical timer's interrupt id
-        timer_handle_irq();
+        timer_handle_irq();    // heartbeat: re-arm + count this tick
+        resched = sched_tick(); // 1 only when the current thread's slice expired
     }
 
     // Tell the controller we're done so it can deliver the next one.
     gic_eoi(id);
 
-    // Preempt: if the scheduler is up, a timer tick forces a round-robin switch.
-    // We EOI'd first so the GIC is ready; the switch happens on this thread's own
-    // stack, so its in-progress trap frame travels with it and is restored when
-    // the thread next runs.
-    if (id == 30 && sched_started()) {
+    // Preempt only when the time slice is used up (Linux-style: a fast tick, a
+    // larger scheduling quantum). sched_tick() returns 0 if the scheduler isn't
+    // running yet, so this is safe before sched_init(). The switch happens on
+    // this thread's own stack, so its in-progress trap frame travels with it.
+    if (resched) {
         schedule();
     }
 }
