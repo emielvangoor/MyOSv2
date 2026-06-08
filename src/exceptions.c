@@ -86,7 +86,7 @@ void irq_handler(struct trapframe *tf)
         // Console input arrived: the line discipline queues it (or turns Ctrl-C
         // into a SIGINT) and wakes whatever reader is blocked in console_getc().
         console_isr();
-    } else if (id == net_irq_id()) {
+    } else if ((int)id == net_irq_id()) {
         // The NIC received a frame (or finished a transmit): acknowledge the
         // device and wake any thread blocked waiting for a packet.
         net_isr();
