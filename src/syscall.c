@@ -174,6 +174,12 @@ long do_syscall(struct trapframe *tf)
     case SYS_PING:                            // x0 = ip (host order), x1 = int* ms
         ret = net_ping((uint32_t)tf->x[0], (int *)(uintptr_t)tf->x[1]);
         break;
+    case SYS_RESOLVE: {                       // x0 = hostname -> IP (0 = failure)
+        uint32_t ip = 0;
+        if (net_resolve((const char *)(uintptr_t)tf->x[0], &ip) != 0) { ip = 0; }
+        ret = (long)ip;
+        break;
+    }
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame
         const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
         uint64_t *d = (uint64_t *)tf;

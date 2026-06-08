@@ -114,11 +114,11 @@ int proc_exec(struct trapframe *tf, const char *path, char *const argv[])
     sched_set_current_as(neu);
     as_switch(neu);
 
-    // Make eret enter the program fresh: cleared registers except x0/x1 which
-    // carry argc/argv (the C calling convention for main), the ELF entry point,
+    // Make eret enter the program fresh: cleared registers, the ELF entry point,
     // the argv-topped user stack, EL0 with IRQs enabled (SPSR=0 like enter_user).
+    // x1 carries argv; x0 (argc) is set by do_syscall from our return value --
+    // it writes tf->x[0] = ret after we return, so returning argc lands it in x0.
     for (int i = 0; i < 31; i++) { tf->x[i] = 0; }
-    tf->x[0]   = (uint64_t)argc;
     tf->x[1]   = sp;                 // argv (== the stack pointer)
     tf->elr    = entry;
     tf->sp_el0 = sp;
@@ -127,5 +127,5 @@ int proc_exec(struct trapframe *tf, const char *path, char *const argv[])
     if (old) {
         as_destroy(old);
     }
-    return 0;
+    return argc;                     // -> x0 = argc (the C entry convention)
 }

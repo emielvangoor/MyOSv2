@@ -25,9 +25,12 @@ int   kill(int pid, int sig);
 int   signal(int sig, void (*handler)(int));
 void  __sigreturn(void);
 int   ping(unsigned int ip, int *ms);   // ip in host order; 0 + round-trip, -1 on timeout
+unsigned int resolve(const char *host); // hostname -> IP (host order), 0 on failure
 
 #define SIGINT  2
 #define SIGKILL 9
 #define SIGTERM 15
 long ustrlen(const char *s);
-int  umain(void);   // the program's entry (defined per-program); returns exit status
+// Each program defines its own umain(); crt0 calls it with x0=argc, x1=argv, so
+// a program may declare it as umain(void) or umain(int argc, char **argv).
+// (No prototype here on purpose -- it would force one signature on all programs.)
