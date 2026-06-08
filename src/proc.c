@@ -11,6 +11,8 @@
 #include "vfs.h"
 #include "sched.h"
 #include "kheap.h"
+#include "vm.h"
+#include "exceptions.h"
 
 struct thread *proc_spawn(const char *path, int priority)
 {
@@ -27,4 +29,49 @@ struct thread *proc_spawn(const char *path, int priority)
         return 0;
     }
     return thread_create_image(buf, (uint64_t)n, priority);
+}
+
+// exec: replace the current process's address space with the program at `path`,
+// then rewrite the trap frame so the syscall return (eret) lands in the fresh
+// program. Open file descriptors are kept. Returns -1 (untouched) on failure.
+int proc_exec(struct trapframe *tf, const char *path)
+{
+    struct file *f = vfs_open(path);
+    if (!f) {
+        return -1;
+    }
+    uint64_t len = f->vnode->size;
+    uint8_t *buf = kmalloc(len ? len : 1);
+    f->off = 0;
+    int n = vfs_read(f, buf, len);
+    vfs_close(f);
+    if (n <= 0) {
+        kfree(buf);
+        return -1;
+    }
+
+    struct addrspace *neu = as_create_image(buf, (uint64_t)n);
+    kfree(buf);
+    if (!neu) {
+        return -1;
+    }
+
+    // Install the new image and switch to it. The kernel stack we're running on
+    // lives in kernel memory (not the user AS), so destroying the old AS below
+    // is safe.
+    struct addrspace *old = sched_current_as();
+    sched_set_current_as(neu);
+    as_switch(neu);
+
+    // Make eret enter the program fresh: cleared registers, the new entry point,
+    // a new user stack, EL0 with IRQs enabled (matching enter_user's SPSR=0).
+    for (int i = 0; i < 31; i++) { tf->x[i] = 0; }
+    tf->elr    = user_entry_va();
+    tf->sp_el0 = USER_STACK_TOP;
+    tf->spsr   = 0;
+
+    if (old) {
+        as_destroy(old);
+    }
+    return 0;
 }

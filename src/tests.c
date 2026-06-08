@@ -786,6 +786,14 @@ static void test_wait_no_children(void)
     KASSERT(sched_wait(&st) == -1);      // nothing to wait for
 }
 
+static void test_exec_missing_returns_neg1(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    vfs_mount_root(ramfs_type());        // empty root: no files to exec
+    struct trapframe tf;
+    KASSERT(proc_exec(&tf, "/no/such/file") == -1);   // clean failure, no swap
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -840,6 +848,7 @@ static const struct ktest tests[] = {
     { "proc: as_destroy recycles asid",   test_as_destroy_recycles_asid },
     { "proc: wait reaps child + status",  test_wait_reaps_child },
     { "proc: wait with no children -> -1",test_wait_no_children },
+    { "proc: exec missing path -> -1",    test_exec_missing_returns_neg1 },
 };
 
 int run_self_tests(void)
