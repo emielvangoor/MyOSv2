@@ -196,6 +196,36 @@ static void test_priority_order(void)
     KASSERT(pri_log[1] == 1);
 }
 
+static char slp_log[8];
+static int slp_n;
+static void slp_worker(void *a)
+{
+    (void)a;
+    slp_log[slp_n++] = 'S';
+    sleep_ticks(3);
+    slp_log[slp_n++] = 'W';
+}
+
+static void test_sleep_wakes_after_ticks(void)
+{
+    pmm_init();
+    kheap_init();
+    slp_n = 0;
+
+    sched_init();                          // jiffies := 0
+    thread_create(slp_worker, 0, 1);       // priority above idle
+
+    yield();                               // run worker: logs 'S', sleeps 3 ticks
+    KASSERT(slp_n == 1);
+    KASSERT(slp_log[0] == 'S');
+
+    sched_tick(); yield(); KASSERT(slp_n == 1);   // tick 1: still asleep
+    sched_tick(); yield(); KASSERT(slp_n == 1);   // tick 2: still asleep
+    sched_tick(); yield();                        // tick 3: wakes
+    KASSERT(slp_n == 2);
+    KASSERT(slp_log[1] == 'W');
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -208,6 +238,7 @@ static const struct ktest tests[] = {
     { "sched: round-robin order",         test_round_robin_order },
     { "sched: time slice expiry",         test_time_slice_expiry },
     { "sched: priority order",            test_priority_order },
+    { "sched: sleep wakes after ticks",   test_sleep_wakes_after_ticks },
 };
 
 int run_self_tests(void)

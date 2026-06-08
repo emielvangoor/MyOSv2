@@ -58,6 +58,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
 static struct thread boot_thread;
 static int started;
 static int slice_left = SCHED_TIME_SLICE;   // ticks remaining for `current`
+static uint64_t jiffies;                    // ticks since sched_init (sleep clock)
 
 void sched_init(void)
 {
@@ -73,6 +74,7 @@ void sched_init(void)
     next_id  = 1;
     started  = 1;
     slice_left = SCHED_TIME_SLICE;   // idle thread starts with a full slice
+    jiffies  = 0;
 }
 
 int sched_started(void)
@@ -88,11 +90,46 @@ int sched_tick(void)
     if (!started) {
         return 0;
     }
+    jiffies++;
+
+    // Wake any sleeper whose deadline has arrived. If a woken thread outranks
+    // the current one, ask for an immediate reschedule so priority is prompt.
+    int wake_preempt = 0;
+    struct thread *t = current;
+    do {
+        if (t->state == THREAD_SLEEPING && t->wake_tick <= jiffies) {
+            t->state = THREAD_RUNNABLE;
+            if (t->priority > current->priority) {
+                wake_preempt = 1;
+            }
+        }
+        t = t->next;
+    } while (t != current);
+
+    if (wake_preempt) {
+        slice_left = SCHED_TIME_SLICE;
+        return 1;
+    }
     if (--slice_left <= 0) {
         slice_left = SCHED_TIME_SLICE;
         return 1;       // slice used up -> preempt
     }
     return 0;
+}
+
+// Block the current thread for `ticks` timer ticks, then become runnable again.
+void sleep_ticks(uint64_t ticks)
+{
+    uint64_t flags = irq_save();
+    current->wake_tick = jiffies + ticks;
+    current->state = THREAD_SLEEPING;   // schedule() will skip us
+    schedule();                         // switch away; returns once we're woken
+    irq_restore(flags);
+}
+
+void sleep_ms(uint64_t ms)
+{
+    sleep_ticks(ms);   // TIMER_HZ == 1000, so 1 ms == 1 tick
 }
 
 // Pick the highest-priority RUNNABLE thread, round-robin within a level, and
