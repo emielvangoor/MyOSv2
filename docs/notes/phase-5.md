@@ -84,3 +84,44 @@ the interleaved A/B/C output.
   the next `sched_init` resets it (harmless; the boot context is unaffected).
 - No priorities, sleeping/blocking, wait queues, `join`, or SMP. No user mode yet
   (all threads share EL1 and one address space) — that's Phase 6.
+
+## Linux-style tick vs. time slice (follow-up enhancement)
+
+Originally the timer fired at 1 Hz and we preempted on *every* tick, so the
+quantum was a full second — threads ran in big blocks (`AAAA…BBBB…`). Linux
+**decouples** two things:
+
+- the **tick**: a fast, fixed heartbeat (`TIMER_HZ`, now **1000 Hz** = 1 ms) used
+  for timekeeping and as the scheduling clock;
+- the **time slice / quantum**: how long a thread runs before preemption
+  (`SCHED_TIME_SLICE`, now **10 ticks** = 10 ms).
+
+The timer still interrupts every 1 ms, but `sched_tick()` decrements a
+`slice_left` counter and only returns "reschedule" when it hits zero (every 10th
+tick). `irq_handler` switches only on that signal:
+
+```c
+if (id == 30) { timer_handle_irq(); resched = sched_tick(); }
+gic_eoi(id);
+if (resched) schedule();
+```
+
+`slice_left` resets to a full slice in `sched_init` and whenever `schedule`
+actually switches, so each newly-running thread gets a fresh quantum.
+`sched_tick()` is pure, deterministic logic, so it's unit-tested
+(`test_time_slice_expiry`) — RED (undefined symbol) → GREEN.
+
+Result: with a 10 ms slice and ~8 ms-per-character threads, the demo now shows
+fine interleaving (`AABBCCABCABC…`) instead of per-second blocks.
+
+Real Linux goes further (CFS: variable, priority-weighted slices, virtual
+runtime); we keep fixed round-robin with just the tick/slice split.
+
+### Gotcha: QEMU timer is wall-clock paced
+
+QEMU (TCG, no `-icount`) advances the generic-timer counter with *host* real
+time, not guest instructions. So if QEMU is starved of host CPU (e.g. another
+process pegs the core), the guest spends its few cycles servicing the real-time
+1 kHz tick and the threads barely advance — output appears to "stall." It's a
+measurement artifact, not a kernel bug; an unstarved run prints ~85 letters/sec
+steadily.
