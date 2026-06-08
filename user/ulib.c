@@ -27,6 +27,8 @@ void *mmap(unsigned long len)                 { return (void *)syscall3(SYS_MMAP
 int   munmap(void *a, unsigned long len)      { return (int)syscall3(SYS_MUNMAP, (long)a, (long)len, 0); }
 int   shm_create(unsigned long len)           { return (int)syscall3(SYS_SHM_CREATE, (long)len, 0, 0); }
 void *shm_map(int handle)                     { return (void *)syscall3(SYS_SHM_MAP, handle, 0, 0); }
+int   pipe(int fd[2])                         { return (int)syscall3(SYS_PIPE, (long)fd, 0, 0); }
+int   dup2(int o, int n)                      { return (int)syscall3(SYS_DUP2, o, n, 0); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 
 // --- minimal user-space malloc: a first-fit free list over sbrk ---

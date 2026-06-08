@@ -14,6 +14,8 @@
 #include "vfs.h"
 #include "proc.h"
 #include "shm.h"
+#include "pipe.h"
+#include "kheap.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -25,14 +27,13 @@ long do_syscall(struct trapframe *tf)
         uint64_t fd = tf->x[0];
         const char *s = (const char *)(uintptr_t)tf->x[1];
         uint64_t len = tf->x[2];
-        if (fd == 1 || fd == 2) {           // stdout / stderr -> UART
+        struct file **fds = sched_current_fds();
+        if (fds && fd < 16 && fds[fd]) {    // an open file/pipe takes precedence
+            ret = vfs_write(fds[fd], s, len);
+        } else if (fd == 1 || fd == 2) {    // bare stdout/stderr -> UART console
             for (uint64_t i = 0; i < len; i++) { uart_putc(s[i]); }
             ret = (long)len;
-        } else {
-            struct file **fds = sched_current_fds();
-            if (fds && fd < 16 && fds[fd]) { ret = vfs_write(fds[fd], s, len); }
-            else { ret = -1; }
-        }
+        } else { ret = -1; }
         break;
     }
     case SYS_OPEN: {                        // x0 = path
@@ -55,15 +56,15 @@ long do_syscall(struct trapframe *tf)
         void *buf = (void *)(uintptr_t)tf->x[1];
         uint64_t len = tf->x[2];
         struct file **fds = sched_current_fds();
-        if (fd == 0) {                       // stdin: one char from the keyboard
+        if (fds && fd < 16 && fds[fd]) {     // an open file/pipe takes precedence
+            ret = vfs_read(fds[fd], buf, len);
+        } else if (fd == 0) {                // bare stdin: one char from the keyboard
             char *cb = (char *)buf;
             if (len == 0) { ret = 0; break; }
             int ch;
             while ((ch = uart_getc()) < 0) { yield(); }   // wait, letting others run
             cb[0] = (char)ch;
             ret = 1;
-        } else if (fds && fd < 16 && fds[fd]) {
-            ret = vfs_read(fds[fd], buf, len);
         } else { ret = -1; }
         break;
     }
@@ -121,6 +122,37 @@ long do_syscall(struct trapframe *tf)
     case SYS_SHM_MAP:                        // x0 = handle
         ret = (long)shm_map(sched_current_as(), (int)tf->x[0]);
         break;
+    case SYS_PIPE: {                         // x0 = int fd[2]
+        int *ufd = (int *)(uintptr_t)tf->x[0];
+        struct file **fds = sched_current_fds();
+        ret = -1;
+        if (!fds) { break; }
+        struct pipe *p = pipe_alloc();
+        struct file *rf = kmalloc(sizeof(struct file));
+        struct file *wf = kmalloc(sizeof(struct file));
+        rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->writable = 0; rf->ref = 1;
+        wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->writable = 1; wf->ref = 1;
+        int r = -1, w = -1;
+        for (int i = 0; i < 16 && r < 0; i++) { if (!fds[i]) { fds[i] = rf; r = i; } }
+        for (int i = 0; i < 16 && w < 0; i++) { if (!fds[i]) { fds[i] = wf; w = i; } }
+        if (r < 0 || w < 0) {                // no room: undo
+            if (r >= 0) { fds[r] = 0; } vfs_close(rf); vfs_close(wf);
+            break;
+        }
+        ufd[0] = r; ufd[1] = w; ret = 0;
+        break;
+    }
+    case SYS_DUP2: {                         // x0 = oldfd, x1 = newfd
+        struct file **fds = sched_current_fds();
+        uint64_t o = tf->x[0], n = tf->x[1];
+        if (!fds || o >= 16 || n >= 16 || !fds[o]) { ret = -1; break; }
+        if (o != n) {
+            if (fds[n]) { vfs_close(fds[n]); }
+            fds[n] = file_dup(fds[o]);
+        }
+        ret = (long)n;
+        break;
+    }
     case SYS_REPORT:                         // x0 = pid, x1 = value read back
         kprintf("  [user] process %d read %d  (%s)\n",
                 (int)tf->x[0], (int)tf->x[1],
