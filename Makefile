@@ -38,13 +38,23 @@ QEMU       := qemu-system-aarch64
 # -display none: no graphical window. -serial stdio: serial to terminal AND
 # lets Ctrl-C (SIGINT) terminate QEMU normally (unlike -nographic).
 # -m 256M: fix the RAM size so the page allocator knows where RAM ends (0x50000000).
-QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial stdio -kernel $(TARGET)
+# A virtio-blk disk on a virtio-mmio transport (modern, non-legacy), backed by a
+# raw image file -- the OS reads/writes its 512-byte sectors.
+QEMU_DISK  := -global virtio-mmio.force-legacy=false \
+              -drive file=$(BUILD)/disk.img,if=none,format=raw,id=hd0 \
+              -device virtio-blk-device,drive=hd0
+QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial stdio \
+              -kernel $(TARGET) $(QEMU_DISK)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
 all: $(TARGET)
 
 $(BUILD):
 	mkdir -p $(BUILD)
+
+# A 4 MiB raw disk image for the virtio-blk device (created once if missing).
+$(BUILD)/disk.img: | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1m count=4 2>/dev/null
 
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -69,7 +79,7 @@ $(TARGET): $(OBJ) linker.ld
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
 
 # Run in the terminal. Quit QEMU with: Ctrl-C
-run: $(TARGET)
+run: $(TARGET) $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS)
 
 # Run the self-tests and return a shell exit code (0 = all passed). Builds a
@@ -77,7 +87,7 @@ run: $(TARGET)
 # -semihosting, then cleans so the flag never leaks into a normal `make run`.
 test:
 	@$(MAKE) --no-print-directory clean
-	@$(MAKE) --no-print-directory EXTRA_CFLAGS=-DTEST_EXIT $(TARGET)
+	@$(MAKE) --no-print-directory EXTRA_CFLAGS=-DTEST_EXIT $(TARGET) $(BUILD)/disk.img
 	@echo "--- running self-tests in QEMU ---"
 	@$(QEMU) $(QEMU_FLAGS) -semihosting; status=$$?; \
 	  $(MAKE) --no-print-directory clean >/dev/null; \
