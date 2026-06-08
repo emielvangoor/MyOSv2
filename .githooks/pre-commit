@@ -1,0 +1,11 @@
+#!/bin/sh
+# Green-bar TDD gate: refuse to commit while the self-test suite is red.
+# Enabled via:  git config core.hooksPath .githooks
+echo "pre-commit: running self-tests (make test)..."
+if ! make test; then
+    echo
+    echo "pre-commit: TESTS FAILED -- commit aborted."
+    echo "Fix the suite ('make test' until green), then commit again."
+    exit 1
+fi
+echo "pre-commit: all tests passed; allowing commit."
