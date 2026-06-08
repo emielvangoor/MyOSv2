@@ -19,6 +19,7 @@
 #include "vm.h"
 #include "vfs.h"
 #include "ramfs.h"
+#include "initrd.h"
 
 #define PAGE 0x1000UL
 
@@ -506,6 +507,20 @@ static void test_vfs_nested_dir(void)
     KASSERT(vfs_lookup("/d")->type == VN_DIR);
 }
 
+static void test_initrd_unpacked(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    initrd_unpack();
+    struct file *f = vfs_open("/hello.txt");
+    KASSERT(f != 0);
+    char buf[16] = {0};
+    int n = vfs_read(f, buf, 14);
+    KASSERT(n == 14);
+    KASSERT(bytes_eq(buf, "Hello, files!\n", 14));
+    vfs_close(f);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -539,6 +554,7 @@ static const struct ktest tests[] = {
     { "vfs: readdir lists entries",       test_vfs_readdir_lists },
     { "vfs: lookup missing -> null",      test_vfs_lookup_missing },
     { "vfs: nested directory",            test_vfs_nested_dir },
+    { "initrd: unpacks files",            test_initrd_unpacked },
 };
 
 int run_self_tests(void)
