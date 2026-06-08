@@ -253,28 +253,87 @@ inbound frames (e.g. ARP requests from QEMU's user-net gateway).
 
 ---
 
-## Phase 22 — TCP/IP stack + sockets  ⟵ CAPSTONE
+## Phase 22 — TCP/IP stack + sockets  ⟵ CAPSTONE  ✅ DONE
 
 **Why:** the destination — the OS speaks to the network with a real protocol stack
 and a sockets API user programs can use.
 
-**Adds**
-- **Ethernet + ARP** (resolve IPs to MACs), **IPv4** (routing to QEMU's
-  gateway), **ICMP** (ping), **UDP**, and **TCP** (handshake, sequencing,
-  retransmit, basic windowing).
-- A **sockets API**: `socket`/`bind`/`connect`/`listen`/`accept`/`send`/`recv`/
-  `close`, integrated with the fd table (so `read`/`write`/`poll` work on
-  sockets); DHCP or a static IP for addressing.
-- A demo client (e.g. fetch a page over TCP) and/or a tiny server.
+**Built**
+- **Ethernet + ARP** (resolve/cache/reply), **IPv4** (header checksum + next-hop
+  routing), **ICMP** echo, **UDP**, **DNS** resolver, and a minimal **TCP**
+  client (3-way handshake, in-order data + cumulative ACKs, simple retransmit,
+  FIN close, pseudo-header checksum).
+- A **BSD-style sockets API** in the fd table: `socket`/`bind`/`sendto`/
+  `recvfrom` (UDP) and `socket(SOCK_STREAM)`/`connect` + `read`/`write`/`close`
+  (TCP). Static guest IP (QEMU user-net 10.0.2.15); QEMU's resolver for DNS.
+- The whole stack is **interrupt-driven** (the virtio-net IRQ wakes a sleeping
+  waiter; no busy-polling — see `docs/notes/interrupt-driven-io.md`).
+- Demos: `/bin/ping <host>`, `/bin/dnsq <host>` (UDP sockets), `/bin/http <host>`
+  (fetch a page over TCP). Verified live against the real internet.
 
-**Key files:** new `net/` (`eth.c`, `arp.c`, `ip.c`, `icmp.c`, `udp.c`, `tcp.c`,
-`socket.c`), `syscall.c` (socket calls), fd-table integration.
+**Notes:** `docs/notes/phase-22.md`, `docs/notes/sockets-and-tcp.md`,
+`docs/notes/interrupt-driven-io.md`.
 
-**Done looks like:** `ping` from the guest reaches QEMU's gateway and replies; a
-user program opens a TCP connection and exchanges data with a host service.
+**What it deliberately is NOT:** the TCP is a *client on a reliable path*, not a
+full stack — see Phase 23 for the gap.
 
-**Depends on:** 17 (blocking-fd pattern), 21. **Size:** very large (build it
-incrementally: ARP/IP/ICMP → UDP → TCP → sockets).
+---
+
+## Phase 23 — TCP hardening + networking completeness  (next networking phase)
+
+**Why:** Phase 22's TCP is a deliberately minimal client. To be a real stack it
+needs the parts that handle loss, reordering, flow/congestion, and incoming
+connections. This phase is itself large — pick milestones from it.
+
+### Correctness / robustness (the cut corners)
+- **Out-of-order reassembly.** Today only in-order segments are accepted; a gap
+  drops everything after it. Add a reassembly queue keyed on sequence number.
+- **Real retransmission.** Replace the fixed 500 ms best-effort retransmit with
+  **RTO estimation** (RTT samples → smoothed RTT + variance, RFC 6298),
+  exponential backoff, and **Karn's algorithm** (don't sample RTT from a
+  retransmitted segment). Keep a proper **retransmit queue** of unacked data
+  (currently `tcp_send` only re-sends its last segment and pins the caller's
+  buffer).
+- **Flow control.** Honor the peer's **advertised window** (don't send past it);
+  advertise our own window from real receive-buffer space and send **window
+  updates**. Today we send one MSS and wait, and advertise a fixed window.
+- **Congestion control.** Slow start + congestion avoidance (TCP Reno: cwnd,
+  ssthresh, fast retransmit/recovery). None today.
+- **Full state machine + teardown.** Proper `CLOSE_WAIT`, `TIME_WAIT` (with the
+  2·MSL wait and port quarantine), simultaneous close, and **RST generation** for
+  segments that match no connection. Today close is simplified.
+- **Larger transfers.** Segment a `write` larger than one MSS; coalesce small
+  writes (**Nagle**) and **delayed ACKs** for efficiency.
+
+### Known bug to fix here
+- **TCP output into a blocking pipe stalls** (`http | wc` hangs): while the client
+  is blocked writing its output to a full pipe, it stops pumping/ACKing the
+  connection, and the recv/flow path doesn't make progress. The fix is to keep
+  the receive/ACK path serviced independently of the output fd's backpressure
+  (decouple "pump the connection" from "deliver bytes to the app"), or to buffer.
+
+### Missing API / features
+- **TCP server:** `listen`/`accept` (passive open), a listen backlog, demultiplex
+  incoming SYNs to accepted sockets. (Then: a tiny in-guest HTTP server.)
+- **Socket API polish:** `getsockname`/`getpeername`, `setsockopt`, `shutdown`,
+  **non-blocking sockets** + `poll`/`select` (so one program can wait on several
+  fds), `recv`/`send` flags.
+- **Addressing:** **DHCP** client (drop the hardcoded 10.0.2.15); configurable
+  IP/route.
+- **IPv4 completeness:** fragmentation + reassembly; honor TTL; send **ICMP
+  errors** (e.g. port-unreachable). **UDP transmit checksum** (currently 0/omitted).
+- **TX path:** virtio-net transmit-completion is interrupt-driven, but
+  **virtio-blk still polls** its used ring — convert it for symmetry.
+
+**Key files:** `tcp.c` (the bulk), `socket.c` (listen/accept, poll), `netstack.c`
+(fragmentation, ICMP errors, DHCP), `syscall.c` (`poll`/`select`, new socket
+calls), `virtio_blk.c` (IRQ completion).
+
+**Done looks like:** a download survives packet loss/reordering; `http | wc`
+works; the guest runs a tiny TCP server an outside client can connect to;
+`poll`/`select` lets one program juggle multiple sockets.
+
+**Depends on:** 22. **Size:** very large — treat each bullet as its own milestone.
 
 ---
 
