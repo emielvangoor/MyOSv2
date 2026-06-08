@@ -10,6 +10,7 @@
 #include "gic.h"
 #include "timer.h"
 #include "sched.h"
+#include "syscall.h"
 
 // Defined in vectors.S: the start of our 16-entry vector table.
 extern char vector_table[];
@@ -77,8 +78,26 @@ void irq_handler(struct trapframe *tf)
     }
 }
 
-// Anything we didn't expect (FIQ, SError, exceptions from EL0 before Phase 6).
-// We can't sensibly continue, so report and halt.
+// Synchronous exception from EL0 (user mode). The only expected cause is an
+// `svc` (system call); anything else is a user fault, which we report and turn
+// into a thread exit rather than crashing the kernel.
+void el0_sync_handler(struct trapframe *tf)
+{
+    uint64_t esr;
+    __asm__ volatile("mrs %0, esr_el1" : "=r"(esr));
+    uint32_t ec = (uint32_t)((esr >> 26) & 0x3f);
+
+    if (ec == 0x15) {            // EC 0x15 = SVC executed in AArch64
+        do_syscall(tf);
+    } else {
+        kprintf("User fault at EL0: EC=0x%x ELR=0x%lx ESR=0x%lx -- killing thread.\n",
+                ec, tf->elr, esr);
+        thread_exit();
+    }
+}
+
+// Anything we didn't expect (FIQ, SError, etc.). We can't sensibly continue, so
+// report and halt.
 void unhandled_exception(struct trapframe *tf)
 {
     uint64_t esr;

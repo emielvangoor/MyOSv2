@@ -19,12 +19,14 @@
 //   elr      -> offset 248  (ELR_EL1: the address to return to)
 //   spsr     -> offset 256  (SPSR_EL1: saved processor state/flags)
 struct trapframe {
-    uint64_t x[31];  // general-purpose registers x0..x30
-    uint64_t elr;    // where execution will resume on `eret`
-    uint64_t spsr;   // saved PSTATE (condition flags, interrupt masks, etc.)
+    uint64_t x[31];  // general-purpose registers x0..x30  (offsets 0 .. 240)
+    uint64_t elr;    // ELR_EL1: where execution resumes on `eret`  (offset 248)
+    uint64_t spsr;   // SPSR_EL1: saved PSTATE (flags, interrupt masks)  (offset 256)
+    uint64_t sp_el0; // SP_EL0: the user stack pointer (banked per thread) (offset 264)
 };
 
 void exc_init(void);                            // install the vector table (set VBAR_EL1)
 void sync_handler(struct trapframe *tf);        // handle synchronous exceptions
 void irq_handler(struct trapframe *tf);         // handle IRQs (e.g. the timer)
 void unhandled_exception(struct trapframe *tf); // catch-all for the rest
+void el0_sync_handler(struct trapframe *tf);    // syscalls / faults from EL0

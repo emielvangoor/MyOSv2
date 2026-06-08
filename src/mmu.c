@@ -35,6 +35,7 @@
 #define ATTR_IDX(n)     ((uint64_t)(n) << 2)   // which MAIR slot describes the type
 #define ATTR_NS         (0UL << 5)             // non-secure
 #define ATTR_AP_RW_EL1  (0UL << 6)             // access perms: EL1 read/write, no EL0
+#define ATTR_AP_RW_ALL  (1UL << 6)             // access perms: EL1 + EL0 read/write
 #define ATTR_SH_NONE    (0UL << 8)             // shareability: none (for device mem)
 #define ATTR_SH_INNER   (3UL << 8)             // shareability: inner (for normal mem)
 #define ATTR_AF         (1UL << 10)            // Access Flag -- MUST be set, or the
@@ -65,11 +66,25 @@ static uint64_t l1_table[512] __attribute__((aligned(4096)));
 static uint64_t l2_low[512]   __attribute__((aligned(4096)));  // maps VA 0-1GB
 static uint64_t l2_high[512]  __attribute__((aligned(4096)));  // maps VA 1-2GB
 static uint64_t l2_demo[512]  __attribute__((aligned(4096)));  // the demo mapping
+static uint64_t l2_user[512]  __attribute__((aligned(4096)));  // EL0 alias of RAM
 
 // Build a leaf entry for NORMAL (cacheable RAM) memory at physical address pa.
+// Kept EL1-only (AP_RW_EL1) so the kernel stays protected AND executable: an
+// EL0-writable page is forced execute-never at EL1 by the architecture, so the
+// kernel can't run from RAM that's mapped user-accessible.
 static uint64_t normal_block(uint64_t pa)
 {
     return pa | ATTR_AF | ATTR_SH_INNER | ATTR_AP_RW_EL1 |
+           ATTR_IDX(MAIR_IDX_NORMAL) | ATTR_NS | DESC_BLOCK;
+}
+
+// Build a leaf entry for the EL0 alias: Normal RAM mapped EL1+EL0 read/write
+// (AP_RW_ALL). User threads run here (at EL0). The kernel never executes from
+// the alias (it runs from the identity mapping above), so the forced-PXN rule
+// for EL0-writable pages doesn't trap it.
+static uint64_t user_block(uint64_t pa)
+{
+    return pa | ATTR_AF | ATTR_SH_INNER | ATTR_AP_RW_ALL |
            ATTR_IDX(MAIR_IDX_NORMAL) | ATTR_NS | DESC_BLOCK;
 }
 
@@ -90,15 +105,19 @@ static void build_tables(void)
 
     // L1 entries each cover 1 GiB of virtual space. We use three:
     l1_table[0] = (uint64_t)l2_low  | DESC_TABLE;  // VA 0-1GB   -> device map
-    l1_table[1] = (uint64_t)l2_high | DESC_TABLE;  // VA 1-2GB   -> RAM map
+    l1_table[1] = (uint64_t)l2_high | DESC_TABLE;  // VA 1-2GB   -> RAM map (kernel)
+    l1_table[2] = (uint64_t)l2_user | DESC_TABLE;  // VA 2-3GB   -> EL0 alias of RAM
     l1_table[4] = (uint64_t)l2_demo | DESC_TABLE;  // VA 4-5GB   -> demo map
 
-    // Fill the two identity L2 tables, 512 blocks of 2 MiB each = 1 GiB apiece.
+    // Fill the identity L2 tables, 512 blocks of 2 MiB each = 1 GiB apiece.
     for (uint64_t i = 0; i < 512; i++) {
         // 0..1 GiB on the virt board is all device/MMIO space (GIC, UART, ...).
         l2_low[i]  = device_block(i * BLOCK_2M);
-        // 1..2 GiB is RAM (our kernel lives here). Identity-mapped & cacheable.
+        // 1..2 GiB is RAM (our kernel lives here). Identity-mapped, EL1-only.
         l2_high[i] = normal_block(0x40000000UL + i * BLOCK_2M);
+        // 2..3 GiB aliases the SAME RAM, EL0-accessible: VA (0x80000000+x) maps
+        // to PA (0x40000000+x), i.e. user VA = physical + USER_ALIAS_OFFSET.
+        l2_user[i] = user_block(0x40000000UL + i * BLOCK_2M);
     }
 
     // The one non-identity mapping: virtual DEMO_VA -> physical DEMO_PA.

@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "sched.h"
 #include "kheap.h"
+#include "mmu.h"
 
 #define STACK_SIZE (16 * 1024)   // 16 KiB per-thread stack
 
@@ -48,6 +49,51 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
         t->next = current;
     } else {
         t->next = t;   // no scheduler yet (only the create-only test hits this)
+    }
+    irq_restore(flags);
+    return t;
+}
+
+// Create a thread that starts at EL0. It gets TWO stacks: its kmalloc stack is
+// the kernel stack (SP_EL1, used when it traps), plus a separate user stack
+// (SP_EL0). The initial context lands in user_entry_trampoline, which drops to
+// EL0 at user_fn.
+struct thread *thread_create_user(void (*user_fn)(void), int priority)
+{
+    struct thread *t = kmalloc(sizeof(struct thread));
+    uint8_t *kstack  = kmalloc(STACK_SIZE);   // kernel stack (SP_EL1)
+    uint8_t *ustack  = kmalloc(STACK_SIZE);   // user stack   (SP_EL0)
+
+    uint8_t *c = (uint8_t *)&t->ctx;
+    for (unsigned i = 0; i < sizeof(t->ctx); i++) {
+        c[i] = 0;
+    }
+
+    t->stack     = kstack;
+    t->state     = THREAD_RUNNABLE;
+    t->id        = next_id++;
+    t->priority  = priority;
+    t->wake_tick = 0;
+    t->next      = 0;
+
+    // The trampoline + kernel stack run at EL1 (identity addresses). But the
+    // user entry and user stack must be the EL0-accessible ALIAS addresses
+    // (physical + USER_ALIAS_OFFSET), since EL0 can only touch the alias window.
+    t->ctx.sp  = (uint64_t)(uintptr_t)(kstack + STACK_SIZE);  // kernel stack top (EL1)
+    t->ctx.lr  = (uint64_t)(uintptr_t)user_entry_trampoline;  // runs at EL1
+    t->ctx.x19 = (uint64_t)(uintptr_t)user_fn + USER_ALIAS_OFFSET;          // user entry (EL0 alias)
+    t->ctx.x20 = (uint64_t)(uintptr_t)(ustack + STACK_SIZE) + USER_ALIAS_OFFSET; // user stack top (EL0 alias)
+
+    uint64_t flags = irq_save();
+    if (current) {
+        struct thread *tail = current;
+        while (tail->next != current) {
+            tail = tail->next;
+        }
+        tail->next = t;
+        t->next = current;
+    } else {
+        t->next = t;
     }
     irq_restore(flags);
     return t;

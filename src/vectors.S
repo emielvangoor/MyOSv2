@@ -50,6 +50,8 @@
     mrs     x1, spsr_el1               //   can reuse them to grab ELR and SPSR
     stp     x30, x0,  [sp, #16 * 15]   // save x30 @240 and ELR @248
     str     x1,       [sp, #16 * 16]   // save SPSR @256
+    mrs     x0, sp_el0                 // SP_EL0 is banked per thread; save it so a
+    str     x0,       [sp, #264]       //   resumed EL0 thread keeps its own stack
 .endm
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,8 @@
 // `eret` = "exception return": resumes the interrupted code at ELR_EL1.
 // ---------------------------------------------------------------------------
 .macro kernel_exit
+    ldr     x0,       [sp, #264]       // restore SP_EL0 (the user stack pointer)
+    msr     sp_el0, x0
     ldr     x0,       [sp, #16 * 16]   // SPSR
     msr     spsr_el1, x0
     ldp     x30, x0,  [sp, #16 * 15]   // x30, and ELR into x0
@@ -98,8 +102,8 @@ vector_table:
     vector_entry el1_irq           // +0x280 IRQ    current EL, SPx  <- timer
     vector_entry default_handler   // +0x300 FIQ    current EL, SPx
     vector_entry default_handler   // +0x380 SError current EL, SPx
-    vector_entry default_handler   // +0x400 Sync   lower EL, AArch64 (Phase 6)
-    vector_entry default_handler   // +0x480 IRQ    lower EL, AArch64
+    vector_entry el0_sync          // +0x400 Sync   lower EL, AArch64 (syscalls)
+    vector_entry el1_irq           // +0x480 IRQ    lower EL, AArch64 (reuse IRQ path)
     vector_entry default_handler   // +0x500 FIQ    lower EL, AArch64
     vector_entry default_handler   // +0x580 SError lower EL, AArch64
     vector_entry default_handler   // +0x600 Sync   lower EL, AArch32
@@ -118,6 +122,13 @@ el1_irq:
     kernel_entry
     mov     x0, sp
     bl      irq_handler
+    kernel_exit
+
+// Synchronous exception from a lower EL (EL0): a system call (svc) or a fault.
+el0_sync:
+    kernel_entry
+    mov     x0, sp
+    bl      el0_sync_handler
     kernel_exit
 
 default_handler:

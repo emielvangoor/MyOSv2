@@ -35,10 +35,12 @@ struct thread {
 // Assembly (switch.S):
 void cpu_switch(struct context *old, struct context *newc);
 void thread_trampoline(void);
+void user_entry_trampoline(void);   // assembly (usermode.S): drops a thread to EL0
 
 // Scheduler:
 void sched_init(void);                                            // register idle thread
 struct thread *thread_create(void (*fn)(void *), void *arg, int priority);
+struct thread *thread_create_user(void (*user_fn)(void), int priority); // EL0 thread
 void yield(void);                                                 // cooperative switch
 void schedule(void);                                             // pick highest-prio + switch
 void thread_exit(void);                                          // end current thread
