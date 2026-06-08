@@ -18,8 +18,15 @@ LDFLAGS := -nostdlib -nostartfiles -T linker.ld -Wl,--gc-sections
 CSRC := $(wildcard src/*.c)
 ASRC := $(wildcard src/*.S)
 OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
-        $(patsubst src/%.S,$(BUILD)/%.o,$(ASRC))
+        $(patsubst src/%.S,$(BUILD)/%.o,$(ASRC)) \
+        $(BUILD)/user_blob.o          # the embedded user program
 DEP  := $(OBJ:.o=.d)
+
+# User programs are separate flat binaries linked at USER_CODE_VA (so every
+# address -- code and strings -- is correct with no relocation), then embedded
+# into the kernel image as a C byte array.
+USER_SRC    := user/crt0.S user/ulib.c user/prog.c
+USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall -O2
 
 QEMU       := qemu-system-aarch64
 # -display none: no graphical window. -serial stdio: serial to terminal AND
@@ -37,6 +44,20 @@ $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/%.o: src/%.S | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Build the user program -> flat binary -> embedded C array (init_bin / init_bin_len).
+$(BUILD)/user/init.elf: $(USER_SRC) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
+	mkdir -p $(BUILD)/user
+	$(CC) $(USER_CFLAGS) -T user/user.ld -o $@ $(USER_SRC)
+
+$(BUILD)/user/init.bin: $(BUILD)/user/init.elf
+	$(OBJCOPY) -O binary $< $@
+
+$(BUILD)/user_blob.c: $(BUILD)/user/init.bin
+	cd $(BUILD)/user && xxd -i init.bin > ../user_blob.c
+
+$(BUILD)/user_blob.o: $(BUILD)/user_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJ) linker.ld

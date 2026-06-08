@@ -20,6 +20,7 @@
 #include "vfs.h"
 #include "ramfs.h"
 #include "initrd.h"
+#include "proc.h"
 
 #define PAGE 0x1000UL
 
@@ -238,8 +239,9 @@ static void test_syscall_write_returns_len(void)
     struct trapframe tf;
     const char *s = "hello";
     tf.x[8] = SYS_WRITE;
-    tf.x[0] = (uint64_t)(uintptr_t)s;
-    tf.x[1] = 5;
+    tf.x[0] = 1;                            // fd = stdout
+    tf.x[1] = (uint64_t)(uintptr_t)s;
+    tf.x[2] = 5;
     do_syscall(&tf);
     KASSERT(tf.x[0] == 5);   // returns bytes written
 }
@@ -357,13 +359,15 @@ static void test_as_data_is_private(void)
     KASSERT(pa_a != pa_b);                 // private: different physical pages
 }
 
-static void test_as_code_is_shared(void)
+static void test_as_image_maps_code(void)
 {
     pmm_init(); kheap_init(); vm_init();
     struct addrspace *a = as_create();
-    struct addrspace *b = as_create();
-    KASSERT(as_translate(a, USER_CODE_VA) == as_translate(b, USER_CODE_VA));
-    KASSERT(as_translate(a, USER_CODE_VA) != 0);
+    uint64_t pa = as_translate(a, USER_CODE_VA);
+    KASSERT(pa != 0);
+    // The first code byte at USER_CODE_VA equals the embedded program's start.
+    extern unsigned char init_bin[];
+    KASSERT(*(volatile uint8_t *)(uintptr_t)pa == init_bin[0]);
 }
 
 static void test_as_kernel_shared(void)
@@ -517,8 +521,98 @@ static void test_initrd_unpacked(void)
     char buf[16] = {0};
     int n = vfs_read(f, buf, 14);
     KASSERT(n == 14);
-    KASSERT(bytes_eq(buf, "Hello, files!\n", 14));
+    KASSERT(bytes_eq(buf, "Hello, MyOSv2!\n", 14));
     vfs_close(f);
+}
+
+// --- File descriptors (open/read/close via syscalls, in a worker thread) ---
+
+static long fd_res;
+static void fd_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    do_syscall(&tf);
+    fd_res = (long)tf.x[0];
+}
+static void test_fd_open_returns_fd(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fd_res = -1;
+    sched_init();
+    thread_create(fd_worker, 0, 1);
+    while (fd_res == -1) { yield(); }
+    KASSERT(fd_res >= 3);
+}
+
+static char fd_buf[8];
+static long fd_n;
+static void fd_read_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    do_syscall(&tf);
+    long fd = (long)tf.x[0];
+    tf.x[8] = SYS_READ; tf.x[0] = (uint64_t)fd;
+    tf.x[1] = (uint64_t)(uintptr_t)fd_buf; tf.x[2] = 5;
+    do_syscall(&tf);
+    fd_n = (long)tf.x[0];
+}
+static void test_fd_read_syscall(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fd_n = -1;
+    sched_init();
+    thread_create(fd_read_worker, 0, 1);
+    while (fd_n == -1) { yield(); }
+    KASSERT(fd_n == 5);
+    KASSERT(bytes_eq(fd_buf, "Hello", 5));
+}
+
+static long fd_miss;
+static void fd_miss_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/nope";
+    do_syscall(&tf);
+    fd_miss = (long)tf.x[0];
+}
+static void test_fd_open_missing(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fd_miss = 0;
+    sched_init();
+    thread_create(fd_miss_worker, 0, 1);
+    while (fd_miss == 0) { yield(); }
+    KASSERT(fd_miss == -1);
+}
+
+static long fd_a, fd_b;
+static void fd_reuse_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    do_syscall(&tf); fd_a = (long)tf.x[0];
+    tf.x[8] = SYS_CLOSE; tf.x[0] = (uint64_t)fd_a; do_syscall(&tf);
+    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    do_syscall(&tf); fd_b = (long)tf.x[0];
+}
+static void test_fd_close_reuse(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fd_a = fd_b = -1;
+    sched_init();
+    thread_create(fd_reuse_worker, 0, 1);
+    while (fd_b == -1) { yield(); }
+    KASSERT(fd_a == fd_b);
 }
 
 // The registry of all tests.
@@ -542,7 +636,7 @@ static const struct ktest tests[] = {
     { "syscall: sleep blocks N ticks",    test_syscall_sleep_blocks },
     { "syscall: exit ends thread",        test_syscall_exit_ends_thread },
     { "vm: user data is private",         test_as_data_is_private },
-    { "vm: user code is shared",          test_as_code_is_shared },
+    { "vm: image maps code",              test_as_image_maps_code },
     { "vm: kernel map is shared",         test_as_kernel_shared },
     { "vm: unmapped VA -> 0",             test_as_unmapped_returns_zero },
     { "vm: user stack is private",        test_as_stack_is_private },
@@ -555,6 +649,10 @@ static const struct ktest tests[] = {
     { "vfs: lookup missing -> null",      test_vfs_lookup_missing },
     { "vfs: nested directory",            test_vfs_nested_dir },
     { "initrd: unpacks files",            test_initrd_unpacked },
+    { "fd: open returns fd",              test_fd_open_returns_fd },
+    { "fd: read syscall",                 test_fd_read_syscall },
+    { "fd: open missing -> -1",           test_fd_open_missing },
+    { "fd: close then reuse",             test_fd_close_reuse },
 };
 
 int run_self_tests(void)

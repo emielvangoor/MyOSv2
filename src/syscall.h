@@ -9,6 +9,9 @@
 #define SYS_SLEEP  3   // x0=ms           -> 0
 #define SYS_EXIT   4   //                 -> (does not return)
 #define SYS_REPORT 5   // x0=pid, x1=value -> kernel prints, returns 0
+#define SYS_OPEN   6   // x0=path -> fd (>=3) or -1
+#define SYS_READ   7   // x0=fd, x1=buf, x2=len -> bytes read
+#define SYS_CLOSE  8   // x0=fd -> 0
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.

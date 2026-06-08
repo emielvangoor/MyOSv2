@@ -31,12 +31,10 @@
 
 #define PAGE 4096UL
 
-// Linker symbols bounding the user program blob (.user section).
-extern char __user_start[];
-extern char __user_end[];
-
-static uint64_t code_phys;    // shared physical pages holding the user code
-static uint64_t code_pages;   // number of 4 KiB pages the user blob occupies
+// The embedded user program (a flat binary linked at USER_CODE_VA), generated
+// from user/ by the Makefile (build/user_blob.c).
+extern unsigned char init_bin[];
+extern unsigned int  init_bin_len;
 
 // Allocate a zeroed page-table page from the PMM.
 static uint64_t *alloc_table(void)
@@ -48,28 +46,13 @@ static uint64_t *alloc_table(void)
     return t;
 }
 
-void vm_init(void)
-{
-    // Copy the user program into shared, page-aligned physical memory once. All
-    // address spaces map these same pages for the (read-only) code.
-    uint64_t size = (uint64_t)(__user_end - __user_start);
-    code_pages = (size + PAGE - 1) / PAGE;
-    if (code_pages == 0) {
-        code_pages = 1;
-    }
-    code_phys = (uint64_t)(uintptr_t)pmm_alloc_pages((unsigned long)code_pages);
-    uint8_t *dst = (uint8_t *)(uintptr_t)code_phys;
-    uint8_t *src = (uint8_t *)__user_start;
-    for (uint64_t i = 0; i < size; i++) {
-        dst[i] = src[i];
-    }
-}
+void vm_init(void) { }   // nothing to prepare globally now (code is per-process)
 
 uint64_t user_entry_va(void)
 {
-    extern void user_main(void);
-    uint64_t off = (uint64_t)(uintptr_t)user_main - (uint64_t)(uintptr_t)__user_start;
-    return USER_CODE_VA + off;
+    // The program is linked at USER_CODE_VA with its entry (_start, in crt0) at
+    // offset 0, so the entry virtual address is simply USER_CODE_VA.
+    return USER_CODE_VA;
 }
 
 // Map one 4 KiB page (va -> pa with attrs), creating the private L1/L2/L3 tables
@@ -96,7 +79,9 @@ static void map_page(uint64_t *l0, uint64_t va, uint64_t pa, uint64_t attrs)
     l3[l3i] = (pa & ~0xFFFUL) | attrs | DESC_PAGE;
 }
 
-struct addrspace *as_create(void)
+// Build an address space whose private code pages hold `img` (len bytes), mapped
+// read-only EL0-executable at USER_CODE_VA; with private stack + data pages.
+struct addrspace *as_create_image(const void *img, uint64_t len)
 {
     struct addrspace *as = (struct addrspace *)pmm_alloc();
     as->l0 = alloc_table();
@@ -108,9 +93,18 @@ struct addrspace *as_create(void)
     uint64_t rw_attr   = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
                          ATTR_UXN | ATTR_PXN;                                     // RW, no-exec
 
-    // Shared code: map the copied blob (same physical pages in every AS).
-    for (uint64_t i = 0; i < code_pages; i++) {
-        map_page(as->l0, USER_CODE_VA + i * PAGE, code_phys + i * PAGE, code_attr);
+    // Private code pages: copy the image in, padding the last page with zeros.
+    uint64_t npages = (len + PAGE - 1) / PAGE;
+    if (npages == 0) { npages = 1; }
+    const uint8_t *src = (const uint8_t *)img;
+    for (uint64_t i = 0; i < npages; i++) {
+        uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
+        uint8_t *dst = (uint8_t *)(uintptr_t)pa;
+        for (uint64_t j = 0; j < PAGE; j++) {
+            uint64_t k = i * PAGE + j;
+            dst[j] = (k < len) ? src[k] : 0;
+        }
+        map_page(as->l0, USER_CODE_VA + i * PAGE, pa, code_attr);
     }
 
     // Private stack: 16 pages ending at USER_STACK_TOP, freshly allocated.
@@ -124,6 +118,12 @@ struct addrspace *as_create(void)
     map_page(as->l0, USER_DATA_VA, data_pa, rw_attr);
 
     return as;
+}
+
+// Convenience: build an address space from the embedded user program.
+struct addrspace *as_create(void)
+{
+    return as_create_image(init_bin, (uint64_t)init_bin_len);
 }
 
 uint64_t as_translate(struct addrspace *as, uint64_t va)

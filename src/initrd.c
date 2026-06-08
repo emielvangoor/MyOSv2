@@ -11,13 +11,18 @@ struct initrd_file {
     uint64_t len;
 };
 
-static const char hello[] = "Hello, files!\n";
+static const char
+hello[] = "Hello, MyOSv2!\n";
 static const char motd[]  = "Welcome to MyOSv2.\n";
 
 static const struct initrd_file files[] = {
     { "/hello.txt", hello, sizeof(hello) - 1 },
     { "/motd",      motd,  sizeof(motd)  - 1 },
 };
+
+// The embedded user program (flat binary from user/, via build/user_blob.c).
+extern unsigned char init_bin[];
+extern unsigned int  init_bin_len;
 
 void initrd_unpack(void)
 {
@@ -27,5 +32,13 @@ void initrd_unpack(void)
         if (!vn) { continue; }
         struct file f = { .vnode = vn, .off = 0 };
         vfs_write(&f, files[i].data, files[i].len);
+    }
+
+    // Expose the embedded user program as a runnable file at /bin/init.
+    vfs_create("/bin", VN_DIR);
+    struct vnode *prog = vfs_create("/bin/init", VN_FILE);
+    if (prog) {
+        struct file pf = { .vnode = prog, .off = 0 };
+        vfs_write(&pf, init_bin, (uint64_t)init_bin_len);
     }
 }

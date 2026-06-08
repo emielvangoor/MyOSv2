@@ -25,6 +25,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     t->priority  = priority;
     t->wake_tick = 0;
     t->as        = 0;            // kernel thread: no user address space
+    for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
     t->next      = 0;
 
     // Craft the initial context. On the first cpu_switch into this thread,
@@ -54,11 +55,17 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     return t;
 }
 
-// Create a thread that starts at EL0 in its OWN address space. Its kmalloc stack
-// is the kernel stack (SP_EL1, used when it traps); its user code/stack/data live
-// in the private address space built by as_create(). The initial context lands
-// in user_entry_trampoline, which drops to EL0 at the user entry VA.
-struct thread *thread_create_user(int priority)
+struct file **sched_current_fds(void)
+{
+    return current ? current->fds : 0;
+}
+
+// Create a thread that starts at EL0 in its OWN address space, running the
+// program image `img` (len bytes). Its kmalloc stack is the kernel stack
+// (SP_EL1, for traps); its user code/stack/data live in the private address
+// space built by as_create_image(). The initial context lands in
+// user_entry_trampoline, which drops to EL0 at the user entry VA.
+struct thread *thread_create_image(const void *img, uint64_t len, int priority)
 {
     struct thread *t = kmalloc(sizeof(struct thread));
     uint8_t *kstack  = kmalloc(STACK_SIZE);   // kernel stack (SP_EL1, for traps)
@@ -73,7 +80,8 @@ struct thread *thread_create_user(int priority)
     t->id        = next_id++;
     t->priority  = priority;
     t->wake_tick = 0;
-    t->as        = as_create();               // its own private address space
+    t->as        = as_create_image(img, len); // its own private address space
+    for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
     t->next      = 0;
 
     // The trampoline + kernel stack run at EL1; it then drops to EL0 at the user
@@ -115,6 +123,7 @@ void sched_init(void)
     boot_thread.priority  = -1;           // below any created thread
     boot_thread.wake_tick = 0;
     boot_thread.as        = 0;            // the idle/kernel thread has no user AS
+    for (int i = 0; i < 16; i++) { boot_thread.fds[i] = 0; }
     boot_thread.next      = &boot_thread; // a ring of one
     current  = &boot_thread;
     next_id  = 1;

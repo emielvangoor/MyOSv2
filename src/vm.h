@@ -12,8 +12,9 @@ struct addrspace {
     uint64_t *l0;   // top-level table (a PMM page); load into TTBR0_EL1
 };
 
-void vm_init(void);                              // one-time: prepare shared code pages
-struct addrspace *as_create(void);               // kernel-shared + private user maps
+void vm_init(void);                              // (no-op; kept for callers)
+struct addrspace *as_create(void);               // address space from the embedded program
+struct addrspace *as_create_image(const void *img, uint64_t len); // from a loaded image
 uint64_t as_translate(struct addrspace *as, uint64_t va); // software walk -> PA (0 if unmapped)
 void as_switch(struct addrspace *as);            // TTBR0 = as->l0; flush TLB
 uint64_t user_entry_va(void);                    // USER_CODE_VA + (user_main - __user_start)

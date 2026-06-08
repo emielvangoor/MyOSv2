@@ -31,6 +31,7 @@ struct thread {
     int priority;          // higher number = more important
     uint64_t wake_tick;    // jiffy to wake at (when SLEEPING)
     struct addrspace *as;  // user address space (NULL for kernel threads)
+    struct file *fds[16];  // open file table (a process). NULL = free.
     struct thread *next;   // circular run-queue link
 };
 
@@ -41,8 +42,10 @@ void user_entry_trampoline(void);   // assembly (usermode.S): drops a thread to 
 
 // Scheduler:
 void sched_init(void);                                            // register idle thread
+struct file;   // from vfs.h (the fd table holds these)
 struct thread *thread_create(void (*fn)(void *), void *arg, int priority);
-struct thread *thread_create_user(int priority); // EL0 thread (builds its own address space)
+struct thread *thread_create_image(const void *img, uint64_t len, int priority); // EL0 program
+struct file  **sched_current_fds(void);   // the running thread's fd table
 void yield(void);                                                 // cooperative switch
 void schedule(void);                                             // pick highest-prio + switch
 void thread_exit(void);                                          // end current thread

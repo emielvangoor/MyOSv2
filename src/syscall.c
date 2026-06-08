@@ -11,6 +11,7 @@
 #include "uart.h"
 #include "sched.h"
 #include "kprintf.h"
+#include "vfs.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -18,13 +19,50 @@ long do_syscall(struct trapframe *tf)
     long ret;
 
     switch (num) {
-    case SYS_WRITE: {                       // x0 = ptr, x1 = len
-        const char *s = (const char *)(uintptr_t)tf->x[0];
-        uint64_t len = tf->x[1];
-        for (uint64_t i = 0; i < len; i++) {
-            uart_putc(s[i]);
+    case SYS_WRITE: {                       // x0 = fd, x1 = ptr, x2 = len
+        uint64_t fd = tf->x[0];
+        const char *s = (const char *)(uintptr_t)tf->x[1];
+        uint64_t len = tf->x[2];
+        if (fd == 1 || fd == 2) {           // stdout / stderr -> UART
+            for (uint64_t i = 0; i < len; i++) { uart_putc(s[i]); }
+            ret = (long)len;
+        } else {
+            struct file **fds = sched_current_fds();
+            if (fds && fd < 16 && fds[fd]) { ret = vfs_write(fds[fd], s, len); }
+            else { ret = -1; }
         }
-        ret = (long)len;
+        break;
+    }
+    case SYS_OPEN: {                        // x0 = path
+        const char *path = (const char *)(uintptr_t)tf->x[0];
+        struct file **fds = sched_current_fds();
+        ret = -1;
+        if (fds) {
+            struct file *f = vfs_open(path);
+            if (f) {
+                for (int i = 3; i < 16; i++) {
+                    if (!fds[i]) { fds[i] = f; ret = i; break; }
+                }
+                if (ret < 0) { vfs_close(f); }
+            }
+        }
+        break;
+    }
+    case SYS_READ: {                        // x0 = fd, x1 = buf, x2 = len
+        uint64_t fd = tf->x[0];
+        void *buf = (void *)(uintptr_t)tf->x[1];
+        uint64_t len = tf->x[2];
+        struct file **fds = sched_current_fds();
+        if (fd == 0) { ret = 0; }           // stdin: nothing yet
+        else if (fds && fd < 16 && fds[fd]) { ret = vfs_read(fds[fd], buf, len); }
+        else { ret = -1; }
+        break;
+    }
+    case SYS_CLOSE: {                       // x0 = fd
+        uint64_t fd = tf->x[0];
+        struct file **fds = sched_current_fds();
+        if (fds && fd < 16 && fds[fd]) { vfs_close(fds[fd]); fds[fd] = 0; ret = 0; }
+        else { ret = -1; }
         break;
     }
     case SYS_GETPID:
