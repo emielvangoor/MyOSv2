@@ -9,6 +9,33 @@
 
 static struct thread *current;   // the running thread (NULL until sched_init)
 static int next_id;              // monotonic thread id
+static struct thread *foreground;// the thread Ctrl-C targets (NULL = none)
+
+// Clear a thread's signal state (kmalloc doesn't zero).
+static void sig_init(struct thread *t)
+{
+    t->sig_pending = 0;
+    for (int i = 0; i < 32; i++) { t->sig_handler[i] = 0; }
+    t->sig_tramp = 0;
+}
+
+struct thread *sched_current(void) { return current; }
+void sched_set_foreground(struct thread *t) { foreground = t; }
+struct thread *sched_foreground(void) { return foreground; }
+
+// Post a signal to the thread with the given pid; -1 if no such thread.
+int sched_kill(int pid, int sig)
+{
+    extern void signal_send(struct thread *t, int sig);
+    uint64_t flags = irq_save();
+    struct thread *t = current;
+    do {
+        if (t->id == pid) { irq_restore(flags); signal_send(t, sig); return 0; }
+        t = t->next;
+    } while (t != current);
+    irq_restore(flags);
+    return -1;
+}
 
 struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
 {
@@ -30,6 +57,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
     t->parent      = current;    // the creating thread is our parent
     t->exit_status = 0;
+    sig_init(t);
     t->next      = 0;
 
     // Craft the initial context. On the first cpu_switch into this thread,
@@ -94,6 +122,7 @@ int sched_fork(struct trapframe *parent_tf)
     }
     t->parent      = current;                        // the forking thread is our parent
     t->exit_status = 0;
+    sig_init(t);
     t->next      = 0;
 
     // Place a copy of the parent's trap frame at the top of the child's kernel
@@ -142,6 +171,7 @@ struct thread *thread_create_image(const void *img, uint64_t len, int priority)
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
     t->parent      = current;                 // the spawning thread is our parent
     t->exit_status = 0;
+    sig_init(t);
     t->next      = 0;
 
     // The trampoline + kernel stack run at EL1; it then drops to EL0 at the ELF
@@ -186,6 +216,7 @@ void sched_init(void)
     for (int i = 0; i < 16; i++) { boot_thread.fds[i] = 0; }
     boot_thread.parent      = 0;          // the idle thread has no parent
     boot_thread.exit_status = 0;
+    sig_init(&boot_thread);
     boot_thread.next      = &boot_thread; // a ring of one
     current  = &boot_thread;
     next_id  = 1;

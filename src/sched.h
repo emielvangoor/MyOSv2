@@ -35,6 +35,9 @@ struct thread {
     struct file *fds[16];  // open file table (a process). NULL = free.
     struct thread *parent; // who created us (NULL for the boot/idle thread)
     int exit_status;       // status passed to exit() (read by the parent's wait)
+    uint64_t sig_pending;            // bitmask of posted-but-undelivered signals
+    uint64_t (*sig_handler[32])(int);// per-signal user handler (NULL = default action)
+    uint64_t sig_tramp;              // user trampoline a handler returns into
     struct thread *next;   // circular run-queue link
 };
 
@@ -57,6 +60,10 @@ void schedule(void);                                             // pick highest
 void thread_exit(int status);                                    // end current thread with a status
 int  sched_wait(int *status);                                    // reap a zombie child; -1 if none
 void sched_set_current_as(struct addrspace *as);                 // rebind current's address space (exec)
+struct thread *sched_current(void);                              // the running thread
+int  sched_kill(int pid, int sig);                               // post a signal to pid; -1 if no such pid
+void sched_set_foreground(struct thread *t);                     // the thread Ctrl-C targets
+struct thread *sched_foreground(void);
 int  sched_started(void);
 int  sched_current_id(void);                                     // id of running thread (-1 if none)
 int  sched_tick(void);                                           // per-tick: wake sleepers + slice

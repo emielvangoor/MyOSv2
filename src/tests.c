@@ -25,6 +25,7 @@
 #include "elf.h"
 #include "shm.h"
 #include "pipe.h"
+#include "signal.h"
 
 #define PAGE 0x1000UL
 
@@ -1044,6 +1045,38 @@ static void test_file_refcount(void)
     vfs_close(f);                            // ref 1 -> 0, freed (no crash after)
 }
 
+// --- signals (Phase 18) ---
+
+static void sig_noop(void *a) { (void)a; for (;;) { yield(); } }
+
+static void test_kill_sets_pending(void)
+{
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *t = thread_create(sig_noop, 0, 1);
+    signal_send(t, SIGINT);
+    KASSERT(t->sig_pending & (1ull << SIGINT));
+}
+
+static void test_kill_by_pid(void)
+{
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *t = thread_create(sig_noop, 0, 1);
+    KASSERT(sched_kill(t->id, SIGTERM) == 0);
+    KASSERT(t->sig_pending & (1ull << SIGTERM));
+    KASSERT(sched_kill(9999, SIGTERM) == -1);   // no such pid
+}
+
+static void test_sig_default_vs_handler(void)
+{
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *t = thread_create(sig_noop, 0, 1);
+    KASSERT(signal_action(t, SIGTERM) == 0);            // 0 = default (terminate)
+    t->sig_handler[SIGINT] = (uint64_t (*)(int))0x8000000040ULL;
+    KASSERT(signal_action(t, SIGINT) == 0x8000000040ULL);
+    t->sig_handler[SIGKILL] = (uint64_t (*)(int))0x8000000040ULL;
+    KASSERT(signal_action(t, SIGKILL) == 0);            // SIGKILL uncatchable
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1116,6 +1149,9 @@ static const struct ktest tests[] = {
     { "pipe: write -1 when no readers",   test_pipe_broken },
     { "pipe: ring buffer wraps",          test_pipe_wraps },
     { "file: refcount dup/close",         test_file_refcount },
+    { "sig: kill sets pending",           test_kill_sets_pending },
+    { "sig: kill by pid",                 test_kill_by_pid },
+    { "sig: default vs handler action",   test_sig_default_vs_handler },
 };
 
 int run_self_tests(void)
