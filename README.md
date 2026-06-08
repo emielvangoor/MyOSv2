@@ -7,10 +7,25 @@ This is a **vibe-coded OS, built just for fun** — to learn how computers and
 operating systems actually work, and to see how far we can get. No grand plan, no
 deadlines; just building it one piece at a time and enjoying the ride.
 
-So far it boots, talks over serial, sets up virtual memory, schedules threads,
-isolates user processes, has an in-memory filesystem, and runs an interactive
-shell at EL0. Where it goes next — a real process model, persistent storage, and
-eventually networking — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+## What it can do today
+
+- **Boot & serial** — `_start`, stack/`.bss` setup, PL011 UART, `kprintf`.
+- **Exceptions & interrupts** — vector table, syscalls (`svc`), GIC, 1000 Hz timer.
+- **Memory** — physical page allocator, a coalescing kernel heap, the MMU with
+  per-process page tables, ASID-tagged TLB entries (flush-free context switch).
+- **Scheduler** — preemptive threads with priorities, sleep, round-robin.
+- **Filesystem** — a VFS (vnode/fs_type) with an in-memory `ramfs` and an initrd.
+- **Processes** — user mode at EL0, `fork` + copy-on-write, an **ELF64 loader**,
+  and the full lifecycle: `exec`, `exit(status)`, `wait`/reap (with ASID + page
+  recycling).
+- **Userland** — an interactive shell (`/bin/init`) that runs real ELF programs
+  from `/bin` (`true`, `false`, `hello`) via fork→exec→wait and reports their
+  exit status.
+
+Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
+and eventually a TCP/IP network stack — lives in
+**[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a capable, Unix-like OS;
+graphics is deferred.
 
 ## Try it
 
