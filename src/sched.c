@@ -46,11 +46,63 @@ struct thread *thread_create(void (*fn)(void *), void *arg)
     return t;
 }
 
-// Temporary stub so switch.S's `bl thread_exit` links. The real implementation
-// (which unlinks the thread and switches away) arrives with the scheduler.
+// The boot/idle thread: represents whatever was running when sched_init() ran
+// (kmain, or the test harness). Its context is filled in on the first switch.
+static struct thread boot_thread;
+static int started;
+
+void sched_init(void)
+{
+    boot_thread.stack = 0;            // it already has the kernel boot stack
+    boot_thread.state = THREAD_RUNNING;
+    boot_thread.id    = 0;
+    boot_thread.next  = &boot_thread; // a ring of one
+    current  = &boot_thread;
+    next_id  = 1;
+    started  = 1;
+}
+
+int sched_started(void)
+{
+    return started;
+}
+
+// Round-robin: switch to the next non-exited thread after `current`.
+void schedule(void)
+{
+    struct thread *prev = current;
+    struct thread *next = prev->next;
+    while (next->state == THREAD_EXITED && next != prev) {
+        next = next->next;
+    }
+    if (next == prev) {
+        return;                       // nobody else runnable -- keep going
+    }
+    current = next;
+    cpu_switch(&prev->ctx, &next->ctx);
+}
+
+void yield(void)
+{
+    schedule();                       // cooperative: voluntarily give up the CPU
+}
+
 void thread_exit(void)
 {
-    for (;;) {
-        __asm__ volatile("wfi");
+    current->state = THREAD_EXITED;
+
+    // Unlink `current` from the ring (find its predecessor first).
+    struct thread *p = current;
+    while (p->next != current) {
+        p = p->next;
     }
+    p->next = current->next;
+
+    // Switch away forever. `next` is a surviving thread; the exited thread's
+    // saved context is never used again (its stack leaks -- see notes).
+    struct thread *prev = current;
+    struct thread *next = current->next;
+    current = next;
+    cpu_switch(&prev->ctx, &next->ctx);
+    // not reached
 }

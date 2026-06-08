@@ -115,6 +115,44 @@ static void test_thread_create_context(void)
     KASSERT(t->ctx.x20 == (uint64_t)(uintptr_t)arg);
 }
 
+// Shared log the round-robin workers append to, proving switch ordering.
+static int rr_order[16];
+static int rr_n;
+
+static void rr_worker(void *arg)
+{
+    int id = (int)(uintptr_t)arg;
+    for (int k = 0; k < 3; k++) {
+        rr_order[rr_n++] = id;   // record that this thread ran
+        yield();                 // cooperatively hand off to the next thread
+    }
+    // returning here -> thread_trampoline calls thread_exit
+}
+
+static void test_round_robin_order(void)
+{
+    pmm_init();
+    kheap_init();
+    rr_n = 0;
+
+    sched_init();                            // boot thread becomes thread 0
+    thread_create(rr_worker, (void *)(uintptr_t)1);
+    thread_create(rr_worker, (void *)(uintptr_t)2);
+
+    // The boot thread yields until the two workers have logged 6 entries.
+    while (rr_n < 6) {
+        yield();
+    }
+
+    // Deterministic round-robin: worker 1, worker 2, repeating.
+    KASSERT(rr_order[0] == 1);
+    KASSERT(rr_order[1] == 2);
+    KASSERT(rr_order[2] == 1);
+    KASSERT(rr_order[3] == 2);
+    KASSERT(rr_order[4] == 1);
+    KASSERT(rr_order[5] == 2);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -124,6 +162,7 @@ static const struct ktest tests[] = {
     { "kheap: freed block reused",       test_kheap_free_reuse },
     { "kheap: coalesce adjacent blocks", test_kheap_coalesce },
     { "thread: create sets up context",  test_thread_create_context },
+    { "sched: round-robin order",         test_round_robin_order },
 };
 
 int run_self_tests(void)
