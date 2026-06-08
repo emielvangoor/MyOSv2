@@ -17,6 +17,7 @@
 #include "tests.h"
 #include "semihost.h"
 #include "sched.h"
+#include "user.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -85,20 +86,8 @@ static void demo_heap(void)
 
 // High-priority thread: print a short burst, then sleep so lower-priority
 // threads get the CPU. Demonstrates priority preemption + sleep.
-static void hi_thread(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        for (int i = 0; i < 5; i++) {
-            uart_putc('A');
-            for (volatile int d = 0; d < 1000000; d++) { }
-        }
-        sleep_ms(40);   // yield the CPU to B/C for ~40 ms
-    }
-}
-
-// Lower-priority thread: print its letter continuously. Two of these at equal
-// priority round-robin while the high-priority thread sleeps.
+// A kernel (EL1) thread: print its letter continuously. Runs alongside the
+// user-mode thread so we can see them coexist under timer preemption.
 static void lo_thread(void *arg)
 {
     char c = (char)(uintptr_t)arg;
@@ -148,14 +137,13 @@ void kmain(void)
     timer_init();
 
     sched_init();                                        // boot thread becomes idle (prio -1)
-    thread_create(hi_thread, 0, 2);                      // A: high priority
-    thread_create(lo_thread, (void *)(uintptr_t)'B', 1); // B: low priority
-    thread_create(lo_thread, (void *)(uintptr_t)'C', 1); // C: low priority
-    kprintf("Scheduler: A=high (bursts then sleeps), B/C=low (round-robin).\n");
+    thread_create_user(user_main, 2);                    // a user-mode (EL0) thread
+    thread_create(lo_thread, (void *)(uintptr_t)'k', 1); // a kernel (EL1) thread printing 'k'
+    kprintf("Launching an EL0 user thread + an EL1 kernel thread:\n");
 
     enable_irqs();                                  // now the timer can preempt
 
-    // The boot thread idles; preemption rotates A/B/C (and this idle thread).
+    // The boot thread idles; the scheduler runs the user + kernel threads.
     for (;;) {
         __asm__ volatile("wfi");
     }
