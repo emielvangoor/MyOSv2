@@ -373,6 +373,11 @@ struct addrspace *as_clone(struct addrspace *parent)
     struct addrspace *child = (struct addrspace *)pmm_alloc();
     child->l0 = alloc_table();
     child->l0[0] = mmu_kernel_l0_entry();
+    // The child inherits the parent's heap break and mmap position (so malloc,
+    // sbrk and mmap keep working after fork).
+    child->heap_base = parent->heap_base;
+    child->heap_end  = parent->heap_end;
+    child->mmap_next = parent->mmap_next;
     child->asid = asid_alloc();      // a clone is its own address space -> own ASID
 
     // Walk every user VA we know about: code (until unmapped), stack, data.

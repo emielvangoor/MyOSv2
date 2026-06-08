@@ -23,6 +23,10 @@ long sys_fork(void)                           { return syscall3(SYS_FORK, 0, 0, 
 long sys_exec(const char *p)                  { return syscall3(SYS_EXEC, (long)p, 0, 0); }
 long sys_wait(int *status)                    { return syscall3(SYS_WAIT, (long)status, 0, 0); }
 void *sys_sbrk(long incr)                     { return (void *)syscall3(SYS_SBRK, incr, 0, 0); }
+void *mmap(unsigned long len)                 { return (void *)syscall3(SYS_MMAP, (long)len, 0, 0); }
+int   munmap(void *a, unsigned long len)      { return (int)syscall3(SYS_MUNMAP, (long)a, (long)len, 0); }
+int   shm_create(unsigned long len)           { return (int)syscall3(SYS_SHM_CREATE, (long)len, 0, 0); }
+void *shm_map(int handle)                     { return (void *)syscall3(SYS_SHM_MAP, handle, 0, 0); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 
 // --- minimal user-space malloc: a first-fit free list over sbrk ---

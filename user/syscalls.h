@@ -14,3 +14,7 @@
 #define SYS_EXEC   11
 #define SYS_WAIT   12
 #define SYS_SBRK   13
+#define SYS_MMAP   14
+#define SYS_MUNMAP 15
+#define SYS_SHM_CREATE 16
+#define SYS_SHM_MAP    17

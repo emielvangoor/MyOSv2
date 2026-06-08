@@ -13,6 +13,7 @@
 #include "kprintf.h"
 #include "vfs.h"
 #include "proc.h"
+#include "shm.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -107,6 +108,18 @@ long do_syscall(struct trapframe *tf)
         break;
     case SYS_SBRK:                           // x0 = signed increment
         ret = (long)as_sbrk(sched_current_as(), (long)tf->x[0]);
+        break;
+    case SYS_MMAP:                           // x0 = len
+        ret = (long)as_mmap(sched_current_as(), tf->x[0]);
+        break;
+    case SYS_MUNMAP:                         // x0 = va, x1 = len
+        ret = as_munmap(sched_current_as(), tf->x[0], tf->x[1]);
+        break;
+    case SYS_SHM_CREATE:                     // x0 = len
+        ret = shm_create(tf->x[0]);
+        break;
+    case SYS_SHM_MAP:                        // x0 = handle
+        ret = (long)shm_map(sched_current_as(), (int)tf->x[0]);
         break;
     case SYS_REPORT:                         // x0 = pid, x1 = value read back
         kprintf("  [user] process %d read %d  (%s)\n",

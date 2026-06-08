@@ -22,6 +22,7 @@
 #include "ramfs.h"
 #include "initrd.h"
 #include "proc.h"
+#include "shm.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -80,6 +81,7 @@ void kmain(void)
     timer_init();
 
     vm_init();
+    shm_init();                                           // shared-memory object table
     sched_init();                                         // boot thread becomes idle (prio -1)
     proc_spawn("/bin/init", 2);                           // the shell, loaded from /bin/init
     kprintf("Starting the shell (loaded from /bin/init):\n");
