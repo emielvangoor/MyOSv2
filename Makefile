@@ -29,12 +29,10 @@ USER_SRC    := user/crt0.S user/ulib.c user/sh.c
 USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall -O2
 
 QEMU       := qemu-system-aarch64
-# Shared base flags. -serial stdio: serial to the terminal AND lets Ctrl-C
-# (SIGINT) terminate QEMU normally (unlike -nographic). -m 256M fixes the RAM
-# size so the page allocator knows where RAM ends (0x50000000).
-QEMU_BASE  := -machine virt -cpu cortex-a72 -m 256M -serial stdio -kernel $(TARGET)
-# test/debug: headless (no graphical window). The gate runs this way unchanged.
-QEMU_FLAGS := $(QEMU_BASE) -display none
+# -display none: no graphical window. -serial stdio: serial to terminal AND
+# lets Ctrl-C (SIGINT) terminate QEMU normally (unlike -nographic).
+# -m 256M: fix the RAM size so the page allocator knows where RAM ends (0x50000000).
+QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial stdio -kernel $(TARGET)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
 all: $(TARGET)
@@ -65,10 +63,9 @@ $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
 $(TARGET): $(OBJ) linker.ld
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
 
-# Run with a graphical window (the ramfb framebuffer) AND the shell on serial.
-# Quit by closing the window or pressing Ctrl-C in the terminal.
+# Run in the terminal. Quit QEMU with: Ctrl-C
 run: $(TARGET)
-	$(QEMU) $(QEMU_BASE) -display cocoa -device ramfb
+	$(QEMU) $(QEMU_FLAGS)
 
 # Run the self-tests and return a shell exit code (0 = all passed). Builds a
 # test kernel with -DTEST_EXIT (which exits QEMU via semihosting), runs it under

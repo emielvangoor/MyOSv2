@@ -2,8 +2,9 @@
 // =====================================================================
 //
 // boot.S sets up the stack and zeroes .bss, then calls kmain(). From here we
-// bring the kernel to life in order: serial output, virtual memory, dynamic
-// memory (this phase), then interrupts -- demonstrating each as we go.
+// bring the kernel to life in order: serial output, virtual memory, self-tests,
+// dynamic memory, the filesystem, then interrupts + the scheduler, and finally
+// hand control to the user-space shell.
 
 #include <stdint.h>
 #include "uart.h"
@@ -21,8 +22,6 @@
 #include "ramfs.h"
 #include "initrd.h"
 #include "proc.h"
-#include "fb.h"
-#include "draw.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -36,124 +35,6 @@ static uint64_t current_el(void)
 static inline void enable_irqs(void)
 {
     __asm__ volatile("msr daifclr, #2");
-}
-
-// Demonstrate the Physical Memory Manager: distinct page-aligned addresses, and
-// reuse of a freed page via the free list.
-static void demo_pmm(void)
-{
-    void *p1 = pmm_alloc();
-    void *p2 = pmm_alloc();
-    void *p3 = pmm_alloc();
-    kprintf("PMM: three pages -> 0x%lx 0x%lx 0x%lx (each 0x1000 apart)\n",
-            (uint64_t)p1, (uint64_t)p2, (uint64_t)p3);
-
-    pmm_free(p2);                 // hand the middle page back
-    void *p4 = pmm_alloc();       // should be the same page again
-    kprintf("PMM: freed middle page, next alloc -> 0x%lx (%s)\n",
-            (uint64_t)p4, p4 == p2 ? "reused!" : "not reused");
-}
-
-// Demonstrate the heap: allocation, read/write, block reuse, and coalescing.
-static void demo_heap(void)
-{
-    char *a = kmalloc(32);
-    char *b = kmalloc(64);
-    char *c = kmalloc(16);
-    kprintf("heap: a=0x%lx b=0x%lx c=0x%lx\n",
-            (uint64_t)a, (uint64_t)b, (uint64_t)c);
-
-    // Write a string through `a` and read it back, proving the memory is usable.
-    const char *msg = "kmalloc works";
-    int i = 0;
-    while (msg[i]) { a[i] = msg[i]; i++; }
-    a[i] = '\0';
-    kprintf("heap: wrote/read via a -> \"%s\"\n", a);
-
-    // Reuse: free `b`, ask for the same size -> we get `b`'s address back.
-    kfree(b);
-    char *b2 = kmalloc(64);
-    kprintf("heap: freed b, kmalloc(64) -> 0x%lx (%s)\n",
-            (uint64_t)b2, b2 == b ? "reused!" : "not reused");
-
-    // Coalescing: free two ADJACENT blocks (b2 then a). kfree merges them into
-    // one chunk. A kmalloc(80) -- too big for either alone -- then fits in the
-    // merged space at a's address, proving the merge happened.
-    kfree(b2);
-    kfree(a);
-    char *big = kmalloc(80);
-    kprintf("heap: freed a+b (merged); kmalloc(80) -> 0x%lx (%s)\n",
-            (uint64_t)big, big == a ? "coalesced!" : "separate");
-
-    kfree(c);
-    kfree(big);
-}
-
-// High-priority thread: print a short burst, then sleep so lower-priority
-// threads get the CPU. Demonstrates priority preemption + sleep.
-// Demonstrate the filesystem: read an initrd file, create+write+read a new file,
-// and list the root directory.
-static void demo_fs(void)
-{
-    vfs_mount_root(ramfs_type());
-    initrd_unpack();
-
-    struct file *h = vfs_open("/hello.txt");
-    if (h) {
-        char buf[32] = {0};
-        int n = vfs_read(h, buf, sizeof(buf) - 1);
-        buf[n] = '\0';
-        kprintf("fs: /hello.txt = \"%s\"", buf);
-        vfs_close(h);
-    }
-
-    vfs_create("/tmp.txt", VN_FILE);
-    struct file *w = vfs_open("/tmp.txt");
-    vfs_write(w, "written at runtime\n", 19);
-    vfs_close(w);
-    struct file *r = vfs_open("/tmp.txt");
-    char b2[32] = {0};
-    int m = vfs_read(r, b2, sizeof(b2) - 1);
-    b2[m] = '\0';
-    kprintf("fs: /tmp.txt = \"%s\"", b2);
-    vfs_close(r);
-
-    kprintf("fs: ls / ->");
-    char name[32];
-    for (int i = 0; vfs_readdir(vfs_root(), i, name) == 0; i++) {
-        kprintf(" %s", name);
-    }
-    kprintf("\n");
-}
-
-// Demonstrate graphics: bring up the ramfb framebuffer and draw a frame -- a
-// full-screen gradient, nested color bars, and a text banner. If QEMU was
-// started without `-device ramfb` (e.g. the headless test build), fb_init()
-// returns 0 and we just log and continue.
-static void demo_gfx(void)
-{
-    struct fb_info fb;
-    if (!fb_init(&fb)) {
-        kprintf("gfx: no framebuffer (ramfb absent)\n");
-        return;
-    }
-    kprintf("gfx: framebuffer %dx%d ready\n", (int)fb.width, (int)fb.height);
-
-    draw_clear(&fb, rgb(0x10, 0x10, 0x18));                 // dark background
-    // Full-screen gradient -- exercises a write to every pixel.
-    for (uint32_t y = 0; y < fb.height; y++) {
-        for (uint32_t x = 0; x < fb.width; x++) {
-            uint8_t r = (uint8_t)(x * 255 / fb.width);
-            uint8_t b = (uint8_t)(y * 255 / fb.height);
-            draw_put(&fb, (int)x, (int)y, rgb(r, 0x20, b));
-        }
-    }
-    // Nested color bars -- exercises fill_rect (and its clipping).
-    draw_fill_rect(&fb, 80, 80, 360, 200, rgb(0xE0, 0x30, 0x30));
-    draw_fill_rect(&fb, 120, 120, 280, 120, rgb(0x30, 0xE0, 0x30));
-    draw_fill_rect(&fb, 160, 150, 200, 60,  rgb(0x30, 0x30, 0xE0));
-    // Banner text.
-    draw_text(&fb, 80, 360, "MyOSv2  1280x720  framebuffer ok", rgb(0xFF, 0xFF, 0xFF));
 }
 
 void kmain(void)
@@ -187,12 +68,13 @@ void kmain(void)
     // --- 3. Dynamic memory: page allocator, then the heap on top ---
     pmm_init();
     kheap_init();
-    demo_pmm();
-    demo_heap();
-    demo_fs();
-    demo_gfx();
 
-    // --- 4. Interrupts, then the scheduler + a preemption demo ---
+    // --- 4. Filesystem: mount ramfs as root and unpack the initrd into it ---
+    // (the shell at /bin/init lives here, so this must happen before we spawn it)
+    vfs_mount_root(ramfs_type());
+    initrd_unpack();
+
+    // --- 5. Interrupts, then the scheduler ---
     exc_init();
     gic_init();
     timer_init();

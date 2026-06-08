@@ -11,7 +11,7 @@ Target throughout: **ARM64 (AArch64), C + assembly, QEMU `virt` board.**
 
 ---
 
-## Done (Phases 0–12)
+## Done (Phases 0–11)
 
 | # | Phase | What it gave us |
 |---|-------|-----------------|
@@ -26,7 +26,10 @@ Target throughout: **ARM64 (AArch64), C + assembly, QEMU `virt` board.**
 | 9 | fork + copy-on-write | `fork()`, COW page sharing, refcounts, COW fault handler |
 | 10 | Interactive shell | Keyboard input, `help`/`ls`/`cat`/`exit`, `readdir` syscall |
 | 11 | ASIDs | Tagged TLB entries, flush-free context switch |
-| 12 | Graphics (ramfb) | 1280×720 framebuffer, draw primitives, bitmap font |
+
+> A ramfb framebuffer + drawing layer was built as an experimental Phase 12, then
+> **removed** when graphics was deferred. It's recoverable from git history if
+> graphics is revived later.
 
 ---
 
