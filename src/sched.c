@@ -61,15 +61,18 @@ static int slice_left = SCHED_TIME_SLICE;   // ticks remaining for `current`
 
 void sched_init(void)
 {
-    boot_thread.stack = 0;            // it already has the kernel boot stack
-    boot_thread.state = THREAD_RUNNING;
-    boot_thread.id    = 0;
-    boot_thread.priority = 0;         // (becomes idle priority -1 in the next task)
-    boot_thread.next  = &boot_thread; // a ring of one
+    // The boot context becomes the idle thread: always runnable, lowest
+    // priority, so it only runs when every other thread is blocked.
+    boot_thread.stack     = 0;            // it already has the kernel boot stack
+    boot_thread.state     = THREAD_RUNNING;
+    boot_thread.id        = 0;
+    boot_thread.priority  = -1;           // below any created thread
+    boot_thread.wake_tick = 0;
+    boot_thread.next      = &boot_thread; // a ring of one
     current  = &boot_thread;
     next_id  = 1;
     started  = 1;
-    slice_left = SCHED_TIME_SLICE;   // boot thread starts with a full slice
+    slice_left = SCHED_TIME_SLICE;   // idle thread starts with a full slice
 }
 
 int sched_started(void)
@@ -92,20 +95,39 @@ int sched_tick(void)
     return 0;
 }
 
-// Round-robin: switch to the next non-exited thread after `current`.
+// Pick the highest-priority RUNNABLE thread, round-robin within a level, and
+// switch to it. The idle thread is always RUNNABLE at the lowest priority, so a
+// runnable thread always exists.
 void schedule(void)
 {
+    // current yields the CPU unless the caller already parked it (SLEEPING/EXITED).
+    if (current->state == THREAD_RUNNING) {
+        current->state = THREAD_RUNNABLE;
+    }
+
+    // Scan the whole ring starting just after current. "Strictly greater" means
+    // among equal top priorities we keep the FIRST one after current -> round
+    // robin within the level.
+    struct thread *best = 0;
+    struct thread *t = current->next;
+    do {
+        if (t->state == THREAD_RUNNABLE) {
+            if (!best || t->priority > best->priority) {
+                best = t;
+            }
+        }
+        t = t->next;
+    } while (t != current->next);
+
+    best->state = THREAD_RUNNING;
+    if (best == current) {
+        return;                      // current is still the best -- keep running
+    }
+
     struct thread *prev = current;
-    struct thread *next = prev->next;
-    while (next->state == THREAD_EXITED && next != prev) {
-        next = next->next;
-    }
-    if (next == prev) {
-        return;                       // nobody else runnable -- keep going
-    }
-    slice_left = SCHED_TIME_SLICE;    // the newly-running thread gets a full slice
-    current = next;
-    cpu_switch(&prev->ctx, &next->ctx);
+    current = best;
+    slice_left = SCHED_TIME_SLICE;   // fresh slice for the newly-running thread
+    cpu_switch(&prev->ctx, &best->ctx);
 }
 
 void yield(void)

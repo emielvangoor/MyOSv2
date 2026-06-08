@@ -171,6 +171,31 @@ static void test_time_slice_expiry(void)
     KASSERT(sched_tick() == 1);
 }
 
+static int pri_log[8];
+static int pri_n;
+static void pri_hi(void *a) { (void)a; pri_log[pri_n++] = 2; }  // returns -> exits
+static void pri_lo(void *a) { (void)a; pri_log[pri_n++] = 1; }
+
+static void test_priority_order(void)
+{
+    pmm_init();
+    kheap_init();
+    pri_n = 0;
+
+    sched_init();
+    thread_create(pri_lo, 0, 1);   // LOW priority, created FIRST
+    thread_create(pri_hi, 0, 2);   // HIGH priority, created SECOND
+
+    while (pri_n < 2) {            // idle thread yields until both have run
+        yield();
+    }
+
+    // Strict priority: the high-priority thread runs first, despite being
+    // created second (round-robin alone would give 1,2).
+    KASSERT(pri_log[0] == 2);
+    KASSERT(pri_log[1] == 1);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -182,6 +207,7 @@ static const struct ktest tests[] = {
     { "thread: create sets up context",  test_thread_create_context },
     { "sched: round-robin order",         test_round_robin_order },
     { "sched: time slice expiry",         test_time_slice_expiry },
+    { "sched: priority order",            test_priority_order },
 };
 
 int run_self_tests(void)
