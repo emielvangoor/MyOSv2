@@ -1,48 +1,66 @@
-// sched.h -- kernel threads and the round-robin scheduler.
-// =======================================================
+// sched.h -- kernel threads and the priority round-robin scheduler.
+// =================================================================
 //
 // A thread is an independent flow of execution with its own stack and saved
-// register state. Switching threads = save the current registers, load another
-// thread's, and resume. Do it on the timer and it looks like things run at once.
+// register state. The scheduler runs the highest-priority RUNNABLE thread,
+// round-robin among equal priorities, with a 1 ms tick and a 10 ms time slice.
 #pragma once
 #include <stdint.h>
 
-// Callee-saved CPU state for a cooperative switch. A normal function call may
-// clobber x0-x18, so we only need to preserve x19-x30 + sp. The byte offsets
-// here MUST match switch.S (cpu_switch stores/loads at fixed offsets).
+// Callee-saved CPU state for a cooperative switch (offsets MUST match switch.S).
 struct context {
     uint64_t x19, x20, x21, x22, x23, x24, x25, x26, x27, x28; // @0 .. @72
     uint64_t fp;   // x29   @80
-    uint64_t lr;   // x30   @88  (cpu_switch's `ret` resumes here)
+    uint64_t lr;   // x30   @88
     uint64_t sp;   //       @96
 };
 
-enum thread_state { THREAD_RUNNABLE, THREAD_RUNNING, THREAD_EXITED };
+enum thread_state {
+    THREAD_RUNNABLE,   // ready to run
+    THREAD_RUNNING,    // currently on the CPU
+    THREAD_SLEEPING,   // blocked until wake_tick
+    THREAD_EXITED      // finished (a tombstone the scheduler skips)
+};
 
 struct thread {
     struct context ctx;    // MUST be first: switch.S uses &thread (== &thread->ctx)
-    uint8_t *stack;        // kmalloc'd stack base (NULL for the boot thread)
+    uint8_t *stack;        // kmalloc'd stack base (NULL for the idle thread)
     enum thread_state state;
     int id;
+    int priority;          // higher number = more important
+    uint64_t wake_tick;    // jiffy to wake at (when SLEEPING)
     struct thread *next;   // circular run-queue link
 };
 
 // Assembly (switch.S):
 void cpu_switch(struct context *old, struct context *newc);
-void thread_trampoline(void);   // the initial `lr` of every new thread
+void thread_trampoline(void);
 
 // Scheduler:
-void sched_init(void);                                   // register the boot thread
-struct thread *thread_create(void (*fn)(void *), void *arg);
-void yield(void);                                        // cooperative switch
-void schedule(void);                                     // pick next + switch
-void thread_exit(void);                                  // end current thread
-int  sched_started(void);                                // has sched_init run?
+void sched_init(void);                                            // register idle thread
+struct thread *thread_create(void (*fn)(void *), void *arg, int priority);
+void yield(void);                                                 // cooperative switch
+void schedule(void);                                             // pick highest-prio + switch
+void thread_exit(void);                                          // end current thread
+int  sched_started(void);
+int  sched_tick(void);                                           // per-tick: wake sleepers + slice
+void sleep_ticks(uint64_t ticks);                                // block for N ticks
+void sleep_ms(uint64_t ms);                                      // block for N ms (1 ms == 1 tick)
 
 // Length of a thread's time slice, in timer ticks (Linux-style quantum).
 #define SCHED_TIME_SLICE 10
 
-// Called once per timer tick. Returns 1 when the current thread's time slice has
-// expired (a reschedule is due) and resets the slice; returns 0 otherwise (or if
-// the scheduler hasn't started).
-int sched_tick(void);
+// Critical-section helpers: mask IRQs so the timer can't corrupt the run-queue
+// while a thread modifies it. irq_save() returns the old DAIF for irq_restore().
+static inline uint64_t irq_save(void)
+{
+    uint64_t daif;
+    __asm__ volatile("mrs %0, daif" : "=r"(daif));
+    __asm__ volatile("msr daifset, #2" ::: "memory");  // set the I (IRQ) mask bit
+    return daif;
+}
+
+static inline void irq_restore(uint64_t daif)
+{
+    __asm__ volatile("msr daif, %0" :: "r"(daif) : "memory");
+}

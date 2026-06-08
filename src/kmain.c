@@ -137,9 +137,9 @@ void kmain(void)
     timer_init();
 
     sched_init();                                   // boot thread becomes thread 0
-    thread_create(demo_thread, (void *)(uintptr_t)'A');
-    thread_create(demo_thread, (void *)(uintptr_t)'B');
-    thread_create(demo_thread, (void *)(uintptr_t)'C');
+    thread_create(demo_thread, (void *)(uintptr_t)'A', 1);
+    thread_create(demo_thread, (void *)(uintptr_t)'B', 1);
+    thread_create(demo_thread, (void *)(uintptr_t)'C', 1);
     kprintf("Scheduler started: threads A/B/C, preempted by the timer.\n");
 
     enable_irqs();                                  // now the timer can preempt

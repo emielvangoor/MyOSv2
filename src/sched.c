@@ -8,7 +8,7 @@
 static struct thread *current;   // the running thread (NULL until sched_init)
 static int next_id;              // monotonic thread id
 
-struct thread *thread_create(void (*fn)(void *), void *arg)
+struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
 {
     struct thread *t = kmalloc(sizeof(struct thread));
     uint8_t *stack   = kmalloc(STACK_SIZE);
@@ -19,10 +19,12 @@ struct thread *thread_create(void (*fn)(void *), void *arg)
         c[i] = 0;
     }
 
-    t->stack = stack;
-    t->state = THREAD_RUNNABLE;
-    t->id    = next_id++;
-    t->next  = 0;
+    t->stack     = stack;
+    t->state     = THREAD_RUNNABLE;
+    t->id        = next_id++;
+    t->priority  = priority;
+    t->wake_tick = 0;
+    t->next      = 0;
 
     // Craft the initial context. On the first cpu_switch into this thread,
     // cpu_switch restores x19/x20 then `ret`s into lr -> thread_trampoline,
@@ -33,8 +35,10 @@ struct thread *thread_create(void (*fn)(void *), void *arg)
     t->ctx.x19 = (uint64_t)(uintptr_t)fn;
     t->ctx.x20 = (uint64_t)(uintptr_t)arg;
 
-    // If the scheduler is running, link this thread at the TAIL of the ring
-    // (just before `current`), so threads run in creation order.
+    // Link at the ring tail (just before `current`), so threads run in creation
+    // order within a priority. IRQ-masked: the timer must not walk a
+    // half-updated ring.
+    uint64_t flags = irq_save();
     if (current) {
         struct thread *tail = current;
         while (tail->next != current) {
@@ -42,7 +46,10 @@ struct thread *thread_create(void (*fn)(void *), void *arg)
         }
         tail->next = t;
         t->next = current;
+    } else {
+        t->next = t;   // no scheduler yet (only the create-only test hits this)
     }
+    irq_restore(flags);
     return t;
 }
 
@@ -57,6 +64,7 @@ void sched_init(void)
     boot_thread.stack = 0;            // it already has the kernel boot stack
     boot_thread.state = THREAD_RUNNING;
     boot_thread.id    = 0;
+    boot_thread.priority = 0;         // (becomes idle priority -1 in the next task)
     boot_thread.next  = &boot_thread; // a ring of one
     current  = &boot_thread;
     next_id  = 1;
@@ -102,25 +110,16 @@ void schedule(void)
 
 void yield(void)
 {
+    uint64_t flags = irq_save();
     schedule();                       // cooperative: voluntarily give up the CPU
+    irq_restore(flags);
 }
 
 void thread_exit(void)
 {
-    current->state = THREAD_EXITED;
-
-    // Unlink `current` from the ring (find its predecessor first).
-    struct thread *p = current;
-    while (p->next != current) {
-        p = p->next;
-    }
-    p->next = current->next;
-
-    // Switch away forever. `next` is a surviving thread; the exited thread's
-    // saved context is never used again (its stack leaks -- see notes).
-    struct thread *prev = current;
-    struct thread *next = current->next;
-    current = next;
-    cpu_switch(&prev->ctx, &next->ctx);
-    // not reached
+    uint64_t flags = irq_save();
+    current->state = THREAD_EXITED;   // tombstone; schedule() skips it
+    schedule();                       // switch away; never returns here
+    irq_restore(flags);               // unreachable
+    for (;;) { }
 }

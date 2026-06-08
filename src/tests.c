@@ -102,7 +102,7 @@ static void test_thread_create_context(void)
     pmm_init();
     kheap_init();
     void *arg = (void *)(uintptr_t)0xABCD;
-    struct thread *t = thread_create(noop_thread, arg);
+    struct thread *t = thread_create(noop_thread, arg, 1);
 
     KASSERT(t != 0);
     KASSERT(t->stack != 0);
@@ -136,8 +136,8 @@ static void test_round_robin_order(void)
     rr_n = 0;
 
     sched_init();                            // boot thread becomes thread 0
-    thread_create(rr_worker, (void *)(uintptr_t)1);
-    thread_create(rr_worker, (void *)(uintptr_t)2);
+    thread_create(rr_worker, (void *)(uintptr_t)1, 1);
+    thread_create(rr_worker, (void *)(uintptr_t)2, 1);
 
     // The boot thread yields until the two workers have logged 6 entries.
     while (rr_n < 6) {
