@@ -83,17 +83,28 @@ static void demo_heap(void)
     kfree(big);
 }
 
-// A demo thread: print its letter forever with a crude delay. It never yields,
-// so ONLY timer preemption can move the CPU to another thread -- which is exactly
-// what we want to observe.
-static void demo_thread(void *arg)
+// High-priority thread: print a short burst, then sleep so lower-priority
+// threads get the CPU. Demonstrates priority preemption + sleep.
+static void hi_thread(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        for (int i = 0; i < 5; i++) {
+            uart_putc('A');
+            for (volatile int d = 0; d < 1000000; d++) { }
+        }
+        sleep_ms(40);   // yield the CPU to B/C for ~40 ms
+    }
+}
+
+// Lower-priority thread: print its letter continuously. Two of these at equal
+// priority round-robin while the high-priority thread sleeps.
+static void lo_thread(void *arg)
 {
     char c = (char)(uintptr_t)arg;
     for (;;) {
         uart_putc(c);
-        for (volatile int i = 0; i < 3000000; i++) {
-            // burn time so each thread prints at a readable rate
-        }
+        for (volatile int d = 0; d < 1000000; d++) { }
     }
 }
 
@@ -136,11 +147,11 @@ void kmain(void)
     gic_init();
     timer_init();
 
-    sched_init();                                   // boot thread becomes thread 0
-    thread_create(demo_thread, (void *)(uintptr_t)'A', 1);
-    thread_create(demo_thread, (void *)(uintptr_t)'B', 1);
-    thread_create(demo_thread, (void *)(uintptr_t)'C', 1);
-    kprintf("Scheduler started: threads A/B/C, preempted by the timer.\n");
+    sched_init();                                        // boot thread becomes idle (prio -1)
+    thread_create(hi_thread, 0, 2);                      // A: high priority
+    thread_create(lo_thread, (void *)(uintptr_t)'B', 1); // B: low priority
+    thread_create(lo_thread, (void *)(uintptr_t)'C', 1); // C: low priority
+    kprintf("Scheduler: A=high (bursts then sleeps), B/C=low (round-robin).\n");
 
     enable_irqs();                                  // now the timer can preempt
 

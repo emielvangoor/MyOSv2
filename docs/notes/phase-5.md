@@ -125,3 +125,50 @@ process pegs the core), the guest spends its few cycles servicing the real-time
 1 kHz tick and the threads barely advance — output appears to "stall." It's a
 measurement artifact, not a kernel bug; an unstarved run prints ~85 letters/sec
 steadily.
+
+## Scheduler refinement: priorities, sleep, robustness
+
+The Phase 5 scheduler was hardened into a real one.
+
+**Priorities (strict + round-robin within a level).** Each thread has an `int
+priority` (higher = more important). `schedule()` scans the whole ring and picks
+the highest-priority `RUNNABLE` thread; using a *strictly-greater* comparison
+while scanning from `current->next` means equal-priority threads alternate
+(round-robin within the level). A high-priority thread that never sleeps starves
+lower ones — by design; that's what `sleep` is for.
+
+**Idle thread.** `sched_init` makes the boot context the idle thread: priority
+`-1` (below anything created), always runnable, running `kmain`'s `wfi` loop. So
+there is always a runnable thread and `schedule()` never comes up empty (e.g.
+when every worker is asleep).
+
+**Sleep.** `sleep_ticks(n)` / `sleep_ms(ms)` set `current->wake_tick = jiffies +
+n`, mark the thread `SLEEPING`, and `schedule()` away. A `jiffies` counter
+advances each tick inside `sched_tick()`, which also scans the ring and wakes
+(`SLEEPING → RUNNABLE`) any thread whose deadline passed. If a woken thread
+outranks the running one, `sched_tick` returns "reschedule" so priority preemption
+is prompt.
+
+**Tombstone exit.** `thread_exit` just marks the thread `EXITED`; the scheduler
+skips tombstones. Simpler than unlinking (no pointer surgery, fewer race
+windows). The thread struct + stack leak — accepted for now.
+
+**Concurrency (the "rock solid" part).** The run-queue and sleep state are touched
+by both thread code and the timer IRQ. The invariant: *scheduler structures are
+only modified with IRQs masked.* The IRQ path is already masked on exception
+entry; thread-context entry points (`yield`, `sleep_ticks`, `thread_create`,
+`thread_exit`) wrap their critical sections in `irq_save()`/`irq_restore()`
+(set/restore `DAIF.I`). On a single core, masked IRQs give mutual exclusion with
+no locks. Every `cpu_switch` runs with IRQs masked; threads re-enable on resume
+(new threads via the trampoline's `daifclr`, preempted threads via `eret`
+restoring `SPSR`, cooperative paths via `irq_restore`).
+
+**Demo.** A high-priority thread `A` prints 5 chars then `sleep_ms(40)`; two
+equal lower-priority threads `B`/`C` print continuously. Output:
+`BBBBCCCC…AAAAA…BBBBCCCC…` — `B`/`C` round-robin while `A` sleeps, then `A`
+preempts on wake.
+
+**Tested (test-first):** `test_priority_order` (high runs before low despite
+creation order) and `test_sleep_wakes_after_ticks` (worker sleeps exactly 3 ticks,
+the test drives the clock deterministically). Preemption/timing remain
+observed-only.
