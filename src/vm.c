@@ -320,6 +320,36 @@ struct addrspace *as_clone(struct addrspace *parent)
     return child;
 }
 
+// Tear down a process's address space: drop a reference on every user page (so a
+// COW-shared page survives in its other owner), free the private page-table
+// pages, recycle the ASID, and free the top-level table + the struct itself.
+// Only the USER region (l0[1]) is walked -- l0[0] is the SHARED kernel mapping
+// and must never be freed.
+void as_destroy(struct addrspace *as)
+{
+    uint64_t e1 = as->l0[1];
+    if (e1 & 1) {
+        uint64_t *l1 = (uint64_t *)(e1 & PA_MASK);
+        for (int i = 0; i < 512; i++) {
+            if (!(l1[i] & 1)) { continue; }
+            uint64_t *l2 = (uint64_t *)(l1[i] & PA_MASK);
+            for (int j = 0; j < 512; j++) {
+                if (!(l2[j] & 1)) { continue; }
+                uint64_t *l3 = (uint64_t *)(l2[j] & PA_MASK);
+                for (int k = 0; k < 512; k++) {
+                    if (l3[k] & 1) { page_decref(l3[k] & PA_MASK); }
+                }
+                pmm_free(l3);
+            }
+            pmm_free(l2);
+        }
+        pmm_free(l1);
+    }
+    pmm_free(as->l0);
+    asid_free(as->asid);
+    pmm_free(as);
+}
+
 // Handle a write to a COW page: make a private copy and remap it read/write.
 // Returns 1 if it handled a COW fault, 0 if `va` isn't a COW page (a real fault).
 int cow_fault(struct addrspace *as, uint64_t va)

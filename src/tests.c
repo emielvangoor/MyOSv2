@@ -745,6 +745,25 @@ static void test_asid_free_recycles(void)
     (void)b;
 }
 
+static void test_as_destroy_frees_pages(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = as_create();
+    uint64_t pa = as_translate(as, USER_DATA_VA);
+    KASSERT(page_refcount(pa) == 1);
+    as_destroy(as);
+    KASSERT(page_refcount(pa) == 0);   // the page was returned to the PMM
+}
+
+static void test_as_destroy_recycles_asid(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = as_create();
+    uint16_t a = as->asid;
+    as_destroy(as);
+    KASSERT(asid_alloc() == a);         // its ASID is reusable
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -795,6 +814,8 @@ static const struct ktest tests[] = {
     { "asid: user page is non-global",    test_asid_user_page_nonglobal },
     { "asid: rollover recycles",          test_asid_rollover_recycles },
     { "asid: free recycles",              test_asid_free_recycles },
+    { "proc: as_destroy frees pages",     test_as_destroy_frees_pages },
+    { "proc: as_destroy recycles asid",   test_as_destroy_recycles_asid },
 };
 
 int run_self_tests(void)
