@@ -50,10 +50,11 @@ int proc_exec(struct trapframe *tf, const char *path)
         return -1;
     }
 
-    struct addrspace *neu = as_create_image(buf, (uint64_t)n);
+    uint64_t entry = 0;
+    struct addrspace *neu = as_create_elf(buf, (uint64_t)n, &entry);
     kfree(buf);
     if (!neu) {
-        return -1;
+        return -1;                  // not a valid ELF -> image untouched
     }
 
     // Install the new image and switch to it. The kernel stack we're running on
@@ -63,10 +64,10 @@ int proc_exec(struct trapframe *tf, const char *path)
     sched_set_current_as(neu);
     as_switch(neu);
 
-    // Make eret enter the program fresh: cleared registers, the new entry point,
+    // Make eret enter the program fresh: cleared registers, the ELF entry point,
     // a new user stack, EL0 with IRQs enabled (matching enter_user's SPSR=0).
     for (int i = 0; i < 31; i++) { tf->x[i] = 0; }
-    tf->elr    = user_entry_va();
+    tf->elr    = entry;
     tf->sp_el0 = USER_STACK_TOP;
     tf->spsr   = 0;
 

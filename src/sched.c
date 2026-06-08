@@ -128,22 +128,23 @@ struct thread *thread_create_image(const void *img, uint64_t len, int priority)
         c[i] = 0;
     }
 
+    uint64_t entry = 0;
     t->stack     = kstack;
     t->state     = THREAD_RUNNABLE;
     t->id        = next_id++;
     t->priority  = priority;
     t->wake_tick = 0;
-    t->as        = as_create_image(img, len); // its own private address space
+    t->as        = as_create_elf(img, len, &entry); // ELF: its own private AS
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
     t->parent      = current;                 // the spawning thread is our parent
     t->exit_status = 0;
     t->next      = 0;
 
-    // The trampoline + kernel stack run at EL1; it then drops to EL0 at the user
-    // entry VA with the user stack -- both inside this process's address space.
+    // The trampoline + kernel stack run at EL1; it then drops to EL0 at the ELF
+    // entry point with the user stack -- both inside this process's address space.
     t->ctx.sp  = (uint64_t)(uintptr_t)(kstack + STACK_SIZE);  // kernel stack top (EL1)
     t->ctx.lr  = (uint64_t)(uintptr_t)user_entry_trampoline;  // runs at EL1
-    t->ctx.x19 = user_entry_va();                             // user entry (in its AS)
+    t->ctx.x19 = entry;                                       // ELF entry (in its AS)
     t->ctx.x20 = USER_STACK_TOP;                              // user stack top (in its AS)
 
     uint64_t flags = irq_save();

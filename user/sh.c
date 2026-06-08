@@ -45,7 +45,7 @@ static void cmd_cat(const char *path)
     sys_close(fd);
 }
 
-// Print a small non-negative integer followed by a newline.
+// Print a small non-negative integer (no trailing newline).
 static void put_int(long v)
 {
     char b[16];
@@ -53,7 +53,6 @@ static void put_int(long v)
     if (v == 0) { b[i++] = '0'; }
     while (v > 0) { b[i++] = (char)('0' + v % 10); v /= 10; }
     while (i > 0) { sys_write(1, &b[--i], 1); }
-    sys_write(1, "\n", 1);
 }
 
 // fork a child, exec /bin/<cmd> in it, and wait for it. With no /bin programs yet
@@ -77,6 +76,7 @@ static void run_external(const char *cmd)
     }
     int st = 0;
     sys_wait(&st);                  // parent reaps the child
+    puts1("[exit "); put_int(st); puts1("]\n");
 }
 
 // Demonstrate the exit-status path: a child exits with a fixed code; the parent
@@ -90,8 +90,8 @@ static void cmd_spawn(void)
     }
     int st = -1;
     long reaped = sys_wait(&st);
-    puts1("  [parent] reaped pid "); put_int(reaped);
-    puts1("  [parent] child status "); put_int(st);
+    puts1("  [parent] reaped pid "); put_int(reaped); puts1("\n");
+    puts1("  [parent] child status "); put_int(st); puts1("\n");
 }
 
 int umain(void)
