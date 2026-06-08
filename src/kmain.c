@@ -23,6 +23,7 @@
 #include "initrd.h"
 #include "proc.h"
 #include "shm.h"
+#include "block.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -74,6 +75,10 @@ void kmain(void)
     // (the shell at /bin/init lives here, so this must happen before we spawn it)
     vfs_mount_root(ramfs_type());
     initrd_unpack();
+
+    // --- Block device: probe the virtio-blk disk ---
+    virtio_blk_init();
+    kprintf("disk: %s\n", block_present() ? "virtio-blk ready" : "none");
 
     // --- 5. Interrupts, then the scheduler ---
     exc_init();

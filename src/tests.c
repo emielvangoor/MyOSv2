@@ -26,6 +26,7 @@
 #include "shm.h"
 #include "pipe.h"
 #include "signal.h"
+#include "block.h"
 
 #define PAGE 0x1000UL
 
@@ -1077,6 +1078,39 @@ static void test_sig_default_vs_handler(void)
     KASSERT(signal_action(t, SIGKILL) == 0);            // SIGKILL uncatchable
 }
 
+// --- virtio block device (Phase 19) ---
+
+static void test_block_present(void)
+{
+    pmm_init();
+    virtio_blk_init();
+    KASSERT(block_present());
+}
+
+static void test_block_write_read(void)
+{
+    pmm_init();
+    virtio_blk_init();
+    static uint8_t w[512], r[512];
+    for (int i = 0; i < 512; i++) { w[i] = (uint8_t)(i * 7 + 3); r[i] = 0; }
+    KASSERT(block_write(1, w) == 0);
+    KASSERT(block_read(1, r) == 0);
+    for (int i = 0; i < 512; i++) { KASSERT(r[i] == w[i]); }
+}
+
+static void test_block_two_sectors(void)
+{
+    pmm_init();
+    virtio_blk_init();
+    static uint8_t a[512], b[512], ra[512], rb[512];
+    for (int i = 0; i < 512; i++) { a[i] = (uint8_t)i; b[i] = (uint8_t)(255 - i); }
+    KASSERT(block_write(2, a) == 0);
+    KASSERT(block_write(3, b) == 0);
+    KASSERT(block_read(2, ra) == 0);
+    KASSERT(block_read(3, rb) == 0);
+    for (int i = 0; i < 512; i++) { KASSERT(ra[i] == a[i] && rb[i] == b[i]); }
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1152,6 +1186,9 @@ static const struct ktest tests[] = {
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },
     { "sig: default vs handler action",   test_sig_default_vs_handler },
+    { "block: disk present",              test_block_present },
+    { "block: write then read sector",    test_block_write_read },
+    { "block: two sectors independent",   test_block_two_sectors },
 };
 
 int run_self_tests(void)
