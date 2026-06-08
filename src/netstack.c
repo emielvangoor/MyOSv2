@@ -149,6 +149,7 @@ static int ip_send(uint32_t dst_ip, uint8_t proto, const uint8_t *payload, int l
 }
 
 static void icmp_input(uint32_t src_ip, const uint8_t *p, int len);
+static void udp_input(uint32_t src_ip, const uint8_t *p, int len);
 
 static void ip_input(const uint8_t *pkt, int len)
 {
@@ -165,8 +166,9 @@ static void ip_input(const uint8_t *pkt, int len)
     int paylen = total - ihl;
     if (paylen < 0) { return; }
 
-    if (proto == 1) { icmp_input(src, payload, paylen); }
-    // proto 17 (UDP) / 6 (TCP) demux are added in later tasks.
+    if (proto == 1)       { icmp_input(src, payload, paylen); }
+    else if (proto == 17) { udp_input(src, payload, paylen); }
+    // proto 6 (TCP) demux is added in a later task.
 }
 
 // ---- ICMP (ping) ----
@@ -297,6 +299,73 @@ int dns_parse_answer(const uint8_t *msg, int len, uint16_t id, uint32_t *ip)
         o += rdlen;                                      // CNAME/other -> keep going
     }
     return -1;                                           // no A record present
+}
+
+// ---- UDP ----
+//
+// Just enough UDP to carry DNS: a connectionless datagram with an 8-byte header
+// (source port, dest port, length, checksum). The IPv4 UDP checksum is optional,
+// so we send 0 (= "not computed") -- valid and what many minimal stacks do.
+
+static int udp_send(uint32_t dst_ip, uint16_t sport, uint16_t dport,
+                    const uint8_t *payload, int len)
+{
+    static uint8_t seg[1500];
+    put16(seg + 0, sport);
+    put16(seg + 2, dport);
+    put16(seg + 4, (uint16_t)(8 + len));     // UDP length = header + data
+    put16(seg + 6, 0);                       // checksum 0 = none (allowed on IPv4)
+    for (int i = 0; i < len; i++) { seg[8 + i] = payload[i]; }
+    return ip_send(dst_ip, 17, seg, 8 + len);
+}
+
+// A single outstanding DNS request, captured by the inbound path. The poller in
+// net_resolve sets dns_waiting/dns_sport, then spins net_pump() until dns_got.
+static volatile int dns_waiting;
+static uint16_t     dns_sport;
+static uint8_t      dns_rxbuf[512];
+static volatile int dns_rxlen;
+static volatile int dns_got;
+
+static void udp_input(uint32_t src_ip, const uint8_t *p, int len)
+{
+    (void)src_ip;
+    if (len < 8) { return; }
+    uint16_t dport = get16(p + 2);
+    int ulen = get16(p + 4);
+    if (ulen < 8 || ulen > len) { ulen = len; }   // trust the smaller length
+    const uint8_t *data = p + 8;
+    int dlen = ulen - 8;
+
+    if (dns_waiting && dport == dns_sport && dlen > 0) {   // our DNS reply
+        int n = dlen > (int)sizeof(dns_rxbuf) ? (int)sizeof(dns_rxbuf) : dlen;
+        for (int i = 0; i < n; i++) { dns_rxbuf[i] = data[i]; }
+        dns_rxlen = n;
+        dns_got = 1;
+    }
+}
+
+int net_resolve(const char *host, uint32_t *ip)
+{
+    static uint16_t qid;
+    static uint16_t next_sport = 50000;       // ephemeral source-port cursor
+    uint16_t id = ++qid;
+    dns_sport = next_sport++;
+    if (next_sport == 0) { next_sport = 50000; }
+    dns_waiting = 1; dns_got = 0; dns_rxlen = 0;
+
+    uint8_t query[512];
+    int qn = dns_build_query(query, id, host);
+    if (qn < 0) { dns_waiting = 0; return -1; }
+    if (udp_send(IP_DNS, dns_sport, 53, query, qn) != 0) { dns_waiting = 0; return -1; }
+
+    for (long tries = 0; tries < 50000000L; tries++) {
+        net_pump();
+        if (dns_got) { break; }
+    }
+    dns_waiting = 0;
+    if (!dns_got) { return -1; }              // timed out
+    return dns_parse_answer(dns_rxbuf, dns_rxlen, id, ip);
 }
 
 // ---- inbound dispatch ----

@@ -1322,6 +1322,17 @@ static void test_dns_parse_skips_cname(void)
     KASSERT(ip == 0x09080706u);                 // 9.8.7.6
 }
 
+static void test_dns_resolve_live(void)
+{
+    pmm_init(); kheap_init(); vm_init(); virtio_net_init(); net_stack_init();
+    uint32_t ip = 0;
+    // SLIRP's resolver (10.0.2.3) forwards to the host's nameserver.
+    KASSERT(net_resolve("example.com", &ip) == 0);
+    KASSERT(ip != 0);
+    kprintf("    [resolved example.com -> %u.%u.%u.%u]\n",
+            (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+}
+
 static void test_dns_parse_rcode_error(void)
 {
     // Header RCODE = 3 (NXDOMAIN) -> parse fails even though counts look sane.
@@ -1425,6 +1436,7 @@ static const struct ktest tests[] = {
     { "dns: parse A record",              test_dns_parse_a_record },
     { "dns: skip CNAME to A",             test_dns_parse_skips_cname },
     { "dns: RCODE error -> fail",         test_dns_parse_rcode_error },
+    { "dns: resolve localhost (live)",    test_dns_resolve_live },
 };
 
 int run_self_tests(void)
