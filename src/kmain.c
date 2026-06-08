@@ -24,6 +24,7 @@
 #include "proc.h"
 #include "shm.h"
 #include "block.h"
+#include "sfs.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -50,21 +51,13 @@ void kmain(void)
     mmu_init();
     kprintf("MMU enabled.\n");
 
-    // --- Self-tests: verify the foundations before doing anything else. ---
-    // On a normal build, a failure halts the kernel (don't limp forward broken).
-    // The `make test` build (-DTEST_EXIT) instead exits QEMU with a status code.
-    int failed = run_self_tests();
+    // --- Self-tests: only in the `make test` build (-DTEST_EXIT). They run the
+    // whole suite -- including disk/filesystem tests that reformat the disk -- so
+    // we keep them out of a normal boot (which would wipe persistent data and
+    // slow startup). `make test` runs them and exits QEMU with a status code.
 #ifdef TEST_EXIT
-    // `make test` build: report the result to the shell and stop.
+    int failed = run_self_tests();
     qemu_exit(failed == 0 ? 0 : 1);
-#else
-    // Normal build: a failure is fatal -- halt rather than run broken.
-    if (failed) {
-        kprintf("SELF-TESTS FAILED -- halting.\n");
-        for (;;) {
-            __asm__ volatile("wfi");
-        }
-    }
 #endif
 
     // --- 3. Dynamic memory: page allocator, then the heap on top ---
@@ -76,9 +69,38 @@ void kmain(void)
     vfs_mount_root(ramfs_type());
     initrd_unpack();
 
-    // --- Block device: probe the virtio-blk disk ---
+    // --- Block device + persistent /disk filesystem ---
     virtio_blk_init();
-    kprintf("disk: %s\n", block_present() ? "virtio-blk ready" : "none");
+    if (block_present()) {
+        vfs_mount_at("/disk", sfs_mount());
+
+        // Persistence demo: a boot counter stored in /disk/boots. It survives
+        // reboots because the disk image is a real file -- re-running `make run`
+        // shows it increment.
+        int n = 0;
+        struct file *bf = vfs_open("/disk/boots");
+        if (bf) {
+            char b[16] = {0};
+            int k = vfs_read(bf, b, 15);
+            for (int i = 0; i < k && b[i] >= '0' && b[i] <= '9'; i++) { n = n * 10 + (b[i] - '0'); }
+            vfs_close(bf);
+        }
+        n++;
+        if (!vfs_lookup("/disk/boots")) { vfs_create("/disk/boots", VN_FILE); }
+        struct file *wf = vfs_open("/disk/boots");
+        if (wf) {
+            char b[16]; int i = 0, v = n; char t[16]; int j = 0;
+            if (v == 0) { t[j++] = '0'; }
+            while (v) { t[j++] = (char)('0' + v % 10); v /= 10; }
+            while (j) { b[i++] = t[--j]; }
+            wf->off = 0;
+            vfs_write(wf, b, i);
+            vfs_close(wf);
+        }
+        kprintf("disk: /disk mounted (boot count %d)\n", n);
+    } else {
+        kprintf("disk: none\n");
+    }
 
     // --- 5. Interrupts, then the scheduler ---
     exc_init();

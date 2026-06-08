@@ -19,6 +19,7 @@ static int nmounts;
 
 void vfs_mount_root(struct fs_type *fs)
 {
+    nmounts = 0;          // a fresh root means a fresh mount table
     root = fs->mount();
 }
 

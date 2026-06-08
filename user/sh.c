@@ -27,10 +27,11 @@ static int readline(char *buf, int max)
     }
 }
 
-static void cmd_ls(void)
+static void cmd_ls(const char *path)
 {
+    if (!path || path[0] == 0) { path = "/"; }
     char name[32];
-    for (int i = 0; sys_readdir("/", i, name) == 0; i++) {
+    for (int i = 0; sys_readdir(path, i, name) == 0; i++) {
         puts1(name); puts1("\n");
     }
 }
@@ -165,7 +166,7 @@ int umain(void)
         if (cmd[0] == 0)            { continue; }
         else if (streq(cmd, "help")) { puts1("commands: help echo ls cat <f> spawn exit; others run /bin/<cmd>\n"); }
         else if (streq(cmd, "echo")) { puts1(arg); puts1("\n"); }
-        else if (streq(cmd, "ls"))   { cmd_ls(); }
+        else if (streq(cmd, "ls"))   { cmd_ls(arg); }
         else if (streq(cmd, "cat"))  { cmd_cat(arg); }
         else if (streq(cmd, "spawn")){ cmd_spawn(); }
         else if (streq(cmd, "exit")) { sys_exit(0); }
