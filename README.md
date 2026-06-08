@@ -32,6 +32,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
   virtqueue layer, reading and writing 512-byte sectors.
 - **Persistent filesystem** — a small on-disk inode FS (SFS) mounted at `/disk`;
   files survive reboots.
+- **Network interface** — a **virtio-net** driver that sends and receives raw
+  Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
 
 Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
 and eventually a TCP/IP network stack — lives in
