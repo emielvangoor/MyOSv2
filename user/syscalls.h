@@ -25,3 +25,4 @@
 #define SYS_SIGRETURN 22
 #define SYS_PING   28
 #define SYS_RESOLVE 29
+#define SYS_SHUTDOWN 30

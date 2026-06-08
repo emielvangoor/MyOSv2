@@ -19,6 +19,7 @@
 #include "kheap.h"
 #include "signal.h"
 #include "net.h"
+#include "power.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -181,6 +182,9 @@ long do_syscall(struct trapframe *tf)
         ret = (long)ip;
         break;
     }
+    case SYS_SHUTDOWN:                        // halt the machine (does not return)
+        power_off();
+        break;
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame
         const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
         uint64_t *d = (uint64_t *)tf;

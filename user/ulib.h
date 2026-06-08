@@ -26,6 +26,7 @@ int   signal(int sig, void (*handler)(int));
 void  __sigreturn(void);
 int   ping(unsigned int ip, int *ms);   // ip in host order; 0 + round-trip, -1 on timeout
 unsigned int resolve(const char *host); // hostname -> IP (host order), 0 on failure
+void shutdown(void);                    // halt the machine (does not return)
 
 #define SIGINT  2
 #define SIGKILL 9

@@ -42,6 +42,7 @@ int signal(int sig, void (*handler)(int))
 
 int ping(unsigned int ip, int *ms) { return (int)syscall3(SYS_PING, ip, (long)ms, 0); }
 unsigned int resolve(const char *host) { return (unsigned int)syscall3(SYS_RESOLVE, (long)host, 0, 0); }
+void shutdown(void) { syscall3(SYS_SHUTDOWN, 0, 0, 0); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 
 // --- minimal user-space malloc: a first-fit free list over sbrk ---

@@ -28,6 +28,7 @@
 #define SYS_SIGRETURN 22 // restore the pre-signal context (used by the trampoline)
 #define SYS_PING   28  // x0=ip (host order), x1=int* ms -> 0 + round-trip, or -1
 #define SYS_RESOLVE 29 // x0=hostname -> resolved IP (host order), or 0 on failure
+#define SYS_SHUTDOWN 30 // halt the machine (does not return)
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.

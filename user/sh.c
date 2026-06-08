@@ -182,12 +182,13 @@ int umain(void)
         if (*arg == ' ') { *arg = 0; arg++; } else { arg = (char *)""; }
 
         if (cmd[0] == 0)            { continue; }
-        else if (streq(cmd, "help")) { puts1("commands: help echo ls cat <f> spawn exit; others run /bin/<cmd>\n"); }
+        else if (streq(cmd, "help")) { puts1("commands: help echo ls cat <f> spawn exit shutdown; others run /bin/<cmd>\n"); }
         else if (streq(cmd, "echo")) { puts1(arg); puts1("\n"); }
         else if (streq(cmd, "ls"))   { cmd_ls(arg); }
         else if (streq(cmd, "cat"))  { cmd_cat(arg); }
         else if (streq(cmd, "spawn")){ cmd_spawn(); }
         else if (streq(cmd, "exit")) { sys_exit(0); }
+        else if (streq(cmd, "shutdown")) { puts1("Shutting down.\n"); shutdown(); }
         else                         { run_external(cmd, arg); }   // fork + exec + wait
     }
 }
