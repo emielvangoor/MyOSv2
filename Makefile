@@ -36,11 +36,12 @@ USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall 
 
 QEMU       := qemu-system-aarch64
 # -display none: no graphical window.
-# -serial mon:stdio: serial to the terminal, multiplexed with the QEMU monitor.
-#   Crucially this passes Ctrl-C THROUGH to the guest (so our shell can interrupt
-#   a running program) instead of killing QEMU. To quit QEMU, press Ctrl-A then X
-#   (Ctrl-A C switches to the monitor). With plain `-serial stdio`, Ctrl-C would
-#   send SIGINT to the QEMU process and terminate it.
+# Serial is a plain stdio chardev with signal=off: that hands Ctrl-C to the GUEST
+# (so our shell can interrupt a running program) instead of sending SIGINT to the
+# QEMU process and killing it -- which is what plain `-serial stdio` does. We do
+# NOT multiplex the monitor onto it (mux=on), because the mux's keyboard "focus"
+# can default to the monitor in some terminals and then no input reaches the OS.
+# To quit QEMU: close the terminal, or `pkill qemu-system-aarch64` from another.
 # -m 256M: fix the RAM size so the page allocator knows where RAM ends (0x50000000).
 # A virtio-blk disk on a virtio-mmio transport (modern, non-legacy), backed by a
 # raw image file -- the OS reads/writes its 512-byte sectors.
@@ -50,7 +51,8 @@ QEMU_DISK  := -global virtio-mmio.force-legacy=false \
 # QEMU user-mode networking: a virtual LAN (gateway 10.0.2.2, guest 10.0.2.15)
 # with a built-in ARP/ICMP/DHCP responder -- no host setup needed.
 QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
-QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial mon:stdio \
+QEMU_SERIAL := -chardev stdio,id=ch0,signal=off -serial chardev:ch0
+QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none $(QEMU_SERIAL) \
               -kernel $(TARGET) $(QEMU_DISK) $(QEMU_NET)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
@@ -85,7 +87,8 @@ $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
 $(TARGET): $(OBJ) linker.ld
 	$(CC) $(LDFLAGS) $(OBJ) -o $@
 
-# Run in the terminal. Quit QEMU with: Ctrl-C
+# Run in the terminal. Ctrl-C goes to the guest shell; quit QEMU by closing the
+# terminal (or `pkill qemu-system-aarch64`).
 run: $(TARGET) $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS)
 
