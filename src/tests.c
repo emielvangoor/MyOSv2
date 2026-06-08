@@ -222,6 +222,37 @@ static void test_priority_order(void)
     KASSERT(pri_log[1] == 1);
 }
 
+// A blocked pipe reader must SLEEP (THREAD_BLOCKED), not spin -- otherwise it
+// monopolises the CPU with IRQs masked and starves the timer/device interrupts a
+// sleeping peer needs to wake (the `http | wc` deadlock).
+static struct pipe *pwt_pipe;
+static struct thread *pwt_reader;
+static int pwt_got;
+static char pwt_buf[8];
+static void pwt_reader_fn(void *a)
+{
+    (void)a;
+    struct file f = { .pipe = pwt_pipe, .ref = 1 };   // a read end on the pipe
+    pwt_got = pipe_read(&f, pwt_buf, sizeof(pwt_buf));
+}
+static void test_pipe_read_blocks_not_spins(void)
+{
+    pmm_init(); kheap_init(); sched_init();
+    pwt_pipe = pipe_alloc();                 // readers=1, writers=1
+    pwt_got = -99;
+    pwt_reader = thread_create(pwt_reader_fn, 0, 1);
+
+    yield();                                 // reader runs; empty pipe -> blocks
+    KASSERT(pwt_got == -99);                          // hasn't returned
+    KASSERT(pwt_reader->state == THREAD_BLOCKED);     // asleep, NOT spinning
+
+    struct file wf = { .pipe = pwt_pipe, .writable = 1, .ref = 1 };
+    pipe_write(&wf, "hi", 2);                 // feeding it must wake the reader
+    yield();
+    KASSERT(pwt_got == 2);
+    KASSERT(pwt_buf[0] == 'h' && pwt_buf[1] == 'i');
+}
+
 static char slp_log[8];
 static int slp_n;
 static void slp_worker(void *a)
@@ -1626,6 +1657,7 @@ static const struct ktest tests[] = {
     { "pipe: read EOF when no writers",   test_pipe_eof },
     { "pipe: write -1 when no readers",   test_pipe_broken },
     { "pipe: ring buffer wraps",          test_pipe_wraps },
+    { "pipe: reader blocks, not spins",   test_pipe_read_blocks_not_spins },
     { "file: refcount dup/close",         test_file_refcount },
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },
