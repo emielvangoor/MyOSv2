@@ -24,6 +24,8 @@
 #include "proc.h"
 #include "fwcfg.h"
 #include "fb.h"
+#include "draw.h"
+#include "font8x8.h"
 
 #define PAGE 0x1000UL
 
@@ -767,6 +769,44 @@ static void test_ramfb_cfg_layout(void)
     KASSERT(sizeof(struct ramfb_cfg) == 28);       // packed, no padding
 }
 
+// Build a small fake framebuffer over a kmalloc buffer for draw tests.
+static struct fb_info fake_fb(uint32_t *buf, uint32_t w, uint32_t h)
+{
+    struct fb_info f; f.pixels = buf; f.width = w; f.height = h; f.pitch_px = w;
+    return f;
+}
+
+static void test_draw_put(void)
+{
+    pmm_init(); kheap_init();
+    uint32_t *buf = kmalloc(8 * 4 * sizeof(uint32_t));
+    for (int i = 0; i < 8 * 4; i++) { buf[i] = 0; }
+    struct fb_info f = fake_fb(buf, 8, 4);
+
+    draw_put(&f, 3, 2, 0x00ABCDEF);
+    KASSERT(buf[2 * 8 + 3] == 0x00ABCDEF);     // exactly that pixel
+    KASSERT(buf[2 * 8 + 4] == 0);              // neighbor untouched
+
+    draw_put(&f, 99, 99, 0x11111111);          // out of bounds -> ignored
+    for (int i = 0; i < 8 * 4; i++) { if (i != 2*8+3) KASSERT(buf[i] == 0); }
+}
+
+static void test_draw_fill_rect_clips(void)
+{
+    pmm_init(); kheap_init();
+    uint32_t *buf = kmalloc(8 * 4 * sizeof(uint32_t));
+    for (int i = 0; i < 8 * 4; i++) { buf[i] = 0; }
+    struct fb_info f = fake_fb(buf, 8, 4);
+
+    // Rect from (6,3) size 5x5 straddles the right & bottom edges.
+    draw_fill_rect(&f, 6, 3, 5, 5, 0x00FF00FF);
+    KASSERT(buf[3 * 8 + 6] == 0x00FF00FF);     // in bounds
+    KASSERT(buf[3 * 8 + 7] == 0x00FF00FF);     // last column in bounds
+    // Nothing written outside 8x4: every pixel is either the fill or 0.
+    for (int i = 0; i < 8 * 4; i++) { KASSERT(buf[i] == 0 || buf[i] == 0x00FF00FF); }
+    KASSERT(rgb(0xAB, 0xCD, 0xEF) == 0x00ABCDEF);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -819,6 +859,8 @@ static const struct ktest tests[] = {
     { "gfx: bswap roundtrip",             test_bswap_roundtrip },
     { "gfx: fb geometry",                 test_fb_geometry },
     { "gfx: ramfb cfg byte layout",       test_ramfb_cfg_layout },
+    { "gfx: draw_put sets one pixel",     test_draw_put },
+    { "gfx: fill_rect clips to bounds",   test_draw_fill_rect_clips },
 };
 
 int run_self_tests(void)
