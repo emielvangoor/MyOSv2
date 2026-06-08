@@ -35,8 +35,12 @@ USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall 
                -Wl,-z,max-page-size=0x1000
 
 QEMU       := qemu-system-aarch64
-# -display none: no graphical window. -serial stdio: serial to terminal AND
-# lets Ctrl-C (SIGINT) terminate QEMU normally (unlike -nographic).
+# -display none: no graphical window.
+# -serial mon:stdio: serial to the terminal, multiplexed with the QEMU monitor.
+#   Crucially this passes Ctrl-C THROUGH to the guest (so our shell can interrupt
+#   a running program) instead of killing QEMU. To quit QEMU, press Ctrl-A then X
+#   (Ctrl-A C switches to the monitor). With plain `-serial stdio`, Ctrl-C would
+#   send SIGINT to the QEMU process and terminate it.
 # -m 256M: fix the RAM size so the page allocator knows where RAM ends (0x50000000).
 # A virtio-blk disk on a virtio-mmio transport (modern, non-legacy), backed by a
 # raw image file -- the OS reads/writes its 512-byte sectors.
@@ -46,7 +50,7 @@ QEMU_DISK  := -global virtio-mmio.force-legacy=false \
 # QEMU user-mode networking: a virtual LAN (gateway 10.0.2.2, guest 10.0.2.15)
 # with a built-in ARP/ICMP/DHCP responder -- no host setup needed.
 QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
-QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial stdio \
+QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial mon:stdio \
               -kernel $(TARGET) $(QEMU_DISK) $(QEMU_NET)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
