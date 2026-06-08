@@ -19,4 +19,5 @@ long sys_close(int fd)                        { return syscall3(SYS_CLOSE, fd, 0
 void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }
 void sys_sleep(long ms)                       { syscall3(SYS_SLEEP, ms, 0, 0); }
+long sys_fork(void)                           { return syscall3(SYS_FORK, 0, 0, 0); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }

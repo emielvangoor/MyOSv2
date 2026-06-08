@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include "tests.h"
 #include "ktest.h"
+#include "kprintf.h"
 #include "pmm.h"
 #include "kheap.h"
 #include "sched.h"
@@ -615,6 +616,54 @@ static void test_fd_close_reuse(void)
     KASSERT(fd_a == fd_b);
 }
 
+// --- Copy-on-write (page-level) ---
+
+static void test_cow_clone_shares_pages(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *p = as_create();
+    struct addrspace *c = as_clone(p);
+    KASSERT(as_translate(p, USER_DATA_VA) == as_translate(c, USER_DATA_VA));
+    KASSERT(as_translate(c, USER_DATA_VA) != 0);
+}
+static void test_cow_clone_refcount(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *p = as_create();
+    struct addrspace *c = as_clone(p);
+    (void)c;
+    uint64_t pa = as_translate(p, USER_DATA_VA);
+    KASSERT(page_refcount(pa) == 2);
+}
+static void test_cow_fault_copies(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *p = as_create();
+    uint64_t ppa = as_translate(p, USER_DATA_VA);
+    *(volatile uint8_t *)(uintptr_t)ppa = 0x5A;          // marker (parent page is RW)
+    struct addrspace *c = as_clone(p);
+    KASSERT(cow_fault(c, USER_DATA_VA) == 1);
+    uint64_t cpa = as_translate(c, USER_DATA_VA);
+    KASSERT(cpa != ppa);                                  // private now
+    KASSERT(*(volatile uint8_t *)(uintptr_t)cpa == 0x5A); // content preserved
+}
+static void test_cow_fault_refcount(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *p = as_create();
+    uint64_t pa = as_translate(p, USER_DATA_VA);
+    struct addrspace *c = as_clone(p);
+    KASSERT(page_refcount(pa) == 2);
+    cow_fault(c, USER_DATA_VA);
+    KASSERT(page_refcount(pa) == 1);
+}
+static void test_cow_fault_non_cow(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *p = as_create();
+    KASSERT(cow_fault(p, 0x999000UL) == 0);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -653,6 +702,11 @@ static const struct ktest tests[] = {
     { "fd: read syscall",                 test_fd_read_syscall },
     { "fd: open missing -> -1",           test_fd_open_missing },
     { "fd: close then reuse",             test_fd_close_reuse },
+    { "cow: clone shares pages",          test_cow_clone_shares_pages },
+    { "cow: clone refcount 2",            test_cow_clone_refcount },
+    { "cow: fault copies page",           test_cow_fault_copies },
+    { "cow: fault drops refcount",        test_cow_fault_refcount },
+    { "cow: fault on non-cow -> 0",       test_cow_fault_non_cow },
 };
 
 int run_self_tests(void)

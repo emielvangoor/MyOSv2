@@ -11,6 +11,7 @@
 #include "timer.h"
 #include "sched.h"
 #include "syscall.h"
+#include "vm.h"
 
 // Defined in vectors.S: the start of our 16-entry vector table.
 extern char vector_table[];
@@ -89,6 +90,16 @@ void el0_sync_handler(struct trapframe *tf)
 
     if (ec == 0x15) {            // EC 0x15 = SVC executed in AArch64
         do_syscall(tf);
+    } else if (ec == 0x24) {     // EC 0x24 = data abort from a lower EL
+        uint64_t far;
+        __asm__ volatile("mrs %0, far_el1" : "=r"(far));
+        // ESR bit 6 (WnR) = 1 means the access was a write. A write to a
+        // read-only COW page means: make a private copy and retry.
+        if ((esr & (1u << 6)) && cow_fault(sched_current_as(), far)) {
+            return;              // handled -- eret retries the store
+        }
+        kprintf("User data abort at 0x%lx (ESR=0x%lx) -- killing thread.\n", far, esr);
+        thread_exit();
     } else {
         kprintf("User fault at EL0: EC=0x%x ELR=0x%lx ESR=0x%lx -- killing thread.\n",
                 ec, tf->elr, esr);

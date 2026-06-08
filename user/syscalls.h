@@ -9,3 +9,4 @@
 #define SYS_OPEN   6
 #define SYS_READ   7
 #define SYS_CLOSE  8
+#define SYS_FORK   9

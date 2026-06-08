@@ -80,6 +80,9 @@ long do_syscall(struct trapframe *tf)
         thread_exit();                       // does not return
         ret = 0;
         break;
+    case SYS_FORK:
+        ret = sched_fork(tf);                // child pid (parent); child gets 0
+        break;
     case SYS_REPORT:                         // x0 = pid, x1 = value read back
         kprintf("  [user] process %d read %d  (%s)\n",
                 (int)tf->x[0], (int)tf->x[1],

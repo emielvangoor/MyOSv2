@@ -46,6 +46,9 @@ struct file;   // from vfs.h (the fd table holds these)
 struct thread *thread_create(void (*fn)(void *), void *arg, int priority);
 struct thread *thread_create_image(const void *img, uint64_t len, int priority); // EL0 program
 struct file  **sched_current_fds(void);   // the running thread's fd table
+struct addrspace *sched_current_as(void); // the running thread's address space
+struct trapframe;
+int sched_fork(struct trapframe *parent_tf);   // fork: clone current; returns child pid
 void yield(void);                                                 // cooperative switch
 void schedule(void);                                             // pick highest-prio + switch
 void thread_exit(void);                                          // end current thread

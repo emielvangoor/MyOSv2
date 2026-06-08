@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "sched.h"
 #include "kheap.h"
+#include "exceptions.h"   // struct trapframe (for fork)
 
 #define STACK_SIZE (16 * 1024)   // 16 KiB per-thread stack
 
@@ -58,6 +59,54 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
 struct file **sched_current_fds(void)
 {
     return current ? current->fds : 0;
+}
+
+struct addrspace *sched_current_as(void)
+{
+    return current ? current->as : 0;
+}
+
+extern void fork_ret(void);   // vectors.S: a forked child's first entry
+
+// fork: build a child thread that is a copy-on-write clone of the current one.
+// It resumes at the parent's `svc` with x0 = 0 (via fork_ret + a copied trap
+// frame). Returns the child's pid (to the parent).
+int sched_fork(struct trapframe *parent_tf)
+{
+    struct thread *t = kmalloc(sizeof(struct thread));
+    uint8_t *kstack  = kmalloc(STACK_SIZE);
+
+    uint8_t *c = (uint8_t *)&t->ctx;
+    for (unsigned i = 0; i < sizeof(t->ctx); i++) { c[i] = 0; }
+
+    t->stack     = kstack;
+    t->state     = THREAD_RUNNABLE;
+    t->id        = next_id++;
+    t->priority  = current->priority;
+    t->wake_tick = 0;
+    t->as        = as_clone(current->as);            // copy-on-write address space
+    for (int i = 0; i < 16; i++) { t->fds[i] = current->fds[i]; }  // share open files
+    t->next      = 0;
+
+    // Place a copy of the parent's trap frame at the top of the child's kernel
+    // stack, with x0 = 0; fork_ret (= kernel_exit) will eret it to EL0.
+    uint64_t top = ((uint64_t)(uintptr_t)(kstack + STACK_SIZE)) & ~15UL;
+    uint64_t tf_addr = top - 272;                    // sizeof(struct trapframe), 16-aligned
+    struct trapframe *ctf = (struct trapframe *)(uintptr_t)tf_addr;
+    const uint64_t *pw = (const uint64_t *)parent_tf;   // copy word by word (no memcpy)
+    uint64_t *cw = (uint64_t *)ctf;
+    for (unsigned i = 0; i < sizeof(struct trapframe) / 8; i++) { cw[i] = pw[i]; }
+    ctf->x[0] = 0;
+    t->ctx.sp = tf_addr;
+    t->ctx.lr = (uint64_t)(uintptr_t)fork_ret;
+
+    uint64_t flags = irq_save();
+    struct thread *tail = current;
+    while (tail->next != current) { tail = tail->next; }
+    tail->next = t;
+    t->next = current;
+    irq_restore(flags);
+    return t->id;
 }
 
 // Create a thread that starts at EL0 in its OWN address space, running the

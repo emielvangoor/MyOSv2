@@ -7,5 +7,6 @@ long sys_close(int fd);
 void sys_exit(int code);
 long sys_getpid(void);
 void sys_sleep(long ms);
+long sys_fork(void);
 long ustrlen(const char *s);
 void umain(void);   // the program's entry (defined per-program)

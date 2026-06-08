@@ -30,11 +30,21 @@
 #define ATTR_PXN        (1UL << 53)
 
 #define PAGE 4096UL
+#define PA_MASK 0x0000FFFFFFFFF000UL    // physical address bits [47:12] of a descriptor
+
+// ---- Page reference counts (for copy-on-write sharing across address spaces) ----
+#define PTE_COW   (1UL << 55)          // software-use bit: "copy on write"
+#define RAM_BASE  0x40000000UL
+#define RAM_TOP   0x50000000UL
+#define NPAGES    ((RAM_TOP - RAM_BASE) / PAGE)
+static uint16_t page_ref[NPAGES];
 
 // The embedded user program (a flat binary linked at USER_CODE_VA), generated
 // from user/ by the Makefile (build/user_blob.c).
 extern unsigned char init_bin[];
 extern unsigned int  init_bin_len;
+
+static void page_incref(uint64_t pa);   // defined in the COW section below
 
 // Allocate a zeroed page-table page from the PMM.
 static uint64_t *alloc_table(void)
@@ -46,7 +56,10 @@ static uint64_t *alloc_table(void)
     return t;
 }
 
-void vm_init(void) { }   // nothing to prepare globally now (code is per-process)
+void vm_init(void)
+{
+    for (uint64_t i = 0; i < NPAGES; i++) { page_ref[i] = 0; }   // reset refcounts
+}
 
 uint64_t user_entry_va(void)
 {
@@ -105,17 +118,20 @@ struct addrspace *as_create_image(const void *img, uint64_t len)
             dst[j] = (k < len) ? src[k] : 0;
         }
         map_page(as->l0, USER_CODE_VA + i * PAGE, pa, code_attr);
+        page_incref(pa);
     }
 
     // Private stack: 16 pages ending at USER_STACK_TOP, freshly allocated.
     for (uint64_t i = 1; i <= 16; i++) {
         uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
         map_page(as->l0, USER_STACK_TOP - i * PAGE, pa, rw_attr);
+        page_incref(pa);
     }
 
     // Private data: one page.
     uint64_t data_pa = (uint64_t)(uintptr_t)pmm_alloc();
     map_page(as->l0, USER_DATA_VA, data_pa, rw_attr);
+    page_incref(data_pa);
 
     return as;
 }
@@ -130,18 +146,18 @@ uint64_t as_translate(struct addrspace *as, uint64_t va)
 {
     uint64_t e = as->l0[(va >> 39) & 511];
     if (!(e & 1)) return 0;
-    uint64_t *l1 = (uint64_t *)(e & ~0xFFFUL);
+    uint64_t *l1 = (uint64_t *)(e & PA_MASK);
     e = l1[(va >> 30) & 511];
     if (!(e & 1)) return 0;
     if ((e & 3) == 1) return (e & ~0x3FFFFFFFUL) | (va & 0x3FFFFFFF);   // 1 GiB block
-    uint64_t *l2 = (uint64_t *)(e & ~0xFFFUL);
+    uint64_t *l2 = (uint64_t *)(e & PA_MASK);
     e = l2[(va >> 21) & 511];
     if (!(e & 1)) return 0;
     if ((e & 3) == 1) return (e & ~0x1FFFFFUL) | (va & 0x1FFFFF);       // 2 MiB block
-    uint64_t *l3 = (uint64_t *)(e & ~0xFFFUL);
+    uint64_t *l3 = (uint64_t *)(e & PA_MASK);
     e = l3[(va >> 12) & 511];
     if (!(e & 1)) return 0;
-    return (e & ~0xFFFUL) | (va & 0xFFF);                              // 4 KiB page
+    return (e & PA_MASK) | (va & 0xFFF);                              // 4 KiB page
 }
 
 void as_switch(struct addrspace *as)
@@ -151,4 +167,122 @@ void as_switch(struct addrspace *as)
     __asm__ volatile("tlbi vmalle1");
     __asm__ volatile("dsb ish");
     __asm__ volatile("isb");
+}
+
+// ---- Copy-on-write (fork) support ----
+//
+// A page can be shared by several address spaces after fork. We count
+// references so a page is freed only when the last owner drops it. On fork,
+// writable user pages are remapped READ-ONLY + COW in both parent and child; a
+// write then faults, and cow_fault() makes a private copy.
+
+static uint64_t pidx(uint64_t pa) { return (pa - RAM_BASE) / PAGE; }
+
+int page_refcount(uint64_t pa)
+{
+    if (pa < RAM_BASE || pa >= RAM_TOP) { return 0; }
+    return page_ref[pidx(pa)];
+}
+static void page_incref(uint64_t pa)
+{
+    if (pa >= RAM_BASE && pa < RAM_TOP) { page_ref[pidx(pa)]++; }
+}
+static void page_decref(uint64_t pa)
+{
+    if (pa < RAM_BASE || pa >= RAM_TOP) { return; }
+    if (page_ref[pidx(pa)] > 0) { page_ref[pidx(pa)]--; }
+    if (page_ref[pidx(pa)] == 0) { pmm_free((void *)(uintptr_t)pa); }
+}
+
+// Return a pointer to the L3 page-table entry for `va` in `l0`, or 0 if any
+// level along the way is missing.
+static uint64_t *pte_ptr(uint64_t *l0, uint64_t va)
+{
+    uint64_t e = l0[(va >> 39) & 511];
+    if (!(e & 1)) { return 0; }
+    uint64_t *l1 = (uint64_t *)(e & PA_MASK);
+    e = l1[(va >> 30) & 511];
+    if (!(e & 1) || (e & 3) == 1) { return 0; }
+    uint64_t *l2 = (uint64_t *)(e & PA_MASK);
+    e = l2[(va >> 21) & 511];
+    if (!(e & 1) || (e & 3) == 1) { return 0; }
+    uint64_t *l3 = (uint64_t *)(e & PA_MASK);
+    if (!(l3[(va >> 12) & 511] & 1)) { return 0; }
+    return &l3[(va >> 12) & 511];
+}
+
+static void flush_tlb(void)
+{
+    __asm__ volatile("dsb ish");
+    __asm__ volatile("tlbi vmalle1");
+    __asm__ volatile("dsb ish");
+    __asm__ volatile("isb");
+}
+
+// Clone an address space copy-on-write. Code pages (read-only) are shared as-is;
+// writable pages (stack, data) are shared but remapped read-only + COW in BOTH
+// the parent and the child, so the first write to either faults and copies.
+struct addrspace *as_clone(struct addrspace *parent)
+{
+    struct addrspace *child = (struct addrspace *)pmm_alloc();
+    child->l0 = alloc_table();
+    child->l0[0] = mmu_kernel_l0_entry();
+
+    // Walk every user VA we know about: code (until unmapped), stack, data.
+    uint64_t vas[64];
+    int nv = 0;
+    for (uint64_t i = 0; i < 32; i++) {
+        uint64_t va = USER_CODE_VA + i * PAGE;
+        if (!pte_ptr(parent->l0, va)) { break; }
+        vas[nv++] = va;
+    }
+    for (uint64_t i = 1; i <= 16; i++) { vas[nv++] = USER_STACK_TOP - i * PAGE; }
+    vas[nv++] = USER_DATA_VA;
+
+    uint64_t ro_code = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RO_ALL;
+    uint64_t ro_cow  = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RO_ALL |
+                       ATTR_UXN | ATTR_PXN | PTE_COW;
+
+    for (int i = 0; i < nv; i++) {
+        uint64_t va = vas[i];
+        uint64_t *ppte = pte_ptr(parent->l0, va);
+        if (!ppte) { continue; }
+        uint64_t pa = *ppte & PA_MASK;
+        int writable = (*ppte & (3UL << 6)) == AP_RW_ALL;
+
+        if (writable) {
+            // Demote the parent's entry to read-only + COW, and map the child
+            // the same physical page read-only + COW.
+            *ppte = pa | ro_cow | DESC_PAGE;
+            map_page(child->l0, va, pa, ro_cow);
+        } else {
+            // Read-only code page: share as-is.
+            map_page(child->l0, va, pa, ro_code);
+        }
+        page_incref(pa);
+    }
+    flush_tlb();
+    return child;
+}
+
+// Handle a write to a COW page: make a private copy and remap it read/write.
+// Returns 1 if it handled a COW fault, 0 if `va` isn't a COW page (a real fault).
+int cow_fault(struct addrspace *as, uint64_t va)
+{
+    va &= ~0xFFFUL;
+    uint64_t *pte = pte_ptr(as->l0, va);
+    if (!pte || !(*pte & PTE_COW)) { return 0; }
+
+    uint64_t oldpa = *pte & PA_MASK;
+    uint64_t newpa = (uint64_t)(uintptr_t)pmm_alloc();
+    uint8_t *dst = (uint8_t *)(uintptr_t)newpa;
+    uint8_t *src = (uint8_t *)(uintptr_t)oldpa;
+    for (uint64_t i = 0; i < PAGE; i++) { dst[i] = src[i]; }
+
+    uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
+                  ATTR_UXN | ATTR_PXN;
+    *pte = (newpa & ~0xFFFUL) | rw | (3UL << 0);   // page descriptor, RW, no COW
+    page_decref(oldpa);
+    flush_tlb();
+    return 1;
 }

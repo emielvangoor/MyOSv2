@@ -17,4 +17,9 @@ struct addrspace *as_create(void);               // address space from the embed
 struct addrspace *as_create_image(const void *img, uint64_t len); // from a loaded image
 uint64_t as_translate(struct addrspace *as, uint64_t va); // software walk -> PA (0 if unmapped)
 void as_switch(struct addrspace *as);            // TTBR0 = as->l0; flush TLB
-uint64_t user_entry_va(void);                    // USER_CODE_VA + (user_main - __user_start)
+uint64_t user_entry_va(void);                    // entry VA of a loaded program
+
+// Fork support: copy-on-write address-space cloning.
+struct addrspace *as_clone(struct addrspace *parent);   // COW-share parent's pages
+int      cow_fault(struct addrspace *as, uint64_t va);  // copy a COW page on write; 1=handled
+int      page_refcount(uint64_t pa);                    // shared-page reference count

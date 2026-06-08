@@ -131,6 +131,13 @@ el0_sync:
     bl      el0_sync_handler
     kernel_exit
 
+// A forked child first runs here. cpu_switch set sp to a ready-made trap frame
+// (a copy of the parent's, with x0=0), so kernel_exit returns it to EL0 -- the
+// child resumes right after the parent's `svc fork`, seeing 0.
+.global fork_ret
+fork_ret:
+    kernel_exit
+
 default_handler:
     kernel_entry
     mov     x0, sp
