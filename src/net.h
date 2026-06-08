@@ -32,3 +32,6 @@ int      dns_build_query(uint8_t *buf, uint16_t id, const char *host);
 int      dns_parse_answer(const uint8_t *msg, int len, uint16_t id, uint32_t *ip);
 // net_resolve: resolve a hostname to an IPv4 address via the DNS server; 0 ok.
 int      net_resolve(const char *host, uint32_t *ip);
+// Send a UDP datagram (used by the socket layer). Returns 0 on success.
+int      net_udp_send(uint32_t dst_ip, uint16_t sport, uint16_t dport,
+                      const void *data, int len);

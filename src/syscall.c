@@ -20,11 +20,12 @@
 #include "signal.h"
 #include "net.h"
 #include "power.h"
+#include "socket.h"
 
 long do_syscall(struct trapframe *tf)
 {
     uint64_t num = tf->x[8];
-    long ret;
+    long ret = -1;
 
     switch (num) {
     case SYS_WRITE: {                       // x0 = fd, x1 = ptr, x2 = len
@@ -185,6 +186,43 @@ long do_syscall(struct trapframe *tf)
     case SYS_SHUTDOWN:                        // halt the machine (does not return)
         power_off();
         break;
+    case SYS_SOCKET: {                        // x0 = type -> fd
+        struct file **fds = sched_current_fds();
+        struct socket *s = socket_alloc((int)tf->x[0]);
+        if (!fds || !s) { if (s) { socket_free(s); } ret = -1; break; }
+        struct file *f = kmalloc(sizeof(struct file));
+        f->vnode = 0; f->off = 0; f->pipe = 0; f->sock = s; f->writable = 0; f->ref = 1;
+        ret = -1;
+        for (int i = 3; i < 16; i++) { if (!fds[i]) { fds[i] = f; ret = i; break; } }
+        if (ret < 0) { socket_free(s); kfree(f); }   // table full
+        break;
+    }
+    case SYS_BIND: {                          // x0 = fd, x1 = port
+        struct file **fds = sched_current_fds();
+        uint64_t fd = tf->x[0];
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+            ret = socket_bind(fds[fd]->sock, (uint16_t)tf->x[1]);
+        } else { ret = -1; }
+        break;
+    }
+    case SYS_SENDTO: {                        // x0=fd x1=buf x2=len x3=ip x4=port
+        struct file **fds = sched_current_fds();
+        uint64_t fd = tf->x[0];
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+            ret = socket_sendto(fds[fd]->sock, (const void *)(uintptr_t)tf->x[1],
+                                (int)tf->x[2], (uint32_t)tf->x[3], (uint16_t)tf->x[4]);
+        } else { ret = -1; }
+        break;
+    }
+    case SYS_RECVFROM: {                      // x0=fd x1=buf x2=len x3=uint*ip x4=uint16*port
+        struct file **fds = sched_current_fds();
+        uint64_t fd = tf->x[0];
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+            ret = socket_recvfrom(fds[fd]->sock, (void *)(uintptr_t)tf->x[1], (int)tf->x[2],
+                                  (uint32_t *)(uintptr_t)tf->x[3], (uint16_t *)(uintptr_t)tf->x[4]);
+        } else { ret = -1; }
+        break;
+    }
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame
         const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
         uint64_t *d = (uint64_t *)tf;

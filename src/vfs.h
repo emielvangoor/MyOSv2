@@ -25,12 +25,15 @@ struct vnode {
 struct fs_type { const char *name; struct vnode *(*mount)(void); }; // mount -> root
 
 struct pipe;   // from pipe.h (a file may be a pipe end instead of a vnode)
+struct socket;               // from socket.h
+
 struct file {
-    struct vnode *vnode;     // the file's vnode (NULL for a pipe end)
-    uint64_t      off;       // current read/write offset
-    struct pipe  *pipe;      // non-NULL => this handle is a pipe end
-    int           writable;  // pipe direction: 1 = write end, 0 = read end
-    int           ref;       // open references (shared across fork/dup)
+    struct vnode  *vnode;    // the file's vnode (NULL for a pipe/socket end)
+    uint64_t       off;      // current read/write offset
+    struct pipe   *pipe;     // non-NULL => this handle is a pipe end
+    struct socket *sock;     // non-NULL => this handle is a socket
+    int            writable; // pipe direction: 1 = write end, 0 = read end
+    int            ref;      // open references (shared across fork/dup)
 };
 
 void          vfs_mount_root(struct fs_type *fs);

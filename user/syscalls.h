@@ -26,3 +26,7 @@
 #define SYS_PING   28
 #define SYS_RESOLVE 29
 #define SYS_SHUTDOWN 30
+#define SYS_SOCKET   31
+#define SYS_BIND     32
+#define SYS_SENDTO   33
+#define SYS_RECVFROM 34

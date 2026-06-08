@@ -12,6 +12,7 @@
 #include "net.h"
 #include "timer.h"
 #include "sched.h"
+#include "socket.h"
 
 // How long a blocking request (ARP, ping, DNS) waits for its reply before giving
 // up. Timed against the free-running hardware counter, so it's real wall-clock
@@ -353,22 +354,31 @@ static uint8_t      dns_rxbuf[512];
 static volatile int dns_rxlen;
 static volatile int dns_got;
 
+// Public UDP send -- the socket layer's transmit path.
+int net_udp_send(uint32_t dst_ip, uint16_t sport, uint16_t dport, const void *data, int len)
+{
+    return udp_send(dst_ip, sport, dport, (const uint8_t *)data, len);
+}
+
 static void udp_input(uint32_t src_ip, const uint8_t *p, int len)
 {
-    (void)src_ip;
     if (len < 8) { return; }
+    uint16_t sport = get16(p + 0);
     uint16_t dport = get16(p + 2);
     int ulen = get16(p + 4);
     if (ulen < 8 || ulen > len) { ulen = len; }   // trust the smaller length
     const uint8_t *data = p + 8;
     int dlen = ulen - 8;
+    if (dlen < 0) { return; }
 
-    if (dns_waiting && dport == dns_sport && dlen > 0) {   // our DNS reply
+    if (dns_waiting && dport == dns_sport && dlen > 0) {   // our internal DNS reply
         int n = dlen > (int)sizeof(dns_rxbuf) ? (int)sizeof(dns_rxbuf) : dlen;
         for (int i = 0; i < n; i++) { dns_rxbuf[i] = data[i]; }
         dns_rxlen = n;
         dns_got = 1;
     }
+    // Hand it to any user socket bound to this port.
+    socket_udp_input(src_ip, sport, dport, data, dlen);
 }
 
 int net_resolve(const char *host, uint32_t *ip)

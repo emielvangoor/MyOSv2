@@ -28,6 +28,14 @@ int   ping(unsigned int ip, int *ms);   // ip in host order; 0 + round-trip, -1 
 unsigned int resolve(const char *host); // hostname -> IP (host order), 0 on failure
 void shutdown(void);                    // halt the machine (does not return)
 
+// UDP sockets. ip/port are host order. socket(SOCK_DGRAM) -> fd.
+#define SOCK_DGRAM  1
+#define SOCK_STREAM 2
+int socket(int type);
+int bind(int fd, unsigned short port);
+int sendto(int fd, const void *buf, int len, unsigned int ip, unsigned short port);
+int recvfrom(int fd, void *buf, int len, unsigned int *ip, unsigned short *port);
+
 #define SIGINT  2
 #define SIGKILL 9
 #define SIGTERM 15

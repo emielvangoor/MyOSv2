@@ -12,6 +12,20 @@ static long syscall3(long n, long a0, long a1, long a2)
     return x0;
 }
 
+// Five-argument variant (sendto/recvfrom need more than three).
+static long syscall5(long n, long a0, long a1, long a2, long a3, long a4)
+{
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a0;
+    register long x1 __asm__("x1") = a1;
+    register long x2 __asm__("x2") = a2;
+    register long x3 __asm__("x3") = a3;
+    register long x4 __asm__("x4") = a4;
+    __asm__ volatile("svc #0" : "+r"(x0)
+                     : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4) : "memory");
+    return x0;
+}
+
 long sys_write(int fd, const void *b, long n) { return syscall3(SYS_WRITE, fd, (long)b, n); }
 long sys_read(int fd, void *b, long n)        { return syscall3(SYS_READ, fd, (long)b, n); }
 long sys_open(const char *p)                  { return syscall3(SYS_OPEN, (long)p, 0, 0); }
@@ -43,6 +57,13 @@ int signal(int sig, void (*handler)(int))
 int ping(unsigned int ip, int *ms) { return (int)syscall3(SYS_PING, ip, (long)ms, 0); }
 unsigned int resolve(const char *host) { return (unsigned int)syscall3(SYS_RESOLVE, (long)host, 0, 0); }
 void shutdown(void) { syscall3(SYS_SHUTDOWN, 0, 0, 0); }
+
+int socket(int type) { return (int)syscall3(SYS_SOCKET, type, 0, 0); }
+int bind(int fd, unsigned short port) { return (int)syscall3(SYS_BIND, fd, port, 0); }
+int sendto(int fd, const void *buf, int len, unsigned int ip, unsigned short port)
+{ return (int)syscall5(SYS_SENDTO, fd, (long)buf, len, ip, port); }
+int recvfrom(int fd, void *buf, int len, unsigned int *ip, unsigned short *port)
+{ return (int)syscall5(SYS_RECVFROM, fd, (long)buf, len, (long)ip, (long)port); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 
 // --- minimal user-space malloc: a first-fit free list over sbrk ---

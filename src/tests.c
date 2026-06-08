@@ -30,6 +30,7 @@
 #include "sfs.h"
 #include "net.h"
 #include "console.h"
+#include "socket.h"
 
 #define PAGE 0x1000UL
 
@@ -1509,6 +1510,28 @@ static void test_dns_parse_rcode_error(void)
     KASSERT(dns_parse_answer(m, (int)sizeof(m), 0xABCD, &ip) == -1);
 }
 
+// --- UDP sockets (Phase 22) ---
+static void test_socket_udp_queue(void)
+{
+    pmm_init(); kheap_init();
+    struct socket *s = socket_alloc(SOCK_DGRAM);
+    KASSERT(s != 0);
+    KASSERT(socket_bind(s, 1234) == 0);
+
+    // A datagram delivered to our port is queued and returned by recvfrom (which
+    // doesn't block because data is already present).
+    uint8_t in[3] = { 'h', 'i', '!' };
+    socket_udp_input(0x0a000202u, 5555, 1234, in, 3);
+    socket_udp_input(0x01020304u, 7, 9999, in, 3);   // other port -> not for us
+
+    uint8_t out[8]; uint32_t sip = 0; uint16_t sport = 0;
+    int n = socket_recvfrom(s, out, sizeof(out), &sip, &sport);
+    KASSERT(n == 3);
+    KASSERT(out[0] == 'h' && out[1] == 'i' && out[2] == '!');
+    KASSERT(sip == 0x0a000202u && sport == 5555);
+    socket_free(s);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1609,6 +1632,7 @@ static const struct ktest tests[] = {
     { "dns: skip CNAME to A",             test_dns_parse_skips_cname },
     { "dns: RCODE error -> fail",         test_dns_parse_rcode_error },
     { "dns: resolve localhost (live)",    test_dns_resolve_live },
+    { "socket: udp queue + recvfrom",     test_socket_udp_queue },
 };
 
 int run_self_tests(void)

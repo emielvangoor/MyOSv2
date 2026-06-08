@@ -31,6 +31,7 @@ extern unsigned char wc_elf[];      extern unsigned int wc_elf_len;
 extern unsigned char loop_elf[];    extern unsigned int loop_elf_len;
 extern unsigned char catch_elf[];   extern unsigned int catch_elf_len;
 extern unsigned char ping_elf[];    extern unsigned int ping_elf_len;
+extern unsigned char dnsq_elf[];    extern unsigned int dnsq_elf_len;
 
 // Write an embedded program into the filesystem at `path`.
 static void add_prog(const char *path, const void *data, uint64_t len)
@@ -65,4 +66,5 @@ void initrd_unpack(void)
     add_prog("/bin/loop", loop_elf, (uint64_t)loop_elf_len);
     add_prog("/bin/catch", catch_elf, (uint64_t)catch_elf_len);
     add_prog("/bin/ping", ping_elf, (uint64_t)ping_elf_len);
+    add_prog("/bin/dnsq", dnsq_elf, (uint64_t)dnsq_elf_len);
 }

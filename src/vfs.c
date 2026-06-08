@@ -10,6 +10,7 @@
 #include "vfs.h"
 #include "kheap.h"
 #include "pipe.h"
+#include "socket.h"
 
 static struct vnode *root;
 
@@ -117,6 +118,7 @@ struct file *vfs_open(const char *path)
     f->vnode = vn;
     f->off = 0;
     f->pipe = 0;
+    f->sock = 0;
     f->writable = 0;
     f->ref = 1;
     return f;
@@ -150,6 +152,7 @@ void vfs_close(struct file *f)
 {
     if (--f->ref > 0) { return; }     // other fds still reference this file
     if (f->pipe) { pipe_close(f); }   // drop our end of the pipe
+    if (f->sock) { socket_free(f->sock); }   // release the socket (see socket.h)
     kfree(f);
 }
 

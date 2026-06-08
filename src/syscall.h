@@ -29,6 +29,10 @@
 #define SYS_PING   28  // x0=ip (host order), x1=int* ms -> 0 + round-trip, or -1
 #define SYS_RESOLVE 29 // x0=hostname -> resolved IP (host order), or 0 on failure
 #define SYS_SHUTDOWN 30 // halt the machine (does not return)
+#define SYS_SOCKET   31 // x0=type -> fd
+#define SYS_BIND     32 // x0=fd, x1=port -> 0/-1
+#define SYS_SENDTO   33 // x0=fd, x1=buf, x2=len, x3=ip, x4=port -> bytes/-1
+#define SYS_RECVFROM 34 // x0=fd, x1=buf, x2=len, x3=uint*ip, x4=uint16*port -> bytes/-1
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.
