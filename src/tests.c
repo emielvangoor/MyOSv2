@@ -17,6 +17,8 @@
 #include "sched.h"
 #include "syscall.h"
 #include "vm.h"
+#include "vfs.h"
+#include "ramfs.h"
 
 #define PAGE 0x1000UL
 
@@ -387,6 +389,123 @@ static void test_as_stack_is_private(void)
     KASSERT(as_translate(a, va) != as_translate(b, va));
 }
 
+// --- VFS / ramfs ---
+
+static int bytes_eq(const void *a, const void *b, uint64_t n)
+{
+    const uint8_t *x = a, *y = b;
+    for (uint64_t i = 0; i < n; i++) {
+        if (x[i] != y[i]) return 0;
+    }
+    return 1;
+}
+
+static void test_vfs_mount_root_is_dir(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    struct vnode *r = vfs_root();
+    KASSERT(r != 0);
+    KASSERT(r->type == VN_DIR);
+}
+
+static void test_vfs_create_and_lookup(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    KASSERT(vfs_create("/a.txt", VN_FILE) != 0);
+    struct vnode *vn = vfs_lookup("/a.txt");
+    KASSERT(vn != 0);
+    KASSERT(vn->type == VN_FILE);
+}
+
+static void test_vfs_write_then_read(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/a.txt", VN_FILE);
+    struct file *w = vfs_open("/a.txt");
+    KASSERT(vfs_write(w, "hello", 5) == 5);
+    vfs_close(w);
+    struct file *r = vfs_open("/a.txt");
+    char buf[8] = {0};
+    KASSERT(vfs_read(r, buf, 5) == 5);
+    KASSERT(bytes_eq(buf, "hello", 5));
+    vfs_close(r);
+}
+
+static void test_vfs_read_offset(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/a.txt", VN_FILE);
+    struct file *w = vfs_open("/a.txt");
+    vfs_write(w, "abcdef", 6);
+    vfs_close(w);
+    struct file *r = vfs_open("/a.txt");
+    r->off = 2;                          // seek to 'c'
+    char buf[4] = {0};
+    KASSERT(vfs_read(r, buf, 3) == 3);
+    KASSERT(bytes_eq(buf, "cde", 3));
+    vfs_close(r);
+}
+
+static void test_vfs_write_grows(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/a.txt", VN_FILE);
+    struct file *w = vfs_open("/a.txt");
+    vfs_write(w, "aaaaa", 5);
+    vfs_write(w, "bbbbbbbbbb", 10);      // total 15
+    vfs_close(w);
+    struct vnode *vn = vfs_lookup("/a.txt");
+    KASSERT(vn->size == 15);
+    struct file *r = vfs_open("/a.txt");
+    char buf[16] = {0};
+    KASSERT(vfs_read(r, buf, 15) == 15);
+    KASSERT(bytes_eq(buf, "aaaaabbbbbbbbbb", 15));
+    vfs_close(r);
+}
+
+static void test_vfs_readdir_lists(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/one", VN_FILE);
+    vfs_create("/two", VN_FILE);
+    vfs_create("/three", VN_FILE);
+    struct vnode *root = vfs_root();
+    int count = 0;
+    char name[32];
+    int found_two = 0;
+    while (vfs_readdir(root, count, name) == 0) {
+        if (name[0] == 't' && name[1] == 'w' && name[2] == 'o' && name[3] == 0) {
+            found_two = 1;
+        }
+        count++;
+    }
+    KASSERT(count == 3);
+    KASSERT(found_two);
+}
+
+static void test_vfs_lookup_missing(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    KASSERT(vfs_lookup("/nope") == 0);
+}
+
+static void test_vfs_nested_dir(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    KASSERT(vfs_create("/d", VN_DIR) != 0);
+    KASSERT(vfs_create("/d/f.txt", VN_FILE) != 0);
+    KASSERT(vfs_lookup("/d/f.txt") != 0);
+    KASSERT(vfs_lookup("/d")->type == VN_DIR);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -412,6 +531,14 @@ static const struct ktest tests[] = {
     { "vm: kernel map is shared",         test_as_kernel_shared },
     { "vm: unmapped VA -> 0",             test_as_unmapped_returns_zero },
     { "vm: user stack is private",        test_as_stack_is_private },
+    { "vfs: mount root is dir",           test_vfs_mount_root_is_dir },
+    { "vfs: create and lookup",           test_vfs_create_and_lookup },
+    { "vfs: write then read",             test_vfs_write_then_read },
+    { "vfs: read at offset",              test_vfs_read_offset },
+    { "vfs: write grows file",            test_vfs_write_grows },
+    { "vfs: readdir lists entries",       test_vfs_readdir_lists },
+    { "vfs: lookup missing -> null",      test_vfs_lookup_missing },
+    { "vfs: nested directory",            test_vfs_nested_dir },
 };
 
 int run_self_tests(void)
