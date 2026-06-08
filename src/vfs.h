@@ -34,6 +34,7 @@ struct file {
 };
 
 void          vfs_mount_root(struct fs_type *fs);
+void          vfs_mount_at(const char *path, struct vnode *root); // mount a FS at a subdir
 struct vnode *vfs_root(void);
 struct vnode *vfs_lookup(const char *path);
 struct vnode *vfs_create(const char *path, int type);

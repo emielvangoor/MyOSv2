@@ -1174,6 +1174,20 @@ static void test_sfs_multiblock(void)
     for (int i = 0; i < 600; i++) { KASSERT(rb[i] == w[i]); }
 }
 
+static void test_vfs_mount_at(void)
+{
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    sfs_mkfs();
+    vfs_mount_at("/disk", sfs_mount());
+    struct vnode *d = vfs_lookup("/disk");
+    KASSERT(d && d->type == VN_DIR);                 // the mounted FS root
+    struct vnode *f = vfs_create("/disk/x", VN_FILE); // create routes into SFS
+    KASSERT(f != 0);
+    KASSERT(vfs_lookup("/disk/x") != 0);             // and is found there
+    KASSERT(vfs_lookup("/disk/nope") == 0);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1256,6 +1270,7 @@ static const struct ktest tests[] = {
     { "sfs: persists across remount",     test_sfs_persists_remount },
     { "sfs: readdir lists entries",       test_sfs_readdir },
     { "sfs: multi-block file",            test_sfs_multiblock },
+    { "vfs: mount at /disk",              test_vfs_mount_at },
 };
 
 int run_self_tests(void)

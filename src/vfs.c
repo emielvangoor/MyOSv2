@@ -13,9 +13,18 @@
 
 static struct vnode *root;
 
+// A tiny mount table: a path prefix (e.g. "/disk") -> that filesystem's root.
+static struct { const char *path; struct vnode *root; } mounts[4];
+static int nmounts;
+
 void vfs_mount_root(struct fs_type *fs)
 {
     root = fs->mount();
+}
+
+void vfs_mount_at(const char *path, struct vnode *mroot)
+{
+    if (nmounts < 4) { mounts[nmounts].path = path; mounts[nmounts].root = mroot; nmounts++; }
 }
 
 struct vnode *vfs_root(void)
@@ -23,28 +32,51 @@ struct vnode *vfs_root(void)
     return root;
 }
 
-// Walk "/a/b/c" from the root, one component at a time, via ops->lookup.
-struct vnode *vfs_lookup(const char *path)
+// Walk the remaining path (starting just after a leading '/') from `cur`.
+static struct vnode *walk_from(struct vnode *cur, const char *p)
 {
-    if (!root || path[0] != '/') {
-        return 0;
-    }
-    if (path[1] == '\0') {
-        return root;                 // "/"
-    }
-    struct vnode *cur = root;
-    const char *p = path + 1;
     char name[32];
     while (*p) {
         int i = 0;
         while (*p && *p != '/' && i < 31) { name[i++] = *p++; }
         name[i] = '\0';
         if (*p == '/') { p++; }
+        if (i == 0) { continue; }            // skip empty components ("//")
         if (!cur->ops->lookup) { return 0; }
         cur = cur->ops->lookup(cur, name);
         if (!cur) { return 0; }
     }
     return cur;
+}
+
+// True if `pfx` is a path-prefix of `path` at a '/' boundary (or exact match).
+static int under(const char *pfx, const char *path)
+{
+    int i = 0;
+    while (pfx[i]) { if (pfx[i] != path[i]) { return 0; } i++; }
+    return path[i] == '\0' || path[i] == '/';
+}
+
+// Walk "/a/b/c" from the right filesystem root, one component at a time.
+struct vnode *vfs_lookup(const char *path)
+{
+    if (path[0] != '/') { return 0; }
+
+    // A mounted filesystem? Resolve the remainder within its root.
+    for (int m = 0; m < nmounts; m++) {
+        if (under(mounts[m].path, path)) {
+            const char *sub = path + 0;
+            int n = 0; while (mounts[m].path[n]) { n++; }
+            sub = path + n;                  // the part after the mount prefix
+            if (*sub == '/') { sub++; }
+            if (*sub == '\0') { return mounts[m].root; }   // the mount point itself
+            return walk_from(mounts[m].root, sub);
+        }
+    }
+
+    if (!root) { return 0; }
+    if (path[1] == '\0') { return root; }    // "/"
+    return walk_from(root, path + 1);
 }
 
 // Split a path into "parent directory" + "final name", then ask the directory
