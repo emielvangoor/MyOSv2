@@ -24,6 +24,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
 - **User-space memory** — `sbrk`-grown per-process heap (demand-zeroed pages) and
   a small `malloc`/`free`; anonymous `mmap`; and **shared memory** objects two
   processes can map to communicate.
+- **Pipes** — `pipe` + `dup2` with refcounted file handles, so the shell runs
+  pipelines like `hello | wc`.
 
 Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
 and eventually a TCP/IP network stack — lives in
