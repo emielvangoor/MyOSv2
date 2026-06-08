@@ -132,9 +132,11 @@ long do_syscall(struct trapframe *tf)
         struct file *wf = kmalloc(sizeof(struct file));
         rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->writable = 0; rf->ref = 1;
         wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->writable = 1; wf->ref = 1;
+        // Allocate from fd 3 up: fds 0/1/2 stay reserved for stdin/stdout/stderr
+        // (NULL there means "the console"), so a pipe never clobbers them.
         int r = -1, w = -1;
-        for (int i = 0; i < 16 && r < 0; i++) { if (!fds[i]) { fds[i] = rf; r = i; } }
-        for (int i = 0; i < 16 && w < 0; i++) { if (!fds[i]) { fds[i] = wf; w = i; } }
+        for (int i = 3; i < 16 && r < 0; i++) { if (!fds[i]) { fds[i] = rf; r = i; } }
+        for (int i = 3; i < 16 && w < 0; i++) { if (!fds[i]) { fds[i] = wf; w = i; } }
         if (r < 0 || w < 0) {                // no room: undo
             if (r >= 0) { fds[r] = 0; } vfs_close(rf); vfs_close(wf);
             break;

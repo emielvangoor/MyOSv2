@@ -308,6 +308,13 @@ void yield(void)
 // sched_wait(). If the parent is already blocked in wait(), wake it.
 void thread_exit(int status)
 {
+    // Close the process's open files first, so e.g. a pipe's writer count drops
+    // and a reader on the other end sees EOF. Refcounting keeps a file alive if a
+    // forked relative still holds it.
+    for (int i = 0; i < 16; i++) {
+        if (current->fds[i]) { vfs_close(current->fds[i]); current->fds[i] = 0; }
+    }
+
     uint64_t flags = irq_save();
     current->exit_status = status;
     current->state = THREAD_ZOMBIE;

@@ -71,6 +71,10 @@ void *pmm_alloc_pages(size_t n)
 
 void pmm_free(void *page)
 {
+    extern void kprintf(const char *, ...);
+    for (void *p = free_list; p; p = *(void **)p) {
+        if (p == page) { kprintf("[pmm] DOUBLE FREE %lx\n", (uint64_t)(uintptr_t)page); return; }
+    }
     // Push the page onto the free list: store the old head inside this page,
     // then make this page the new head.
     *(void **)page = free_list;

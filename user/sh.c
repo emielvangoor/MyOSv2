@@ -55,28 +55,61 @@ static void put_int(long v)
     while (i > 0) { sys_write(1, &b[--i], 1); }
 }
 
-// fork a child, exec /bin/<cmd> in it, and wait for it. With no /bin programs yet
-// (they arrive in Phase 14) exec fails and the child exits 127 -- but this drives
-// the full fork -> exec -> exit -> wait -> reap path the Unix way.
-static void run_external(const char *cmd)
+// Build "/bin/<cmd>" into dst.
+static void bin_path(char *dst, const char *cmd)
 {
-    char path[64];
     const char *pre = "/bin/";
     int i = 0;
-    while (pre[i]) { path[i] = pre[i]; i++; }
+    while (pre[i]) { dst[i] = pre[i]; i++; }
     int j = 0;
-    while (cmd[j] && i < 62) { path[i++] = cmd[j++]; }
-    path[i] = 0;
+    while (cmd[j] && i < 62) { dst[i++] = cmd[j++]; }
+    dst[i] = 0;
+}
 
+// In a freshly-forked child: exec /bin/<cmd>, or report + exit 127 if not found.
+static void child_exec(const char *cmd)
+{
+    char path[64];
+    bin_path(path, cmd);
+    sys_exec(path);                 // returns only if exec failed
+    puts1("exec: not found\n");
+    sys_exit(127);
+}
+
+// fork a child, exec /bin/<cmd>, and wait for it.
+static void run_external(const char *cmd)
+{
     long pid = sys_fork();
-    if (pid == 0) {                 // child
-        sys_exec(path);             // returns only if exec failed
-        puts1("exec: not found\n");
-        sys_exit(127);
-    }
+    if (pid == 0) { child_exec(cmd); }
     int st = 0;
     sys_wait(&st);                  // parent reaps the child
     puts1("[exit "); put_int(st); puts1("]\n");
+}
+
+// Run a two-stage pipeline: `left | right`. left's stdout is connected to
+// right's stdin through a pipe. The parent closes both pipe ends (so right sees
+// EOF once left finishes) and waits for both children.
+static void run_pipeline(const char *left, const char *right)
+{
+    int fd[2];
+    if (pipe(fd) < 0) { puts1("pipe: failed\n"); return; }
+
+    long c1 = sys_fork();
+    if (c1 == 0) {                  // left: stdout -> pipe write end
+        dup2(fd[1], 1);
+        sys_close(fd[0]); sys_close(fd[1]);
+        child_exec(left);
+    }
+    long c2 = sys_fork();
+    if (c2 == 0) {                  // right: stdin -> pipe read end
+        dup2(fd[0], 0);
+        sys_close(fd[0]); sys_close(fd[1]);
+        child_exec(right);
+    }
+    sys_close(fd[0]); sys_close(fd[1]);   // parent holds neither end
+    int st;
+    sys_wait(&st);
+    sys_wait(&st);
 }
 
 // Demonstrate the exit-status path: a child exits with a fixed code; the parent
@@ -94,6 +127,16 @@ static void cmd_spawn(void)
     puts1("  [parent] child status "); put_int(st); puts1("\n");
 }
 
+// Strip leading and trailing spaces in place; returns the trimmed start.
+static char *trim(char *s)
+{
+    while (*s == ' ') { s++; }
+    char *end = s;
+    while (*end) { end++; }
+    while (end > s && end[-1] == ' ') { *--end = 0; }
+    return s;
+}
+
 int umain(void)
 {
     puts1("MyOSv2 shell. Type 'help'.\n");
@@ -101,6 +144,17 @@ int umain(void)
     for (;;) {
         puts1("$ ");
         readline(line, sizeof(line));
+
+        // Pipeline? `left | right` -> connect left's stdout to right's stdin.
+        char *bar = line;
+        while (*bar && *bar != '|') { bar++; }
+        if (*bar == '|') {
+            *bar = 0;
+            char *left = trim(line);
+            char *right = trim(bar + 1);
+            if (left[0] && right[0]) { run_pipeline(left, right); }
+            continue;
+        }
 
         // split into command + argument (first space)
         char *arg = line;

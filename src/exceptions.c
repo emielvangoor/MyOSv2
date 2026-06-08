@@ -40,6 +40,18 @@ void sync_handler(struct trapframe *tf)
     // 0x24/0x25 = data abort (bad memory access).
     uint32_t ec = (uint32_t)((esr >> 26) & 0x3f);
 
+    // EC 0x25 = data abort taken from EL1: the KERNEL touched a bad page. The
+    // common legitimate case is the kernel writing into a user buffer (e.g.
+    // sys_read storing a byte) that became copy-on-write after a fork. Treat it
+    // exactly like a user COW fault: copy the page and retry the instruction.
+    if (ec == 0x25 && (esr & (1u << 6))) {   // WnR=1 -> it was a write
+        uint64_t far;
+        __asm__ volatile("mrs %0, far_el1" : "=r"(far));
+        if (sched_current_as() && cow_fault(sched_current_as(), far)) {
+            return;                          // page copied; eret retries the store
+        }
+    }
+
     // tf->elr is the address of the faulting instruction (from ELR_EL1).
     kprintf("Caught sync exception: EC=0x%x, ELR=0x%lx, ESR=0x%lx\n",
             ec, tf->elr, esr);
