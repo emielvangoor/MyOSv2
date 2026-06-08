@@ -20,6 +20,7 @@ enum thread_state {
     THREAD_RUNNABLE,   // ready to run
     THREAD_RUNNING,    // currently on the CPU
     THREAD_SLEEPING,   // blocked until wake_tick (or until a child exits, for wait)
+    THREAD_BLOCKED,    // blocked on a wait-channel until sched_wake() or a signal
     THREAD_EXITED,     // finished (a tombstone the scheduler skips)
     THREAD_ZOMBIE      // exited, awaiting reap by its parent (Phase 13)
 };
@@ -31,6 +32,7 @@ struct thread {
     int id;
     int priority;          // higher number = more important
     uint64_t wake_tick;    // jiffy to wake at (when SLEEPING)
+    void *wait_chan;       // wait-channel this thread is BLOCKED on (0 if none)
     struct addrspace *as;  // user address space (NULL for kernel threads)
     struct file *fds[16];  // open file table (a process). NULL = free.
     struct thread *parent; // who created us (NULL for the boot/idle thread)
@@ -69,6 +71,15 @@ int  sched_current_id(void);                                     // id of runnin
 int  sched_tick(void);                                           // per-tick: wake sleepers + slice
 void sleep_ticks(uint64_t ticks);                                // block for N ticks
 void sleep_ms(uint64_t ms);                                      // block for N ms (1 ms == 1 tick)
+
+// The V6 sleep/wakeup primitive. sched_block() puts the current thread to sleep
+// on an arbitrary "wait-channel" (any address used as a key) until sched_wake()
+// is called with the same channel -- or a signal is posted to it (EINTR). The
+// caller MUST re-check its condition in a loop after sched_block() returns, since
+// a wakeup is advisory (it may have been a signal, or another thread may have
+// consumed the resource first).
+void sched_block(void *chan);
+void sched_wake(void *chan);
 
 // Length of a thread's time slice, in timer ticks (Linux-style quantum).
 #define SCHED_TIME_SLICE 10

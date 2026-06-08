@@ -53,6 +53,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     t->id        = next_id++;
     t->priority  = priority;
     t->wake_tick = 0;
+    t->wait_chan = 0;
     t->as        = 0;            // kernel thread: no user address space
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
     t->parent      = current;    // the creating thread is our parent
@@ -115,6 +116,7 @@ int sched_fork(struct trapframe *parent_tf)
     t->id        = next_id++;
     t->priority  = current->priority;
     t->wake_tick = 0;
+    t->wait_chan = 0;
     t->as        = as_clone(current->as);            // copy-on-write address space
     for (int i = 0; i < 16; i++) {
         t->fds[i] = current->fds[i];                 // share open files...
@@ -167,6 +169,7 @@ struct thread *thread_create_image(const void *img, uint64_t len, int priority)
     t->id        = next_id++;
     t->priority  = priority;
     t->wake_tick = 0;
+    t->wait_chan = 0;
     t->as        = as_create_elf(img, len, &entry); // ELF: its own private AS
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
     t->parent      = current;                 // the spawning thread is our parent
@@ -214,6 +217,7 @@ void sched_init(void)
     boot_thread.id        = 0;
     boot_thread.priority  = -1;           // below any created thread
     boot_thread.wake_tick = 0;
+    boot_thread.wait_chan = 0;
     boot_thread.as        = 0;            // the idle/kernel thread has no user AS
     for (int i = 0; i < 16; i++) { boot_thread.fds[i] = 0; }
     boot_thread.parent      = 0;          // the idle thread has no parent
@@ -285,6 +289,38 @@ void sleep_ticks(uint64_t ticks)
 void sleep_ms(uint64_t ms)
 {
     sleep_ticks(ms);   // TIMER_HZ == 1000, so 1 ms == 1 tick
+}
+
+// Sleep the current thread on `chan` until sched_wake(chan) (or a signal) makes
+// it runnable again. IRQs are masked while we change state + switch so an
+// interrupt's sched_wake() can't race the transition. schedule() returns here
+// once we're scheduled again; the caller re-checks its condition.
+void sched_block(void *chan)
+{
+    uint64_t flags = irq_save();
+    current->wait_chan = chan;
+    current->state = THREAD_BLOCKED;
+    schedule();                 // switch away; returns when we're runnable again
+    current->wait_chan = 0;
+    irq_restore(flags);
+}
+
+// Wake every thread blocked on `chan` (V6 wakeup: advisory, wakes all waiters).
+// Safe to call from an interrupt handler -- it only flips states in the ring.
+void sched_wake(void *chan)
+{
+    uint64_t flags = irq_save();
+    if (current) {
+        struct thread *t = current;
+        do {
+            if (t->state == THREAD_BLOCKED && t->wait_chan == chan) {
+                t->state = THREAD_RUNNABLE;
+                t->wait_chan = 0;
+            }
+            t = t->next;
+        } while (t != current);
+    }
+    irq_restore(flags);
 }
 
 // Pick the highest-priority RUNNABLE thread, round-robin within a level, and

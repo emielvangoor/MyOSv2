@@ -12,7 +12,12 @@ void signal_send(struct thread *t, int sig)
     if (!t || sig <= 0 || sig >= NSIG) { return; }
     uint64_t f = irq_save();
     t->sig_pending |= (1ull << sig);
-    if (t->state == THREAD_SLEEPING) { t->state = THREAD_RUNNABLE; }  // unblock to deliver
+    // Unblock a sleeping/blocked thread so the signal can be delivered (EINTR):
+    // a timed sleep, or a thread parked on a wait-channel (sched_block).
+    if (t->state == THREAD_SLEEPING || t->state == THREAD_BLOCKED) {
+        t->state = THREAD_RUNNABLE;
+        t->wait_chan = 0;
+    }
     irq_restore(f);
 }
 

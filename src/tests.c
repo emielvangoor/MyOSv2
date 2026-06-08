@@ -249,6 +249,73 @@ static void test_sleep_wakes_after_ticks(void)
     KASSERT(slp_log[1] == 'W');
 }
 
+// --- sched_block / sched_wake: the V6 sleep/wakeup primitive (Phase 1) ---
+static int blk_chan;                       // an arbitrary wait-channel address
+static char blk_log[8];
+static int blk_n;
+static void blk_worker(void *a)
+{
+    (void)a;
+    blk_log[blk_n++] = 'B';
+    sched_block(&blk_chan);                // sleep until sched_wake(&blk_chan)
+    blk_log[blk_n++] = 'W';
+}
+
+static void test_block_wakes_on_channel(void)
+{
+    pmm_init();
+    kheap_init();
+    blk_n = 0;
+
+    sched_init();
+    thread_create(blk_worker, 0, 1);       // priority above idle
+
+    yield();                               // worker runs, logs 'B', blocks
+    KASSERT(blk_n == 1);
+    KASSERT(blk_log[0] == 'B');
+
+    // The timer must NOT wake a channel-blocked thread (unlike a timed sleep).
+    sched_tick(); yield(); KASSERT(blk_n == 1);
+    sched_tick(); yield(); KASSERT(blk_n == 1);
+
+    // A wake on a DIFFERENT channel leaves it blocked.
+    int other = 0;
+    sched_wake(&other); yield(); KASSERT(blk_n == 1);
+
+    // The matching wake makes it runnable; it then finishes.
+    sched_wake(&blk_chan);
+    yield();
+    KASSERT(blk_n == 2);
+    KASSERT(blk_log[1] == 'W');
+}
+
+// A pending signal also wakes a blocked thread (the EINTR path).
+static int blk_sig_chan;
+static int blk_sig_n;
+static struct thread *blk_sig_thread;
+static void blk_sig_worker(void *a)
+{
+    (void)a;
+    sched_block(&blk_sig_chan);            // never explicitly woken -- only by the signal
+    blk_sig_n++;
+}
+static void test_block_woken_by_signal(void)
+{
+    pmm_init();
+    kheap_init();
+    blk_sig_n = 0;
+
+    sched_init();
+    blk_sig_thread = thread_create(blk_sig_worker, 0, 1);
+
+    yield();                               // worker blocks
+    KASSERT(blk_sig_n == 0);
+
+    signal_send(blk_sig_thread, SIGTERM);  // posting a signal must unblock it
+    yield();
+    KASSERT(blk_sig_n == 1);               // it ran past sched_block()
+}
+
 // --- System calls (do_syscall dispatch) ---
 
 static void test_syscall_write_returns_len(void)
@@ -1397,6 +1464,8 @@ static const struct ktest tests[] = {
     { "sched: time slice expiry",         test_time_slice_expiry },
     { "sched: priority order",            test_priority_order },
     { "sched: sleep wakes after ticks",   test_sleep_wakes_after_ticks },
+    { "sched: block wakes on channel",    test_block_wakes_on_channel },
+    { "sched: block woken by signal",     test_block_woken_by_signal },
     { "syscall: write returns len",       test_syscall_write_returns_len },
     { "syscall: unknown returns -1",      test_syscall_unknown },
     { "syscall: yield returns 0",         test_syscall_yield },
