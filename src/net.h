@@ -35,3 +35,5 @@ int      net_resolve(const char *host, uint32_t *ip);
 // Send a UDP datagram (used by the socket layer). Returns 0 on success.
 int      net_udp_send(uint32_t dst_ip, uint16_t sport, uint16_t dport,
                       const void *data, int len);
+// Send a raw IPv4 packet with the given protocol (used by TCP). 0 on success.
+int      net_ip_send(uint32_t dst_ip, uint8_t proto, const void *payload, int len);

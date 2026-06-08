@@ -31,6 +31,7 @@
 #include "net.h"
 #include "console.h"
 #include "socket.h"
+#include "tcp.h"
 
 #define PAGE 0x1000UL
 
@@ -1532,6 +1533,21 @@ static void test_socket_udp_queue(void)
     socket_free(s);
 }
 
+static void test_tcp_checksum(void)
+{
+    // A header with the checksum field set to its computed value must verify to 0
+    // (the standard internet-checksum property, including the TCP pseudo-header).
+    uint8_t seg[20] = {0};
+    seg[0] = 0x12; seg[1] = 0x34;      // source port
+    seg[2] = 0x00; seg[3] = 0x50;      // dest port 80
+    seg[12] = 5 << 4;                  // data offset
+    seg[13] = 0x02;                    // SYN
+    uint32_t sip = 0x0a00020fu, dip = 0x08080808u;
+    uint16_t c = tcp_checksum(sip, dip, seg, 20);
+    seg[16] = (uint8_t)(c >> 8); seg[17] = (uint8_t)c;
+    KASSERT(tcp_checksum(sip, dip, seg, 20) == 0);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1633,6 +1649,7 @@ static const struct ktest tests[] = {
     { "dns: RCODE error -> fail",         test_dns_parse_rcode_error },
     { "dns: resolve localhost (live)",    test_dns_resolve_live },
     { "socket: udp queue + recvfrom",     test_socket_udp_queue },
+    { "tcp: checksum verifies to 0",      test_tcp_checksum },
 };
 
 int run_self_tests(void)

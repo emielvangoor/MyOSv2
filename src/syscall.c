@@ -33,7 +33,9 @@ long do_syscall(struct trapframe *tf)
         const char *s = (const char *)(uintptr_t)tf->x[1];
         uint64_t len = tf->x[2];
         struct file **fds = sched_current_fds();
-        if (fds && fd < 16 && fds[fd]) {    // an open file/pipe takes precedence
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {   // a stream socket -> TCP
+            ret = socket_write(fds[fd]->sock, s, (int)len);
+        } else if (fds && fd < 16 && fds[fd]) {    // an open file/pipe takes precedence
             ret = vfs_write(fds[fd], s, len);
         } else if (fd == 1 || fd == 2) {    // bare stdout/stderr -> UART console
             for (uint64_t i = 0; i < len; i++) { uart_putc(s[i]); }
@@ -61,7 +63,9 @@ long do_syscall(struct trapframe *tf)
         void *buf = (void *)(uintptr_t)tf->x[1];
         uint64_t len = tf->x[2];
         struct file **fds = sched_current_fds();
-        if (fds && fd < 16 && fds[fd]) {     // an open file/pipe takes precedence
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {   // a stream socket -> TCP
+            ret = socket_read(fds[fd]->sock, buf, (int)len);
+        } else if (fds && fd < 16 && fds[fd]) {     // an open file/pipe takes precedence
             ret = vfs_read(fds[fd], buf, len);
         } else if (fd == 0) {                // bare stdin: one char from the keyboard
             char *cb = (char *)buf;
@@ -220,6 +224,14 @@ long do_syscall(struct trapframe *tf)
         if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
             ret = socket_recvfrom(fds[fd]->sock, (void *)(uintptr_t)tf->x[1], (int)tf->x[2],
                                   (uint32_t *)(uintptr_t)tf->x[3], (uint16_t *)(uintptr_t)tf->x[4]);
+        } else { ret = -1; }
+        break;
+    }
+    case SYS_CONNECT: {                       // x0 = fd, x1 = ip, x2 = port
+        struct file **fds = sched_current_fds();
+        uint64_t fd = tf->x[0];
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+            ret = socket_connect(fds[fd]->sock, (uint32_t)tf->x[1], (uint16_t)tf->x[2]);
         } else { ret = -1; }
         break;
     }

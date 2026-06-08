@@ -25,3 +25,8 @@ int  socket_recvfrom(struct socket *s, void *buf, int len,
 // Called by the UDP receive path to hand a datagram to a bound socket.
 void socket_udp_input(uint32_t src_ip, uint16_t src_port, uint16_t dst_port,
                       const uint8_t *data, int len);
+
+// --- stream (TCP) sockets ---
+int socket_connect(struct socket *s, uint32_t ip, uint16_t port);  // 0 on success
+int socket_read(struct socket *s, void *buf, int len);             // recv; 0 = closed
+int socket_write(struct socket *s, const void *buf, int len);      // send

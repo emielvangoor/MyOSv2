@@ -33,6 +33,7 @@
 #define SYS_BIND     32 // x0=fd, x1=port -> 0/-1
 #define SYS_SENDTO   33 // x0=fd, x1=buf, x2=len, x3=ip, x4=port -> bytes/-1
 #define SYS_RECVFROM 34 // x0=fd, x1=buf, x2=len, x3=uint*ip, x4=uint16*port -> bytes/-1
+#define SYS_CONNECT  35 // x0=fd, x1=ip, x2=port -> 0/-1 (TCP handshake)
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.

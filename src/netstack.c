@@ -13,6 +13,7 @@
 #include "timer.h"
 #include "sched.h"
 #include "socket.h"
+#include "tcp.h"
 
 // How long a blocking request (ARP, ping, DNS) waits for its reply before giving
 // up. Timed against the free-running hardware counter, so it's real wall-clock
@@ -171,6 +172,12 @@ static int ip_send(uint32_t dst_ip, uint8_t proto, const uint8_t *payload, int l
 static void icmp_input(uint32_t src_ip, const uint8_t *p, int len);
 static void udp_input(uint32_t src_ip, const uint8_t *p, int len);
 
+// Public IP send (TCP's transmit path).
+int net_ip_send(uint32_t dst_ip, uint8_t proto, const void *payload, int len)
+{
+    return ip_send(dst_ip, proto, (const uint8_t *)payload, len);
+}
+
 static void ip_input(const uint8_t *pkt, int len)
 {
     if (len < 20) { return; }
@@ -188,7 +195,7 @@ static void ip_input(const uint8_t *pkt, int len)
 
     if (proto == 1)       { icmp_input(src, payload, paylen); }
     else if (proto == 17) { udp_input(src, payload, paylen); }
-    // proto 6 (TCP) demux is added in a later task.
+    else if (proto == 6)  { tcp_input(src, payload, paylen); }
 }
 
 // ---- ICMP (ping) ----

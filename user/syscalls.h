@@ -30,3 +30,4 @@
 #define SYS_BIND     32
 #define SYS_SENDTO   33
 #define SYS_RECVFROM 34
+#define SYS_CONNECT  35

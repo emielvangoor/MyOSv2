@@ -12,6 +12,7 @@
 #include "kheap.h"
 #include "net.h"
 #include "sched.h"
+#include "tcp.h"
 
 #define NSOCK     8       // simultaneous sockets
 #define DGRAM_MAX 1500    // largest datagram we buffer
@@ -29,9 +30,10 @@ struct dgram {
 struct socket {
     int           used;
     int           type;
-    uint16_t      lport;        // local (bound) port; 0 = unbound
+    uint16_t      lport;        // local (bound) port; 0 = unbound (UDP)
     struct dgram *qhead, *qtail;
     int           qcount;
+    struct tcp_conn *tcp;       // the TCP connection (SOCK_STREAM)
 };
 
 static struct socket socks[NSOCK];
@@ -43,6 +45,11 @@ struct socket *socket_alloc(int type)
         if (!socks[i].used) {
             socks[i].used = 1; socks[i].type = type; socks[i].lport = 0;
             socks[i].qhead = socks[i].qtail = 0; socks[i].qcount = 0;
+            socks[i].tcp = 0;
+            if (type == SOCK_STREAM) {
+                socks[i].tcp = tcp_new();
+                if (!socks[i].tcp) { socks[i].used = 0; return 0; }
+            }
             return &socks[i];
         }
     }
@@ -53,7 +60,26 @@ void socket_free(struct socket *s)
 {
     if (!s) { return; }
     for (struct dgram *d = s->qhead; d; ) { struct dgram *n = d->next; kfree(d); d = n; }
+    if (s->tcp) { tcp_close(s->tcp); s->tcp = 0; }
     s->used = 0; s->qhead = s->qtail = 0; s->qcount = 0; s->lport = 0;
+}
+
+int socket_connect(struct socket *s, uint32_t ip, uint16_t port)
+{
+    if (!s || s->type != SOCK_STREAM || !s->tcp) { return -1; }
+    return tcp_connect(s->tcp, ip, port);
+}
+
+int socket_read(struct socket *s, void *buf, int len)
+{
+    if (!s || s->type != SOCK_STREAM || !s->tcp) { return -1; }
+    return tcp_recv(s->tcp, buf, len);
+}
+
+int socket_write(struct socket *s, const void *buf, int len)
+{
+    if (!s || s->type != SOCK_STREAM || !s->tcp) { return -1; }
+    return tcp_send(s->tcp, buf, len);
 }
 
 int socket_bind(struct socket *s, uint16_t port)

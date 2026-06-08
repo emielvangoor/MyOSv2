@@ -35,6 +35,7 @@ int socket(int type);
 int bind(int fd, unsigned short port);
 int sendto(int fd, const void *buf, int len, unsigned int ip, unsigned short port);
 int recvfrom(int fd, void *buf, int len, unsigned int *ip, unsigned short *port);
+int connect(int fd, unsigned int ip, unsigned short port);   // TCP connect (SOCK_STREAM)
 
 #define SIGINT  2
 #define SIGKILL 9
