@@ -29,6 +29,7 @@
 #include "block.h"
 #include "sfs.h"
 #include "net.h"
+#include "console.h"
 
 #define PAGE 0x1000UL
 
@@ -314,6 +315,32 @@ static void test_block_woken_by_signal(void)
     signal_send(blk_sig_thread, SIGTERM);  // posting a signal must unblock it
     yield();
     KASSERT(blk_sig_n == 1);               // it ran past sched_block()
+}
+
+// --- console line discipline (Phase 2) ---
+static void noop_worker(void *a) { (void)a; }
+
+static void test_console_ring_fifo(void)
+{
+    // Bytes fed to the line discipline come back from console_getc() in order.
+    // (Non-empty ring, so console_getc returns immediately without blocking.)
+    console_input('h');
+    console_input('i');
+    KASSERT(console_getc() == 'h');
+    KASSERT(console_getc() == 'i');
+}
+
+static void test_console_ctrlc_signals_foreground(void)
+{
+    pmm_init(); kheap_init(); sched_init();
+    struct thread *t = thread_create(noop_worker, 0, 1);
+    sched_set_foreground(t);
+
+    console_input(3);                      // Ctrl-C
+    KASSERT(t->sig_pending & (1ull << SIGINT));   // -> SIGINT to the foreground
+    KASSERT(!console_has_input());         // and the 0x03 was NOT queued
+
+    sched_set_foreground(0);
 }
 
 // --- System calls (do_syscall dispatch) ---
@@ -1466,6 +1493,8 @@ static const struct ktest tests[] = {
     { "sched: sleep wakes after ticks",   test_sleep_wakes_after_ticks },
     { "sched: block wakes on channel",    test_block_wakes_on_channel },
     { "sched: block woken by signal",     test_block_woken_by_signal },
+    { "console: ring is FIFO",            test_console_ring_fifo },
+    { "console: Ctrl-C signals fg",       test_console_ctrlc_signals_foreground },
     { "syscall: write returns len",       test_syscall_write_returns_len },
     { "syscall: unknown returns -1",      test_syscall_unknown },
     { "syscall: yield returns 0",         test_syscall_yield },

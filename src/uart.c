@@ -19,13 +19,19 @@
 // side effects on hardware and must NOT be optimized away, reordered, or
 // cached in a CPU register. Without it the compiler might "helpfully" delete
 // our writes (they look pointless -- we never read the value back).
-#define UART_DR (*(volatile uint32_t *)(UART0_BASE + 0x00)) // Data Register
-#define UART_FR (*(volatile uint32_t *)(UART0_BASE + 0x18)) // Flag Register
+#define UART_DR   (*(volatile uint32_t *)(UART0_BASE + 0x00)) // Data Register
+#define UART_FR   (*(volatile uint32_t *)(UART0_BASE + 0x18)) // Flag Register
+#define UART_LCRH (*(volatile uint32_t *)(UART0_BASE + 0x2C)) // Line Control
+#define UART_CR   (*(volatile uint32_t *)(UART0_BASE + 0x30)) // Control
+#define UART_IMSC (*(volatile uint32_t *)(UART0_BASE + 0x38)) // Interrupt Mask Set/Clear
+#define UART_ICR  (*(volatile uint32_t *)(UART0_BASE + 0x44)) // Interrupt Clear
 
 // Bit 5 of the Flag Register: "transmit FIFO full". While set, the UART has no
 // room for another byte, so we must wait.
 #define UART_FR_TXFF (1u << 5)
 #define UART_FR_RXFE (1u << 4)   // receive FIFO empty
+#define UART_INT_RX  (1u << 4)   // receive interrupt
+#define UART_INT_RT  (1u << 6)   // receive-timeout interrupt
 
 void uart_init(void)
 {
@@ -44,6 +50,7 @@ void uart_putc(char c)
 }
 
 // Receive one character if the UART has one waiting; otherwise return -1.
+// (uart_rx_raw is the same thing under the name the interrupt handler uses.)
 int uart_getc(void)
 {
     if (UART_FR & UART_FR_RXFE) {
@@ -51,6 +58,25 @@ int uart_getc(void)
     }
     return (int)(UART_DR & 0xFF);
 }
+int uart_rx_raw(void) { return uart_getc(); }
+
+// Turn on the receive interrupt. We keep the FIFO DISABLED so the interrupt
+// triggers on EVERY single byte (with the FIFO on, QEMU's PL011 only interrupts
+// once 2 bytes are buffered and never implements the receive-timeout, so lone
+// keystrokes would be missed). This only works because the reader now BLOCKS
+// instead of polling the data register -- nothing drains the byte before the
+// interrupt is delivered.
+void uart_rx_irq_enable(void)
+{
+    UART_LCRH &= ~(1u << 4);                     // FEN = 0: interrupt per byte
+    UART_ICR   = UART_INT_RX | UART_INT_RT;      // clear any stale state
+    UART_IMSC |= UART_INT_RX | UART_INT_RT;      // unmask receive interrupts
+    UART_CR   |= (1u << 0) | (1u << 8) | (1u << 9);  // UARTEN | TXE | RXE
+}
+
+// Clear ALL interrupt sources (including any receive-overrun) so a transient
+// error can't latch and stall further receive interrupts.
+void uart_irq_ack(void) { UART_ICR = 0x7FF; }
 
 void uart_puts(const char *s)
 {

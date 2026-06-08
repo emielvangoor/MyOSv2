@@ -14,6 +14,11 @@
 #include "vm.h"
 #include "signal.h"
 #include "uart.h"
+#include "console.h"
+
+// GIC interrupt id of UART0 on the virt board: shared peripheral interrupt (SPI)
+// 1, and SPIs start at id 32, so 32 + 1 = 33.
+#define UART_IRQ 33
 
 // Defined in vectors.S: the start of our 16-entry vector table.
 extern char vector_table[];
@@ -77,15 +82,10 @@ void irq_handler(struct trapframe *tf)
     if (id == 30) {            // 30 = the physical timer's interrupt id
         timer_handle_irq();    // heartbeat: re-arm + count this tick
         resched = sched_tick(); // 1 only when the current thread's slice expired
-
-        // Poll the console for Ctrl-C while a foreground program runs (it isn't
-        // reading stdin itself, so stealing the byte here is fine). 0x03 posts
-        // SIGINT to it.
-        struct thread *fg = sched_foreground();
-        if (fg) {
-            int c = uart_getc();
-            if (c == 3) { signal_send(fg, SIGINT); }
-        }
+    } else if (id == UART_IRQ) {
+        // Console input arrived: the line discipline queues it (or turns Ctrl-C
+        // into a SIGINT) and wakes whatever reader is blocked in console_getc().
+        console_isr();
     }
 
     // Tell the controller we're done so it can deliver the next one.

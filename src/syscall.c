@@ -10,6 +10,7 @@
 #include "syscall.h"
 #include "uart.h"
 #include "sched.h"
+#include "console.h"
 #include "kprintf.h"
 #include "vfs.h"
 #include "proc.h"
@@ -63,8 +64,8 @@ long do_syscall(struct trapframe *tf)
         } else if (fd == 0) {                // bare stdin: one char from the keyboard
             char *cb = (char *)buf;
             if (len == 0) { ret = 0; break; }
-            int ch;
-            while ((ch = uart_getc()) < 0) { yield(); }   // wait, letting others run
+            int ch = console_getc();         // BLOCKS (sleeps) until the UART IRQ
+            if (ch < 0) { ret = 0; break; }  // interrupted by a signal (EINTR)
             cb[0] = (char)ch;
             ret = 1;
         } else { ret = -1; }

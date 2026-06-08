@@ -123,6 +123,8 @@ void kmain(void)
     exc_init();
     gic_init();
     timer_init();
+    gic_enable_irq(33);          // UART0 receive interrupt (interrupt-driven input)
+    uart_rx_irq_enable();        // now that the GIC + handler are ready, arm RX
 
     vm_init();
     shm_init();                                           // shared-memory object table

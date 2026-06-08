@@ -45,6 +45,14 @@ void gic_init(void)
 
 void gic_enable_irq(uint32_t id)
 {
+    // A shared peripheral interrupt (id >= 32) needs a priority and a target CPU
+    // before it will be delivered. On QEMU's single-core 'virt' the target
+    // register is read-as-zero/write-ignored (SPIs go to the only CPU anyway),
+    // but the priority write is what actually lets the interrupt through.
+    // PPIs/SGIs (id < 32) are always delivered to the local core.
+    volatile uint8_t *pri = (volatile uint8_t *)(GICD_BASE + 0x400); // IPRIORITYR
+    volatile uint8_t *tgt = (volatile uint8_t *)(GICD_BASE + 0x800); // ITARGETSR
+    if (id >= 32) { pri[id] = 0x00; tgt[id] = 0x01; }
     // Set the one bit that enables this interrupt id in the distributor.
     GICD_ISENABLER[id / 32] = (1u << (id % 32));
 }
