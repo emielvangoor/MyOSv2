@@ -28,6 +28,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
   pipelines like `hello | wc`.
 - **Signals** — `kill`, default actions, user handlers (with a sigreturn
   trampoline), and **Ctrl-C** → `SIGINT` to the foreground program.
+- **Block device** — a **virtio-blk** disk driver on a generic virtio-mmio +
+  virtqueue layer, reading and writing 512-byte sectors.
 
 Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
 and eventually a TCP/IP network stack — lives in
