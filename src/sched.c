@@ -50,6 +50,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg)
 // (kmain, or the test harness). Its context is filled in on the first switch.
 static struct thread boot_thread;
 static int started;
+static int slice_left = SCHED_TIME_SLICE;   // ticks remaining for `current`
 
 void sched_init(void)
 {
@@ -60,11 +61,27 @@ void sched_init(void)
     current  = &boot_thread;
     next_id  = 1;
     started  = 1;
+    slice_left = SCHED_TIME_SLICE;   // boot thread starts with a full slice
 }
 
 int sched_started(void)
 {
     return started;
+}
+
+// Advance the current thread's time slice by one tick. When it runs out, reset
+// it and tell the caller (the timer IRQ) to reschedule. Decoupling this from the
+// timer tick is the Linux model: a fast tick, a slower scheduling quantum.
+int sched_tick(void)
+{
+    if (!started) {
+        return 0;
+    }
+    if (--slice_left <= 0) {
+        slice_left = SCHED_TIME_SLICE;
+        return 1;       // slice used up -> preempt
+    }
+    return 0;
 }
 
 // Round-robin: switch to the next non-exited thread after `current`.
@@ -78,6 +95,7 @@ void schedule(void)
     if (next == prev) {
         return;                       // nobody else runnable -- keep going
     }
+    slice_left = SCHED_TIME_SLICE;    // the newly-running thread gets a full slice
     current = next;
     cpu_switch(&prev->ctx, &next->ctx);
 }

@@ -38,3 +38,11 @@ void yield(void);                                        // cooperative switch
 void schedule(void);                                     // pick next + switch
 void thread_exit(void);                                  // end current thread
 int  sched_started(void);                                // has sched_init run?
+
+// Length of a thread's time slice, in timer ticks (Linux-style quantum).
+#define SCHED_TIME_SLICE 10
+
+// Called once per timer tick. Returns 1 when the current thread's time slice has
+// expired (a reschedule is due) and resets the slice; returns 0 otherwise (or if
+// the scheduler hasn't started).
+int sched_tick(void);

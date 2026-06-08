@@ -153,6 +153,24 @@ static void test_round_robin_order(void)
     KASSERT(rr_order[5] == 2);
 }
 
+static void test_time_slice_expiry(void)
+{
+    sched_init();   // resets the slice counter to a full SCHED_TIME_SLICE
+
+    // The first SCHED_TIME_SLICE-1 ticks do NOT expire the slice.
+    for (int i = 0; i < SCHED_TIME_SLICE - 1; i++) {
+        KASSERT(sched_tick() == 0);
+    }
+    // The SCHED_TIME_SLICE-th tick expires it -> reschedule signal.
+    KASSERT(sched_tick() == 1);
+
+    // ...and it resets: the same pattern repeats.
+    for (int i = 0; i < SCHED_TIME_SLICE - 1; i++) {
+        KASSERT(sched_tick() == 0);
+    }
+    KASSERT(sched_tick() == 1);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -163,6 +181,7 @@ static const struct ktest tests[] = {
     { "kheap: coalesce adjacent blocks", test_kheap_coalesce },
     { "thread: create sets up context",  test_thread_create_context },
     { "sched: round-robin order",         test_round_robin_order },
+    { "sched: time slice expiry",         test_time_slice_expiry },
 };
 
 int run_self_tests(void)
