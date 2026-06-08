@@ -807,6 +807,17 @@ static void test_draw_fill_rect_clips(void)
     KASSERT(rgb(0xAB, 0xCD, 0xEF) == 0x00ABCDEF);
 }
 
+static void test_font_glyph_known(void)
+{
+    const uint8_t *sp = font_glyph(' ');
+    for (int i = 0; i < 8; i++) { KASSERT(sp[i] == 0); }   // space is blank
+
+    const uint8_t *A = font_glyph('A');
+    // Matches the 'A' row in font8x8_basic embedded in font8x8.h.
+    const uint8_t expect[8] = {0x0C,0x1E,0x33,0x33,0x3F,0x33,0x33,0x00};
+    for (int i = 0; i < 8; i++) { KASSERT(A[i] == expect[i]); }
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -861,6 +872,7 @@ static const struct ktest tests[] = {
     { "gfx: ramfb cfg byte layout",       test_ramfb_cfg_layout },
     { "gfx: draw_put sets one pixel",     test_draw_put },
     { "gfx: fill_rect clips to bounds",   test_draw_fill_rect_clips },
+    { "gfx: font glyph lookup",           test_font_glyph_known },
 };
 
 int run_self_tests(void)
