@@ -28,6 +28,7 @@
 #include "signal.h"
 #include "block.h"
 #include "sfs.h"
+#include "net.h"
 
 #define PAGE 0x1000UL
 
@@ -1188,6 +1189,49 @@ static void test_vfs_mount_at(void)
     KASSERT(vfs_lookup("/disk/nope") == 0);
 }
 
+// --- virtio-net (Phase 21) ---
+
+static void test_net_present(void)
+{
+    pmm_init(); kheap_init(); virtio_net_init();
+    KASSERT(net_present());
+    uint8_t m[6]; net_mac(m);
+    KASSERT(m[0] | m[1] | m[2] | m[3] | m[4] | m[5]);   // non-zero MAC
+}
+
+static void test_net_arp_roundtrip(void)
+{
+    pmm_init(); kheap_init(); virtio_net_init();
+    uint8_t mac[6]; net_mac(mac);
+
+    // Hand-build an ARP request: who-has 10.0.2.2, tell 10.0.2.15.
+    uint8_t f[42];
+    for (int i = 0; i < 6; i++) { f[i] = 0xff; }        // dst: broadcast
+    for (int i = 0; i < 6; i++) { f[6 + i] = mac[i]; }  // src: us
+    f[12] = 0x08; f[13] = 0x06;                          // ethertype = ARP
+    uint8_t arp[28] = { 0,1, 8,0, 6,4, 0,1,              // eth/ipv4, opcode request
+        mac[0],mac[1],mac[2],mac[3],mac[4],mac[5], 10,0,2,15,   // sender ha/ip
+        0,0,0,0,0,0, 10,0,2,2 };                          // target ha/ip
+    for (int i = 0; i < 28; i++) { f[14 + i] = arp[i]; }
+    KASSERT(net_send(f, 42) == 0);
+
+    // Poll for the gateway's ARP reply (opcode 2, sender IP 10.0.2.2). QEMU
+    // injects the reply from its host-side network thread, so we may spin a while.
+    // ARP fields: [6..7]=opcode, [14..17]=sender protocol (IP) address.
+    uint8_t r[1600];
+    int got = 0;
+    for (long tries = 0; tries < 200000000L && !got; tries++) {
+        __asm__ volatile("dsb sy" ::: "memory");
+        int n = net_recv(r, sizeof(r));
+        if (n >= 42 && r[12] == 0x08 && r[13] == 0x06 &&
+            r[14 + 7] == 2 &&                            // ARP opcode = reply
+            r[14 + 14] == 10 && r[14 + 15] == 0 && r[14 + 16] == 2 && r[14 + 17] == 2) {
+            got = 1;                                     // sender IP = 10.0.2.2
+        }
+    }
+    KASSERT(got);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1271,6 +1315,8 @@ static const struct ktest tests[] = {
     { "sfs: readdir lists entries",       test_sfs_readdir },
     { "sfs: multi-block file",            test_sfs_multiblock },
     { "vfs: mount at /disk",              test_vfs_mount_at },
+    { "net: present + MAC",               test_net_present },
+    { "net: ARP round-trip",              test_net_arp_roundtrip },
 };
 
 int run_self_tests(void)
