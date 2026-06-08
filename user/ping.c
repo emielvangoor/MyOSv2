@@ -1,8 +1,10 @@
-// ping.c -- /bin/ping: resolve a host (via DNS) and ICMP-echo it, printing the
-// round-trip time. With no argument it pings the QEMU gateway (10.0.2.2).
+// ping.c -- /bin/ping: resolve a host (via DNS) and ICMP-echo it once a second,
+// printing each reply's round-trip time, until interrupted with Ctrl-C. With no
+// argument it pings the QEMU gateway (10.0.2.2).
 //   ping                     -> ping 10.0.2.2
 //   ping example.com         -> resolve, then ping
 //   ping https://google.com  -> scheme + path stripped, then resolve + ping
+//   ping 1.1.1.1             -> literal IP, no DNS
 #include "ulib.h"
 
 static void puts1(const char *s) { sys_write(1, s, ustrlen(s)); }
@@ -62,22 +64,31 @@ int umain(int argc, char **argv)
     if (argc >= 2) {
         hostname_of(argv[1], host, sizeof(host));
         if (parse_ipv4(host, &ip)) {                  // a literal IP: no DNS needed
-            puts1("ping "); put_ip(ip); puts1(": ");
+            puts1("PING "); put_ip(ip); puts1(":\n");
         } else {
             ip = resolve(host);
             if (ip == 0) { puts1("ping: cannot resolve "); puts1(host); puts1("\n"); return 1; }
-            puts1("ping "); puts1(host); puts1(" ("); put_ip(ip); puts1("): ");
+            puts1("PING "); puts1(host); puts1(" ("); put_ip(ip); puts1("):\n");
         }
     } else {
         ip = 0x0a000202u;                       // 10.0.2.2 (gateway)
-        puts1("ping "); put_ip(ip); puts1(": ");
+        puts1("PING "); put_ip(ip); puts1(":\n");
     }
 
-    int ms = -1;
-    if (ping(ip, &ms) == 0) {
-        puts1("reply in "); put_int(ms); puts1(" ms\n");
-        return 0;
+    // Echo once a second forever, one line per round trip, until Ctrl-C (SIGINT)
+    // terminates us. Timeouts are reported but don't stop the loop -- just like
+    // a real ping, a host that's briefly unreachable keeps being probed.
+    for (int seq = 0; ; seq++) {
+        int ms = -1;
+        if (ping(ip, &ms) == 0) {
+            puts1("reply from "); put_ip(ip);
+            puts1(": seq="); put_int(seq);
+            puts1(" time="); put_int(ms); puts1(" ms\n");
+        } else {
+            puts1("request to "); put_ip(ip);
+            puts1(" timed out: seq="); put_int(seq); puts1("\n");
+        }
+        sys_sleep(1000);                        // ~1 s between probes
     }
-    puts1("no reply\n");
-    return 1;
+    return 0;                                   // unreached (Ctrl-C exits)
 }
