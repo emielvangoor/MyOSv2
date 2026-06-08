@@ -17,6 +17,9 @@
 #include "tests.h"
 #include "semihost.h"
 #include "sched.h"
+#include "vfs.h"
+#include "ramfs.h"
+#include "initrd.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -96,6 +99,41 @@ static void lo_thread(void *arg)
     }
 }
 
+// Demonstrate the filesystem: read an initrd file, create+write+read a new file,
+// and list the root directory.
+static void demo_fs(void)
+{
+    vfs_mount_root(ramfs_type());
+    initrd_unpack();
+
+    struct file *h = vfs_open("/hello.txt");
+    if (h) {
+        char buf[32] = {0};
+        int n = vfs_read(h, buf, sizeof(buf) - 1);
+        buf[n] = '\0';
+        kprintf("fs: /hello.txt = \"%s\"", buf);
+        vfs_close(h);
+    }
+
+    vfs_create("/tmp.txt", VN_FILE);
+    struct file *w = vfs_open("/tmp.txt");
+    vfs_write(w, "written at runtime\n", 19);
+    vfs_close(w);
+    struct file *r = vfs_open("/tmp.txt");
+    char b2[32] = {0};
+    int m = vfs_read(r, b2, sizeof(b2) - 1);
+    b2[m] = '\0';
+    kprintf("fs: /tmp.txt = \"%s\"", b2);
+    vfs_close(r);
+
+    kprintf("fs: ls / ->");
+    char name[32];
+    for (int i = 0; vfs_readdir(vfs_root(), i, name) == 0; i++) {
+        kprintf(" %s", name);
+    }
+    kprintf("\n");
+}
+
 void kmain(void)
 {
     // --- 1. Serial output ---
@@ -129,6 +167,7 @@ void kmain(void)
     kheap_init();
     demo_pmm();
     demo_heap();
+    demo_fs();
 
     // --- 4. Interrupts, then the scheduler + a preemption demo ---
     exc_init();
