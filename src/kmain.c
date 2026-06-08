@@ -21,6 +21,8 @@
 #include "ramfs.h"
 #include "initrd.h"
 #include "proc.h"
+#include "fb.h"
+#include "draw.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -124,6 +126,36 @@ static void demo_fs(void)
     kprintf("\n");
 }
 
+// Demonstrate graphics: bring up the ramfb framebuffer and draw a frame -- a
+// full-screen gradient, nested color bars, and a text banner. If QEMU was
+// started without `-device ramfb` (e.g. the headless test build), fb_init()
+// returns 0 and we just log and continue.
+static void demo_gfx(void)
+{
+    struct fb_info fb;
+    if (!fb_init(&fb)) {
+        kprintf("gfx: no framebuffer (ramfb absent)\n");
+        return;
+    }
+    kprintf("gfx: framebuffer %dx%d ready\n", (int)fb.width, (int)fb.height);
+
+    draw_clear(&fb, rgb(0x10, 0x10, 0x18));                 // dark background
+    // Full-screen gradient -- exercises a write to every pixel.
+    for (uint32_t y = 0; y < fb.height; y++) {
+        for (uint32_t x = 0; x < fb.width; x++) {
+            uint8_t r = (uint8_t)(x * 255 / fb.width);
+            uint8_t b = (uint8_t)(y * 255 / fb.height);
+            draw_put(&fb, (int)x, (int)y, rgb(r, 0x20, b));
+        }
+    }
+    // Nested color bars -- exercises fill_rect (and its clipping).
+    draw_fill_rect(&fb, 80, 80, 360, 200, rgb(0xE0, 0x30, 0x30));
+    draw_fill_rect(&fb, 120, 120, 280, 120, rgb(0x30, 0xE0, 0x30));
+    draw_fill_rect(&fb, 160, 150, 200, 60,  rgb(0x30, 0x30, 0xE0));
+    // Banner text.
+    draw_text(&fb, 80, 360, "MyOSv2  1280x720  framebuffer ok", rgb(0xFF, 0xFF, 0xFF));
+}
+
 void kmain(void)
 {
     // --- 1. Serial output ---
@@ -158,6 +190,7 @@ void kmain(void)
     demo_pmm();
     demo_heap();
     demo_fs();
+    demo_gfx();
 
     // --- 4. Interrupts, then the scheduler + a preemption demo ---
     exc_init();
