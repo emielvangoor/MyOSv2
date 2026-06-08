@@ -53,9 +53,24 @@ long do_syscall(struct trapframe *tf)
         void *buf = (void *)(uintptr_t)tf->x[1];
         uint64_t len = tf->x[2];
         struct file **fds = sched_current_fds();
-        if (fd == 0) { ret = 0; }           // stdin: nothing yet
-        else if (fds && fd < 16 && fds[fd]) { ret = vfs_read(fds[fd], buf, len); }
-        else { ret = -1; }
+        if (fd == 0) {                       // stdin: one char from the keyboard
+            char *cb = (char *)buf;
+            if (len == 0) { ret = 0; break; }
+            int ch;
+            while ((ch = uart_getc()) < 0) { yield(); }   // wait, letting others run
+            cb[0] = (char)ch;
+            ret = 1;
+        } else if (fds && fd < 16 && fds[fd]) {
+            ret = vfs_read(fds[fd], buf, len);
+        } else { ret = -1; }
+        break;
+    }
+    case SYS_READDIR: {                       // x0 = path, x1 = index, x2 = namebuf
+        const char *path = (const char *)(uintptr_t)tf->x[0];
+        int index = (int)tf->x[1];
+        char *name = (char *)(uintptr_t)tf->x[2];
+        struct vnode *dir = vfs_lookup(path);
+        ret = dir ? vfs_readdir(dir, index, name) : -1;
         break;
     }
     case SYS_CLOSE: {                       // x0 = fd

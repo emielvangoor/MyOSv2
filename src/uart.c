@@ -25,6 +25,7 @@
 // Bit 5 of the Flag Register: "transmit FIFO full". While set, the UART has no
 // room for another byte, so we must wait.
 #define UART_FR_TXFF (1u << 5)
+#define UART_FR_RXFE (1u << 4)   // receive FIFO empty
 
 void uart_init(void)
 {
@@ -40,6 +41,15 @@ void uart_putc(char c)
         // spin
     }
     UART_DR = (uint32_t)c;   // writing the Data Register transmits the byte
+}
+
+// Receive one character if the UART has one waiting; otherwise return -1.
+int uart_getc(void)
+{
+    if (UART_FR & UART_FR_RXFE) {
+        return -1;                 // nothing waiting
+    }
+    return (int)(UART_DR & 0xFF);
 }
 
 void uart_puts(const char *s)

@@ -25,7 +25,7 @@ DEP  := $(OBJ:.o=.d)
 # User programs are separate flat binaries linked at USER_CODE_VA (so every
 # address -- code and strings -- is correct with no relocation), then embedded
 # into the kernel image as a C byte array.
-USER_SRC    := user/crt0.S user/ulib.c user/prog.c
+USER_SRC    := user/crt0.S user/ulib.c user/sh.c
 USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall -O2
 
 QEMU       := qemu-system-aarch64

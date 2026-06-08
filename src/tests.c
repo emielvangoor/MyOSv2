@@ -664,6 +664,31 @@ static void test_cow_fault_non_cow(void)
     KASSERT(cow_fault(p, 0x999000UL) == 0);
 }
 
+static char rd_name[32];
+static long rd_r0, rd_r1;
+static void rd_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    tf.x[8] = SYS_READDIR; tf.x[0] = (uint64_t)(uintptr_t)"/"; tf.x[1] = 0;
+    tf.x[2] = (uint64_t)(uintptr_t)rd_name;
+    do_syscall(&tf); rd_r0 = (long)tf.x[0];
+    tf.x[8] = SYS_READDIR; tf.x[0] = (uint64_t)(uintptr_t)"/"; tf.x[1] = 999;
+    tf.x[2] = (uint64_t)(uintptr_t)rd_name;
+    do_syscall(&tf); rd_r1 = (long)tf.x[0];
+}
+static void test_syscall_readdir(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type()); initrd_unpack();
+    rd_r0 = rd_r1 = -2;
+    sched_init();
+    thread_create(rd_worker, 0, 1);
+    while (rd_r0 == -2 || rd_r1 == -2) { yield(); }
+    KASSERT(rd_r0 == 0);     // first entry exists
+    KASSERT(rd_r1 == -1);    // past the end
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -707,6 +732,7 @@ static const struct ktest tests[] = {
     { "cow: fault copies page",           test_cow_fault_copies },
     { "cow: fault drops refcount",        test_cow_fault_refcount },
     { "cow: fault on non-cow -> 0",       test_cow_fault_non_cow },
+    { "syscall: readdir lists dir",       test_syscall_readdir },
 };
 
 int run_self_tests(void)

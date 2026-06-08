@@ -10,3 +10,4 @@
 #define SYS_READ   7
 #define SYS_CLOSE  8
 #define SYS_FORK   9
+#define SYS_READDIR 10

@@ -89,17 +89,6 @@ static void demo_heap(void)
 
 // High-priority thread: print a short burst, then sleep so lower-priority
 // threads get the CPU. Demonstrates priority preemption + sleep.
-// A kernel (EL1) thread: print its letter continuously. Runs alongside the
-// user-mode thread so we can see them coexist under timer preemption.
-static void lo_thread(void *arg)
-{
-    char c = (char)(uintptr_t)arg;
-    for (;;) {
-        uart_putc(c);
-        for (volatile int d = 0; d < 1000000; d++) { }
-    }
-}
-
 // Demonstrate the filesystem: read an initrd file, create+write+read a new file,
 // and list the root directory.
 static void demo_fs(void)
@@ -177,9 +166,8 @@ void kmain(void)
 
     vm_init();
     sched_init();                                         // boot thread becomes idle (prio -1)
-    proc_spawn("/bin/init", 2);                           // a program loaded from /bin/init
-    thread_create(lo_thread, (void *)(uintptr_t)'k', 1);  // a kernel (EL1) thread
-    kprintf("Running a program loaded from the filesystem:\n");
+    proc_spawn("/bin/init", 2);                           // the shell, loaded from /bin/init
+    kprintf("Starting the shell (loaded from /bin/init):\n");
     enable_irqs();                                  // now the timer can preempt
 
     // The boot thread idles; the scheduler runs the user + kernel threads.

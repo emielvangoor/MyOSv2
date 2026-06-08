@@ -6,3 +6,4 @@
 void uart_init(void);        // prepare the UART for use
 void uart_putc(char c);      // send one character
 void uart_puts(const char *s); // send a NUL-terminated string
+int  uart_getc(void);        // receive one character, or -1 if none waiting
