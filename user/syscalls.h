@@ -13,3 +13,4 @@
 #define SYS_READDIR 10
 #define SYS_EXEC   11
 #define SYS_WAIT   12
+#define SYS_SBRK   13

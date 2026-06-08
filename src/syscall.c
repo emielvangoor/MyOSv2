@@ -105,6 +105,9 @@ long do_syscall(struct trapframe *tf)
     case SYS_WAIT:                           // x0 = int *status
         ret = sched_wait((int *)(uintptr_t)tf->x[0]);
         break;
+    case SYS_SBRK:                           // x0 = signed increment
+        ret = (long)as_sbrk(sched_current_as(), (long)tf->x[0]);
+        break;
     case SYS_REPORT:                         // x0 = pid, x1 = value read back
         kprintf("  [user] process %d read %d  (%s)\n",
                 (int)tf->x[0], (int)tf->x[1],

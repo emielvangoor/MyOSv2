@@ -12,5 +12,8 @@ long sys_exec(const char *path);
 long sys_wait(int *status);
 long sys_readdir(const char *path, int index, char *name);
 int  sys_getc(void);
+void *sys_sbrk(long incr);
+void *malloc(unsigned long n);
+void  free(void *p);
 long ustrlen(const char *s);
 int  umain(void);   // the program's entry (defined per-program); returns exit status

@@ -16,6 +16,7 @@
 #define SYS_READDIR 10 // x0=path, x1=index, x2=namebuf -> 0 (name) / -1 (done)
 #define SYS_EXEC   11  // x0=path -> replaces image; returns -1 only on failure
 #define SYS_WAIT   12  // x0=int* status -> reaped child pid, or -1 if no children
+#define SYS_SBRK   13  // x0=signed increment -> previous program break (or -1)
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.
