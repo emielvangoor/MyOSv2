@@ -17,7 +17,6 @@
 #include "tests.h"
 #include "semihost.h"
 #include "sched.h"
-#include "user.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -136,10 +135,12 @@ void kmain(void)
     gic_init();
     timer_init();
 
-    sched_init();                                        // boot thread becomes idle (prio -1)
-    thread_create_user(user_main, 2);                    // a user-mode (EL0) thread
-    thread_create(lo_thread, (void *)(uintptr_t)'k', 1); // a kernel (EL1) thread printing 'k'
-    kprintf("Launching an EL0 user thread + an EL1 kernel thread:\n");
+    vm_init();                                            // prepare the shared user code pages
+    sched_init();                                         // boot thread becomes idle (prio -1)
+    thread_create_user(2);                                // user process 1 (own address space)
+    thread_create_user(2);                                // user process 2 (own address space)
+    thread_create(lo_thread, (void *)(uintptr_t)'k', 1);  // a kernel (EL1) thread
+    kprintf("Two isolated user processes + a kernel thread:\n");
 
     enable_irqs();                                  // now the timer can preempt
 

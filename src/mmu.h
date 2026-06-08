@@ -2,11 +2,10 @@
 // Calling mmu_init() builds page tables and turns on virtual-memory
 // translation, after which every address goes through the tables we built.
 #pragma once
+#include <stdint.h>
 
 void mmu_init(void);
 
-// The EL0 alias of RAM lives at (physical address + this offset). User threads
-// run at EL0 from this window (VA 0x80000000..0xC0000000 -> PA 0x40000000..),
-// which is mapped EL0-accessible while the kernel's identity mapping stays
-// EL1-only. To get the user-visible address of a kernel object: addr + offset.
-#define USER_ALIAS_OFFSET 0x40000000UL
+// L0[0] descriptor for the shared kernel mapping (identity 0-2 GiB, EL1-only).
+// Per-process address spaces install this so the kernel works after a trap.
+uint64_t mmu_kernel_l0_entry(void);

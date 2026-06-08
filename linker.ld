@@ -39,6 +39,13 @@ SECTIONS
         *(.text*)             /* all other code from every .o file */
     }
 
+    /* The user program, kept contiguous so it can be copied into a user address
+     * space and run there (PC-relative). __user_start/__user_end bound it. */
+    . = ALIGN(16);
+    __user_start = .;
+    .user : { KEEP(*(.user)) }
+    __user_end = .;
+
     /* .rodata = read-only data: string literals, const tables. */
     .rodata : { *(.rodata*) }
 

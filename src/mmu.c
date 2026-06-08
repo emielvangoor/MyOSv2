@@ -66,7 +66,6 @@ static uint64_t l1_table[512] __attribute__((aligned(4096)));
 static uint64_t l2_low[512]   __attribute__((aligned(4096)));  // maps VA 0-1GB
 static uint64_t l2_high[512]  __attribute__((aligned(4096)));  // maps VA 1-2GB
 static uint64_t l2_demo[512]  __attribute__((aligned(4096)));  // the demo mapping
-static uint64_t l2_user[512]  __attribute__((aligned(4096)));  // EL0 alias of RAM
 
 // Build a leaf entry for NORMAL (cacheable RAM) memory at physical address pa.
 // Kept EL1-only (AP_RW_EL1) so the kernel stays protected AND executable: an
@@ -75,16 +74,6 @@ static uint64_t l2_user[512]  __attribute__((aligned(4096)));  // EL0 alias of R
 static uint64_t normal_block(uint64_t pa)
 {
     return pa | ATTR_AF | ATTR_SH_INNER | ATTR_AP_RW_EL1 |
-           ATTR_IDX(MAIR_IDX_NORMAL) | ATTR_NS | DESC_BLOCK;
-}
-
-// Build a leaf entry for the EL0 alias: Normal RAM mapped EL1+EL0 read/write
-// (AP_RW_ALL). User threads run here (at EL0). The kernel never executes from
-// the alias (it runs from the identity mapping above), so the forced-PXN rule
-// for EL0-writable pages doesn't trap it.
-static uint64_t user_block(uint64_t pa)
-{
-    return pa | ATTR_AF | ATTR_SH_INNER | ATTR_AP_RW_ALL |
            ATTR_IDX(MAIR_IDX_NORMAL) | ATTR_NS | DESC_BLOCK;
 }
 
@@ -106,7 +95,6 @@ static void build_tables(void)
     // L1 entries each cover 1 GiB of virtual space. We use three:
     l1_table[0] = (uint64_t)l2_low  | DESC_TABLE;  // VA 0-1GB   -> device map
     l1_table[1] = (uint64_t)l2_high | DESC_TABLE;  // VA 1-2GB   -> RAM map (kernel)
-    l1_table[2] = (uint64_t)l2_user | DESC_TABLE;  // VA 2-3GB   -> EL0 alias of RAM
     l1_table[4] = (uint64_t)l2_demo | DESC_TABLE;  // VA 4-5GB   -> demo map
 
     // Fill the identity L2 tables, 512 blocks of 2 MiB each = 1 GiB apiece.
@@ -115,9 +103,6 @@ static void build_tables(void)
         l2_low[i]  = device_block(i * BLOCK_2M);
         // 1..2 GiB is RAM (our kernel lives here). Identity-mapped, EL1-only.
         l2_high[i] = normal_block(0x40000000UL + i * BLOCK_2M);
-        // 2..3 GiB aliases the SAME RAM, EL0-accessible: VA (0x80000000+x) maps
-        // to PA (0x40000000+x), i.e. user VA = physical + USER_ALIAS_OFFSET.
-        l2_user[i] = user_block(0x40000000UL + i * BLOCK_2M);
     }
 
     // The one non-identity mapping: virtual DEMO_VA -> physical DEMO_PA.
@@ -173,4 +158,12 @@ void mmu_init(void)
     __asm__ volatile("dsb ish");   // ensure all table writes are visible to the
                                    //   hardware table walker before we enable it
     enable_mmu();
+}
+
+// The shared kernel mapping (identity 0-2 GiB, EL1-only). Every per-process
+// address space installs this as its L0[0] so the kernel still works after a
+// trap, no matter which process is currently active.
+uint64_t mmu_kernel_l0_entry(void)
+{
+    return l0_table[0];
 }

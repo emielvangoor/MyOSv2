@@ -10,6 +10,7 @@
 #include "syscall.h"
 #include "uart.h"
 #include "sched.h"
+#include "kprintf.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -39,6 +40,12 @@ long do_syscall(struct trapframe *tf)
         break;
     case SYS_EXIT:
         thread_exit();                       // does not return
+        ret = 0;
+        break;
+    case SYS_REPORT:                         // x0 = pid, x1 = value read back
+        kprintf("  [user] process %d read %d  (%s)\n",
+                (int)tf->x[0], (int)tf->x[1],
+                (long)tf->x[0] == (long)tf->x[1] ? "ISOLATED" : "LEAKED");
         ret = 0;
         break;
     default:

@@ -6,6 +6,7 @@
 // round-robin among equal priorities, with a 1 ms tick and a 10 ms time slice.
 #pragma once
 #include <stdint.h>
+#include "vm.h"
 
 // Callee-saved CPU state for a cooperative switch (offsets MUST match switch.S).
 struct context {
@@ -29,6 +30,7 @@ struct thread {
     int id;
     int priority;          // higher number = more important
     uint64_t wake_tick;    // jiffy to wake at (when SLEEPING)
+    struct addrspace *as;  // user address space (NULL for kernel threads)
     struct thread *next;   // circular run-queue link
 };
 
@@ -40,7 +42,7 @@ void user_entry_trampoline(void);   // assembly (usermode.S): drops a thread to 
 // Scheduler:
 void sched_init(void);                                            // register idle thread
 struct thread *thread_create(void (*fn)(void *), void *arg, int priority);
-struct thread *thread_create_user(void (*user_fn)(void), int priority); // EL0 thread
+struct thread *thread_create_user(int priority); // EL0 thread (builds its own address space)
 void yield(void);                                                 // cooperative switch
 void schedule(void);                                             // pick highest-prio + switch
 void thread_exit(void);                                          // end current thread

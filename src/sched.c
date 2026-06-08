@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include "sched.h"
 #include "kheap.h"
-#include "mmu.h"
 
 #define STACK_SIZE (16 * 1024)   // 16 KiB per-thread stack
 
@@ -25,6 +24,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     t->id        = next_id++;
     t->priority  = priority;
     t->wake_tick = 0;
+    t->as        = 0;            // kernel thread: no user address space
     t->next      = 0;
 
     // Craft the initial context. On the first cpu_switch into this thread,
@@ -54,15 +54,14 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     return t;
 }
 
-// Create a thread that starts at EL0. It gets TWO stacks: its kmalloc stack is
-// the kernel stack (SP_EL1, used when it traps), plus a separate user stack
-// (SP_EL0). The initial context lands in user_entry_trampoline, which drops to
-// EL0 at user_fn.
-struct thread *thread_create_user(void (*user_fn)(void), int priority)
+// Create a thread that starts at EL0 in its OWN address space. Its kmalloc stack
+// is the kernel stack (SP_EL1, used when it traps); its user code/stack/data live
+// in the private address space built by as_create(). The initial context lands
+// in user_entry_trampoline, which drops to EL0 at the user entry VA.
+struct thread *thread_create_user(int priority)
 {
     struct thread *t = kmalloc(sizeof(struct thread));
-    uint8_t *kstack  = kmalloc(STACK_SIZE);   // kernel stack (SP_EL1)
-    uint8_t *ustack  = kmalloc(STACK_SIZE);   // user stack   (SP_EL0)
+    uint8_t *kstack  = kmalloc(STACK_SIZE);   // kernel stack (SP_EL1, for traps)
 
     uint8_t *c = (uint8_t *)&t->ctx;
     for (unsigned i = 0; i < sizeof(t->ctx); i++) {
@@ -74,15 +73,15 @@ struct thread *thread_create_user(void (*user_fn)(void), int priority)
     t->id        = next_id++;
     t->priority  = priority;
     t->wake_tick = 0;
+    t->as        = as_create();               // its own private address space
     t->next      = 0;
 
-    // The trampoline + kernel stack run at EL1 (identity addresses). But the
-    // user entry and user stack must be the EL0-accessible ALIAS addresses
-    // (physical + USER_ALIAS_OFFSET), since EL0 can only touch the alias window.
+    // The trampoline + kernel stack run at EL1; it then drops to EL0 at the user
+    // entry VA with the user stack -- both inside this process's address space.
     t->ctx.sp  = (uint64_t)(uintptr_t)(kstack + STACK_SIZE);  // kernel stack top (EL1)
     t->ctx.lr  = (uint64_t)(uintptr_t)user_entry_trampoline;  // runs at EL1
-    t->ctx.x19 = (uint64_t)(uintptr_t)user_fn + USER_ALIAS_OFFSET;          // user entry (EL0 alias)
-    t->ctx.x20 = (uint64_t)(uintptr_t)(ustack + STACK_SIZE) + USER_ALIAS_OFFSET; // user stack top (EL0 alias)
+    t->ctx.x19 = user_entry_va();                             // user entry (in its AS)
+    t->ctx.x20 = USER_STACK_TOP;                              // user stack top (in its AS)
 
     uint64_t flags = irq_save();
     if (current) {
@@ -115,6 +114,7 @@ void sched_init(void)
     boot_thread.id        = 0;
     boot_thread.priority  = -1;           // below any created thread
     boot_thread.wake_tick = 0;
+    boot_thread.as        = 0;            // the idle/kernel thread has no user AS
     boot_thread.next      = &boot_thread; // a ring of one
     current  = &boot_thread;
     next_id  = 1;
@@ -219,6 +219,9 @@ void schedule(void)
     struct thread *prev = current;
     current = best;
     slice_left = SCHED_TIME_SLICE;   // fresh slice for the newly-running thread
+    if (best->as) {
+        as_switch(best->as);         // install the process's page tables (TTBR0)
+    }
     cpu_switch(&prev->ctx, &best->ctx);
 }
 

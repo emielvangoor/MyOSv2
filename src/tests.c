@@ -16,6 +16,7 @@
 #include "kheap.h"
 #include "sched.h"
 #include "syscall.h"
+#include "vm.h"
 
 #define PAGE 0x1000UL
 
@@ -340,6 +341,52 @@ static void test_syscall_exit_ends_thread(void)
     KASSERT(sc_exit_log[0] == 'B');
 }
 
+// --- Per-process address spaces (isolation at the page-table level) ---
+
+static void test_as_data_is_private(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    struct addrspace *b = as_create();
+    uint64_t pa_a = as_translate(a, USER_DATA_VA);
+    uint64_t pa_b = as_translate(b, USER_DATA_VA);
+    KASSERT(pa_a != 0 && pa_b != 0);
+    KASSERT(pa_a != pa_b);                 // private: different physical pages
+}
+
+static void test_as_code_is_shared(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    struct addrspace *b = as_create();
+    KASSERT(as_translate(a, USER_CODE_VA) == as_translate(b, USER_CODE_VA));
+    KASSERT(as_translate(a, USER_CODE_VA) != 0);
+}
+
+static void test_as_kernel_shared(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    KASSERT(as_translate(a, 0x40080000UL) == 0x40080000UL);   // identity kernel map
+}
+
+static void test_as_unmapped_returns_zero(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    KASSERT(as_translate(a, 0x10000000000UL) == 0);           // 1 TiB: nothing there
+}
+
+static void test_as_stack_is_private(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *a = as_create();
+    struct addrspace *b = as_create();
+    uint64_t va = USER_STACK_TOP - 16;     // an address on the user stack
+    KASSERT(as_translate(a, va) != 0);
+    KASSERT(as_translate(a, va) != as_translate(b, va));
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -360,6 +407,11 @@ static const struct ktest tests[] = {
     { "syscall: getpid returns id",       test_syscall_getpid },
     { "syscall: sleep blocks N ticks",    test_syscall_sleep_blocks },
     { "syscall: exit ends thread",        test_syscall_exit_ends_thread },
+    { "vm: user data is private",         test_as_data_is_private },
+    { "vm: user code is shared",          test_as_code_is_shared },
+    { "vm: kernel map is shared",         test_as_kernel_shared },
+    { "vm: unmapped VA -> 0",             test_as_unmapped_returns_zero },
+    { "vm: user stack is private",        test_as_stack_is_private },
 };
 
 int run_self_tests(void)
