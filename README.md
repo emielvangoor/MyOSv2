@@ -34,9 +34,15 @@ deadlines; just building it one piece at a time and enjoying the ride.
   files survive reboots.
 - **Network interface** — a **virtio-net** driver that sends and receives raw
   Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
+- **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum
+  + next-hop routing), **ICMP** echo, and **UDP**, driven by a polled pump.
+- **DNS + ping** — a **DNS resolver** over UDP and a user-space `ping` that takes
+  a hostname: `ping https://www.google.com` strips the scheme, resolves the name,
+  and ICMP-echoes the address — out to the real internet via QEMU's user-net.
+- **Program arguments** — `exec` passes `argv` to programs; the shell tokenizes
+  the command line, so `/bin/ping <host>` and friends get their arguments.
 
-Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
-and eventually a TCP/IP network stack — lives in
+Where it goes next — a real socket API and TCP, and beyond — lives in
 **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a capable, Unix-like OS;
 graphics is deferred.
 
