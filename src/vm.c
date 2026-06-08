@@ -149,10 +149,13 @@ uint64_t *as_alloc_l0(void)
 void as_map_segment(struct addrspace *as, uint64_t vaddr, const void *src,
                     uint64_t filesz, uint64_t memsz, int writable, int exec)
 {
+    // Two independent axes: `writable` picks the access permission (RW vs RO),
+    // `exec` picks executability (UXN/PXN). A segment can be both writable and
+    // executable -- e.g. a tiny program whose .bss got merged with .text into one
+    // RWE segment -- so exec must NOT be implied by !writable.
     uint64_t attr = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | ATTR_NG;
-    if (writable) { attr |= AP_RW_ALL | ATTR_UXN | ATTR_PXN; }   // data: RW, no-exec
-    else          { attr |= AP_RO_ALL; }                         // code/rodata: RO
-    if (!exec)    { attr |= ATTR_UXN | ATTR_PXN; }               // non-exec -> no-exec
+    attr |= writable ? AP_RW_ALL : AP_RO_ALL;
+    if (!exec) { attr |= ATTR_UXN | ATTR_PXN; }                  // non-exec -> no-exec
 
     uint64_t vstart = vaddr & ~0xFFFUL;
     uint64_t vend   = (vaddr + memsz + PAGE - 1) & ~0xFFFUL;

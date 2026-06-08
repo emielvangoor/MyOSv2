@@ -25,6 +25,7 @@ extern unsigned char sh_elf[];    extern unsigned int sh_elf_len;
 extern unsigned char true_elf[];  extern unsigned int true_elf_len;
 extern unsigned char false_elf[]; extern unsigned int false_elf_len;
 extern unsigned char hello_elf[]; extern unsigned int hello_elf_len;
+extern unsigned char mtest_elf[]; extern unsigned int mtest_elf_len;
 
 // Write an embedded program into the filesystem at `path`.
 static void add_prog(const char *path, const void *data, uint64_t len)
@@ -53,4 +54,5 @@ void initrd_unpack(void)
     add_prog("/bin/true",  true_elf,  (uint64_t)true_elf_len);
     add_prog("/bin/false", false_elf, (uint64_t)false_elf_len);
     add_prog("/bin/hello", hello_elf, (uint64_t)hello_elf_len);
+    add_prog("/bin/mtest", mtest_elf, (uint64_t)mtest_elf_len);
 }

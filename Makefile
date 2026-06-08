@@ -26,10 +26,13 @@ DEP  := $(OBJ:.o=.d)
 # embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
 # and unpacked into /bin by the initrd. The kernel's ELF loader maps their
 # segments at load/exec time.
-PROGS       := sh true false hello
+PROGS       := sh true false hello mtest
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
-USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall -O2
+# -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
+# AArch64 default 64 KiB, so PT_LOAD vaddrs/offsets are page-aligned and small.
+USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall -O2 \
+               -Wl,-z,max-page-size=0x1000
 
 QEMU       := qemu-system-aarch64
 # -display none: no graphical window. -serial stdio: serial to terminal AND
