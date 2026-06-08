@@ -17,27 +17,8 @@
 // time regardless of scheduling.
 #define NET_TIMEOUT_US 2000000   // 2 seconds
 
-// The wait-channel network requests sleep on. The NIC interrupt wakes it.
-static int net_waitq;
-
-// The NIC's interrupt handler (called from the IRQ dispatcher): acknowledge the
-// device and wake any thread blocked waiting for a packet. The protocol work
-// (net_recv + dispatch) happens later, in the woken thread -- the interrupt
-// itself stays tiny, the Unix "top half / bottom half" split.
-void net_isr(void)
-{
-    net_irq_ack();
-    sched_wake(&net_waitq);
-}
-
-// Block until the NIC interrupt wakes us, a signal arrives, or a short timeout
-// (a safety net against a lost wakeup). Only sleeps once the kernel is fully
-// interrupt-driven; during the boot self-tests (no timer/IRQs to wake a sleeper)
-// it is a no-op and the caller's loop simply polls against its wall-clock limit.
-static void net_sleep(void)
-{
-    if (sched_irqs_live()) { sched_wait_event(&net_waitq, 20); }
-}
+// net_isr / net_wait live in the driver (virtio_net.c) since the wait-channel is
+// tied to the NIC interrupt; receivers here just call net_wait() to sleep on it.
 
 // Has a signal been posted to us? A blocking network call returns early (EINTR)
 // so e.g. Ctrl-C can abandon a ping.
@@ -255,7 +236,7 @@ int net_ping(uint32_t ip, int *ms)
             return 0;
         }
         if (net_signal_pending()) { return -1; }    // EINTR (e.g. Ctrl-C)
-        net_sleep();
+        net_wait(20);
     }
     return -1;                           // no reply within the timeout
 }
@@ -407,7 +388,7 @@ int net_resolve(const char *host, uint32_t *ip)
     while (timer_now_us() - start < NET_TIMEOUT_US) {
         net_pump();
         if (dns_got || net_signal_pending()) { break; }
-        net_sleep();
+        net_wait(20);
     }
     dns_waiting = 0;
     if (!dns_got) { return -1; }              // timed out / interrupted
@@ -446,7 +427,7 @@ int arp_resolve(uint32_t ip, uint8_t mac[6])
         net_pump();
         if (arp_cache_get(ip, mac)) { return 0; }
         if (net_signal_pending()) { return -1; }    // EINTR
-        net_sleep();
+        net_wait(20);
     }
     return -1;                                       // timed out
 }

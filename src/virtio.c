@@ -132,9 +132,12 @@ void virtio_driver_ok(uint64_t base)
 
 // avail ring layout (uint16_t units): [0]=flags, [1]=idx, [2+]=ring[].
 // used ring  layout: [0]=flags, [1]=idx, then {u32 id, u32 len} entries.
-int virtq_submit(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n)
+
+// Submit a descriptor chain and notify the device, but DON'T wait for it. The
+// caller decides how to wait for completion -- by polling virtq_complete() (the
+// block driver) or by sleeping until the device's interrupt (the NIC).
+void virtq_kick(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n)
 {
-    // Write the descriptor chain into entries 0..n-1.
     for (int i = 0; i < n; i++) {
         q->desc[i].addr  = bufs[i].addr;
         q->desc[i].len   = bufs[i].len;
@@ -143,17 +146,31 @@ int virtq_submit(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n)
         q->desc[i].next  = (uint16_t)(i + 1);
     }
 
-    // Publish the head (descriptor 0) in the available ring.
+    // Publish the head (descriptor 0) in the available ring, then notify.
     uint16_t idx = q->avail[1];
     q->avail[2 + (idx % q->num)] = 0;
     barrier();
     q->avail[1] = idx + 1;
     barrier();
-
-    // Notify the device and poll the used ring for completion.
     wr(base, R_QUEUE_NOTIFY, q->notify_idx);
     barrier();
-    while (q->used[1] == q->last_used) { barrier(); }
+}
+
+// Has the device finished a submitted chain (the used ring advanced)? Consumes
+// one completion. Returns 1 if a chain completed, 0 if still pending.
+int virtq_complete(struct virtq *q)
+{
+    barrier();
+    if (q->used[1] == q->last_used) { return 0; }
     q->last_used = q->used[1];
+    return 1;
+}
+
+// Submit and POLL the used ring until the device finishes -- used by the block
+// driver, where a read/write must complete before we return.
+int virtq_submit(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n)
+{
+    virtq_kick(base, q, bufs, n);
+    while (!virtq_complete(q)) { barrier(); }
     return 0;
 }

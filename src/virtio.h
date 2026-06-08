@@ -46,3 +46,8 @@ void virtio_driver_ok(uint64_t base);                         // final DRIVER_OK
 
 // Submit a descriptor chain and POLL until the device finishes it. Returns 0.
 int virtq_submit(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n);
+
+// Submit a chain and notify the device WITHOUT waiting (the caller waits its own
+// way). virtq_complete() reports/consumes one completion from the used ring.
+void virtq_kick(uint64_t base, struct virtq *q, const struct vbuf *bufs, int n);
+int  virtq_complete(struct virtq *q);

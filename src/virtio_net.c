@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include "net.h"
 #include "virtio.h"
+#include "sched.h"
 
 #define VIRTIO_ID_NET 1
 #define NET_HDR_LEN   12        // virtio-net header (modern / VERSION_1)
@@ -84,6 +85,28 @@ void net_irq_ack(void)
     __asm__ volatile("dsb sy" ::: "memory");
 }
 
+// The wait-channel that both receivers (the TCP/IP stack) and the transmitter
+// (net_send, below) sleep on. The single NIC interrupt -- raised for both receive
+// and transmit-completion -- wakes it. Owned here because it's tied to the device.
+static int net_waitq;
+
+// The NIC interrupt handler: acknowledge the device and wake every thread waiting
+// for it. The protocol/buffer work happens in those woken threads (the Unix
+// top-half / bottom-half split).
+void net_isr(void)
+{
+    net_irq_ack();
+    sched_wake(&net_waitq);
+}
+
+// Sleep until the NIC interrupt (or `ms` ticks elapse, a safety net). During the
+// boot self-tests the timer/IRQs aren't live yet, so this is a no-op and callers
+// fall back to polling against their own deadline.
+void net_wait(unsigned ms)
+{
+    if (sched_irqs_live()) { sched_wait_event(&net_waitq, ms); }
+}
+
 int net_send(const void *frame, int len)
 {
     if (!nic_ok || len > BUFSZ - NET_HDR_LEN) { return -1; }
@@ -92,7 +115,12 @@ int net_send(const void *frame, int len)
     for (int i = 0; i < len; i++) { txbuf[NET_HDR_LEN + i] = f[i]; }
 
     struct vbuf b = { (uint64_t)(uintptr_t)txbuf, (uint32_t)(NET_HDR_LEN + len), 0 };
-    return virtq_submit(nic_base, &txq, &b, 1);                   // device reads it
+    virtq_kick(nic_base, &txq, &b, 1);                            // submit + notify
+    // Wait for the device to finish reading txbuf before we reuse it: SLEEP until
+    // the transmit-completion interrupt (net_wait), rather than busy-polling. The
+    // wakeup is advisory (a receive IRQ can wake us too), so we re-check.
+    while (!virtq_complete(&txq)) { net_wait(5); }
+    return 0;
 }
 
 int net_recv(void *buf, int max)

@@ -10,6 +10,7 @@ int  net_recv(void *buf, int max);          // receive one frame (payload only);
 int  net_irq_id(void);                       // the NIC's GIC interrupt id (-1 if none)
 void net_irq_ack(void);                      // acknowledge the NIC's interrupt
 void net_isr(void);                          // NIC interrupt handler (ack + wake waiters)
+void net_wait(unsigned ms);                  // sleep until the NIC interrupt (or ms ticks)
 
 // --- TCP/IP stack (Phase 22). IP addresses are host-order uint32_t. ---
 #define IP_OURS    0x0a00020fu   // 10.0.2.15 (QEMU user-net guest address)
