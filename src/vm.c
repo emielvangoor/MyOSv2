@@ -210,6 +210,8 @@ struct addrspace *as_create_image(const void *img, uint64_t len)
     map_page(as->l0, USER_DATA_VA, data_pa, rw_attr);
     page_incref(data_pa);
 
+    as->heap_base = USER_HEAP_BASE;
+    as->heap_end  = USER_HEAP_BASE;
     return as;
 }
 
@@ -241,7 +243,34 @@ struct addrspace *as_create_elf(const void *img, uint64_t len, uint64_t *entry)
         map_page(as->l0, USER_STACK_TOP - i * PAGE, pa, rw);
         page_incref(pa);
     }
+    as->heap_base = USER_HEAP_BASE;     // empty heap, ready for sbrk
+    as->heap_end  = USER_HEAP_BASE;
     return as;
+}
+
+// Grow (or shrink) the per-process heap. Returns the OLD break. Pages newly
+// covered by [heap_base, heap_end) are freshly allocated, zeroed, and mapped RW
+// (user data). A shrink just lowers the break (pages stay mapped). Classic sbrk.
+uint64_t as_sbrk(struct addrspace *as, long incr)
+{
+    uint64_t old = as->heap_end;
+    uint64_t neu = old + (uint64_t)incr;     // signed add (incr may be negative)
+    if (incr > 0) {
+        uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
+                      ATTR_UXN | ATTR_PXN | ATTR_NG;
+        uint64_t first = (old + PAGE - 1) & ~0xFFFUL;   // first not-yet-mapped page
+        uint64_t last  = (neu + PAGE - 1) & ~0xFFFUL;   // page boundary past the break
+        for (uint64_t va = first; va < last; va += PAGE) {
+            uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
+            if (!pa) { return (uint64_t)-1; }
+            uint8_t *p = (uint8_t *)(uintptr_t)pa;
+            for (uint64_t i = 0; i < PAGE; i++) { p[i] = 0; }   // demand-zero
+            map_page(as->l0, va, pa, rw);
+            page_incref(pa);
+        }
+    }
+    as->heap_end = neu;
+    return old;
 }
 
 uint64_t as_translate(struct addrspace *as, uint64_t va)
