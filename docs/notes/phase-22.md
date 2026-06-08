@@ -9,9 +9,11 @@ On top of the Phase-21 raw-frame driver we built a small **TCP/IP stack**
 $ ping
 ping 10.0.2.2: reply in 0 ms
 $ ping example.com
-ping example.com (104.20.23.154): reply in 0 ms
+ping example.com (104.20.23.154): reply in 15 ms
 $ ping https://www.google.com
-ping www.google.com (142.251.157.119): reply in 0 ms
+ping www.google.com (142.251.157.119): reply in 14 ms
+$ ping 192.0.2.1
+ping 192.0.2.1: no reply                 # unreachable -> times out, no false hit
 ```
 
 The layers, bottom-up: **Ethernet** framing → **ARP** (resolve/cache/reply) →
@@ -25,7 +27,20 @@ There is no background networking thread. Each blocking call — `arp_resolve`,
 `net_pump()`, which pulls one frame off the NIC and dispatches it up the stack.
 This suits our cooperative single-core kernel and, crucially, works inside the
 test harness (where the timer/scheduler isn't running). The cost is a busy-wait
-while a request is outstanding; see "Limits".
+while a request is outstanding; see "Limits". Each call is bounded by a **2 s
+wall-clock timeout** so an unreachable host fails cleanly instead of spinning.
+
+## Timing the round trip — a subtle bug
+
+`ping` first reported **"reply in 0 ms" for every host**, including ones on the
+real internet. The reply was genuine (its source IP matched the target), but the
+clock was wrong: the elapsed time was read from the periodic-timer tick count,
+which only advances on the **timer interrupt** — and interrupts are **masked
+while the kernel spins inside a syscall**. So the tick count froze for the whole
+ping and the delta came out 0. The fix is to read the **free-running hardware
+counter** `CNTPCT_EL0` (`timer_now_us`), which increments regardless of interrupt
+state; external hosts now show a true RTT (~15 ms). The same counter bounds the
+timeouts, replacing fragile fixed iteration counts.
 
 ## IPv4 + ICMP
 
