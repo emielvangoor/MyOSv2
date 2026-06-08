@@ -14,7 +14,6 @@
 #include <stdint.h>
 #include "timer.h"
 #include "gic.h"
-#include "kprintf.h"
 
 #define TIMER_IRQ 30   // the EL1 physical timer's interrupt id on the GIC
 
@@ -56,7 +55,8 @@ void timer_handle_irq(void)
     write_tval(interval);       // re-arm for the next second (this also clears
                                 //   the timer's pending condition)
     ticks++;
-    kprintf("tick %d\n", (int)ticks);
+    // Phase 5: no longer prints -- the timer now drives the scheduler, and the
+    // running thread owns the output. timer_ticks() still exposes the count.
 }
 
 uint64_t timer_ticks(void)

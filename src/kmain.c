@@ -16,6 +16,7 @@
 #include "kheap.h"
 #include "tests.h"
 #include "semihost.h"
+#include "sched.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -82,6 +83,20 @@ static void demo_heap(void)
     kfree(big);
 }
 
+// A demo thread: print its letter forever with a crude delay. It never yields,
+// so ONLY timer preemption can move the CPU to another thread -- which is exactly
+// what we want to observe.
+static void demo_thread(void *arg)
+{
+    char c = (char)(uintptr_t)arg;
+    for (;;) {
+        uart_putc(c);
+        for (volatile int i = 0; i < 3000000; i++) {
+            // burn time so each thread prints at a readable rate
+        }
+    }
+}
+
 void kmain(void)
 {
     // --- 1. Serial output ---
@@ -116,14 +131,20 @@ void kmain(void)
     demo_pmm();
     demo_heap();
 
-    // --- 4. Interrupts + timer ---
+    // --- 4. Interrupts, then the scheduler + a preemption demo ---
     exc_init();
     gic_init();
     timer_init();
-    enable_irqs();
-    kprintf("Interrupts enabled; ticking under the MMU.\n");
 
-    // --- 5. Idle until the next interrupt ---
+    sched_init();                                   // boot thread becomes thread 0
+    thread_create(demo_thread, (void *)(uintptr_t)'A');
+    thread_create(demo_thread, (void *)(uintptr_t)'B');
+    thread_create(demo_thread, (void *)(uintptr_t)'C');
+    kprintf("Scheduler started: threads A/B/C, preempted by the timer.\n");
+
+    enable_irqs();                                  // now the timer can preempt
+
+    // The boot thread idles; preemption rotates A/B/C (and this idle thread).
     for (;;) {
         __asm__ volatile("wfi");
     }

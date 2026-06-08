@@ -9,6 +9,7 @@
 #include "kprintf.h"
 #include "gic.h"
 #include "timer.h"
+#include "sched.h"
 
 // Defined in vectors.S: the start of our 16-entry vector table.
 extern char vector_table[];
@@ -64,6 +65,14 @@ void irq_handler(struct trapframe *tf)
 
     // Tell the controller we're done so it can deliver the next one.
     gic_eoi(id);
+
+    // Preempt: if the scheduler is up, a timer tick forces a round-robin switch.
+    // We EOI'd first so the GIC is ready; the switch happens on this thread's own
+    // stack, so its in-progress trap frame travels with it and is restored when
+    // the thread next runs.
+    if (id == 30 && sched_started()) {
+        schedule();
+    }
 }
 
 // Anything we didn't expect (FIQ, SError, exceptions from EL0 before Phase 6).
