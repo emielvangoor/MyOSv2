@@ -35,6 +35,25 @@ static void hostname_of(const char *url, char *dst, int cap)
     dst[i] = 0;
 }
 
+// Parse a dotted-quad "a.b.c.d" into a host-order IP. Returns 0 (and leaves *ip
+// untouched) if the string isn't a well-formed IPv4 literal, so the caller can
+// fall back to DNS.
+static int parse_ipv4(const char *s, unsigned int *ip)
+{
+    unsigned int v = 0;
+    for (int part = 0; part < 4; part++) {
+        if (*s < '0' || *s > '9') { return 0; }      // need at least one digit
+        unsigned int octet = 0;
+        while (*s >= '0' && *s <= '9') { octet = octet * 10 + (unsigned)(*s - '0'); s++; }
+        if (octet > 255) { return 0; }
+        v = (v << 8) | octet;
+        if (part < 3) { if (*s != '.') { return 0; } s++; }
+    }
+    if (*s != 0) { return 0; }                        // trailing junk
+    *ip = v;
+    return 1;
+}
+
 int umain(int argc, char **argv)
 {
     unsigned int ip;
@@ -42,9 +61,13 @@ int umain(int argc, char **argv)
 
     if (argc >= 2) {
         hostname_of(argv[1], host, sizeof(host));
-        ip = resolve(host);
-        if (ip == 0) { puts1("ping: cannot resolve "); puts1(host); puts1("\n"); return 1; }
-        puts1("ping "); puts1(host); puts1(" ("); put_ip(ip); puts1("): ");
+        if (parse_ipv4(host, &ip)) {                  // a literal IP: no DNS needed
+            puts1("ping "); put_ip(ip); puts1(": ");
+        } else {
+            ip = resolve(host);
+            if (ip == 0) { puts1("ping: cannot resolve "); puts1(host); puts1("\n"); return 1; }
+            puts1("ping "); puts1(host); puts1(" ("); put_ip(ip); puts1("): ");
+        }
     } else {
         ip = 0x0a000202u;                       // 10.0.2.2 (gateway)
         puts1("ping "); put_ip(ip); puts1(": ");

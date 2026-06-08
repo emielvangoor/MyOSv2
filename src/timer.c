@@ -64,3 +64,15 @@ uint64_t timer_ticks(void)
 {
     return ticks;
 }
+
+// Read the always-running physical counter and convert to microseconds. The
+// counter increments at CNTFRQ_EL0 Hz regardless of interrupt state, so this is
+// a reliable stopwatch even during an interrupts-masked spin (e.g. net_ping).
+uint64_t timer_now_us(void)
+{
+    uint64_t cnt;
+    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(cnt));
+    uint64_t per_us = read_cntfrq() / 1000000;   // ticks per microsecond
+    if (per_us == 0) { per_us = 1; }             // guard absurdly slow counters
+    return cnt / per_us;
+}

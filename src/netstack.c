@@ -9,6 +9,12 @@
 
 #include <stdint.h>
 #include "net.h"
+#include "timer.h"
+
+// How long a blocking request (ARP, ping, DNS) waits for its reply before giving
+// up. Timed against the free-running hardware counter, so it's real wall-clock
+// time -- independent of whether the periodic timer interrupt is being serviced.
+#define NET_TIMEOUT_US 2000000   // 2 seconds
 
 // ---- helpers ----
 
@@ -207,13 +213,17 @@ int net_ping(uint32_t ip, int *ms)
     put16(icmp + 2, inet_csum(icmp, 40));
     if (ip_send(ip, 1, icmp, 40) != 0) { return -1; }
 
-    extern uint64_t sched_jiffies(void);  // milliseconds since boot (TIMER_HZ=1000)
-    uint64_t start = sched_jiffies();
-    for (long tries = 0; tries < 50000000L; tries++) {
+    // Time the round trip with the free-running hardware counter (the periodic
+    // timer's tick count is frozen here, since IRQs are masked during the spin).
+    uint64_t start = timer_now_us();
+    while (timer_now_us() - start < NET_TIMEOUT_US) {
         net_pump();
-        if (ping_got) { if (ms) { *ms = (int)(sched_jiffies() - start); } return 0; }
+        if (ping_got) {
+            if (ms) { *ms = (int)((timer_now_us() - start) / 1000); }   // -> ms
+            return 0;
+        }
     }
-    return -1;                           // no reply
+    return -1;                           // no reply within the timeout
 }
 
 // ---- DNS (over UDP) ----
@@ -359,7 +369,8 @@ int net_resolve(const char *host, uint32_t *ip)
     if (qn < 0) { dns_waiting = 0; return -1; }
     if (udp_send(IP_DNS, dns_sport, 53, query, qn) != 0) { dns_waiting = 0; return -1; }
 
-    for (long tries = 0; tries < 50000000L; tries++) {
+    uint64_t start = timer_now_us();
+    while (timer_now_us() - start < NET_TIMEOUT_US) {
         net_pump();
         if (dns_got) { break; }
     }
@@ -395,7 +406,8 @@ int arp_resolve(uint32_t ip, uint8_t mac[6])
     uint8_t zero[6]  = {0,0,0,0,0,0};
     arp_xmit(1, zero, ip, bcast);                   // broadcast "who has ip?"
 
-    for (long tries = 0; tries < 50000000L; tries++) {
+    uint64_t start = timer_now_us();
+    while (timer_now_us() - start < NET_TIMEOUT_US) {
         net_pump();
         if (arp_cache_get(ip, mac)) { return 0; }
     }
