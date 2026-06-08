@@ -794,6 +794,22 @@ static void test_exec_missing_returns_neg1(void)
     KASSERT(proc_exec(&tf, "/no/such/file") == -1);   // clean failure, no swap
 }
 
+// --- ELF loader (Phase 14) ---
+
+static void test_as_map_segment_bss_zeroed(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = (struct addrspace *)pmm_alloc();
+    as->l0 = as_alloc_l0();
+    as->asid = asid_alloc();
+    uint8_t data[4] = {0xAA, 0xBB, 0xCC, 0xDD};
+    as_map_segment(as, USER_CODE_VA, data, 4, 16, /*writable*/1, /*exec*/0);
+    uint64_t pa = as_translate(as, USER_CODE_VA);
+    uint8_t *p = (uint8_t *)(uintptr_t)pa;
+    KASSERT(p[0] == 0xAA && p[3] == 0xDD);   // file part copied
+    KASSERT(p[4] == 0 && p[15] == 0);        // bss tail (beyond filesz) zeroed
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -849,6 +865,7 @@ static const struct ktest tests[] = {
     { "proc: wait reaps child + status",  test_wait_reaps_child },
     { "proc: wait with no children -> -1",test_wait_no_children },
     { "proc: exec missing path -> -1",    test_exec_missing_returns_neg1 },
+    { "elf: map_segment zeroes bss",      test_as_map_segment_bss_zeroed },
 };
 
 int run_self_tests(void)

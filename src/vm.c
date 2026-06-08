@@ -133,16 +133,47 @@ static void map_page(uint64_t *l0, uint64_t va, uint64_t pa, uint64_t attrs)
     l3[l3i] = (pa & ~0xFFFUL) | attrs | DESC_PAGE;
 }
 
+// Allocate a fresh top-level table that shares the kernel mapping at L0[0].
+uint64_t *as_alloc_l0(void)
+{
+    uint64_t *l0 = alloc_table();
+    l0[0] = mmu_kernel_l0_entry();   // shared kernel map (identity, EL1-only)
+    return l0;
+}
+
+// Map a program segment: the page-aligned range covering [vaddr, vaddr+memsz).
+// Each page is freshly allocated and zeroed, then the overlapping slice of
+// [src, src+filesz) is copied in -- so the .bss tail beyond filesz stays zero.
+void as_map_segment(struct addrspace *as, uint64_t vaddr, const void *src,
+                    uint64_t filesz, uint64_t memsz, int writable, int exec)
+{
+    uint64_t attr = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | ATTR_NG;
+    if (writable) { attr |= AP_RW_ALL | ATTR_UXN | ATTR_PXN; }   // data: RW, no-exec
+    else          { attr |= AP_RO_ALL; }                         // code/rodata: RO
+    if (!exec)    { attr |= ATTR_UXN | ATTR_PXN; }               // non-exec -> no-exec
+
+    uint64_t vstart = vaddr & ~0xFFFUL;
+    uint64_t vend   = (vaddr + memsz + PAGE - 1) & ~0xFFFUL;
+    const uint8_t *s = (const uint8_t *)src;
+    for (uint64_t pva = vstart; pva < vend; pva += PAGE) {
+        uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
+        uint8_t *dst = (uint8_t *)(uintptr_t)pa;
+        for (uint64_t i = 0; i < PAGE; i++) {
+            uint64_t va = pva + i;
+            dst[i] = (va >= vaddr && va < vaddr + filesz) ? s[va - vaddr] : 0;
+        }
+        map_page(as->l0, pva, pa, attr);
+        page_incref(pa);
+    }
+}
+
 // Build an address space whose private code pages hold `img` (len bytes), mapped
 // read-only EL0-executable at USER_CODE_VA; with private stack + data pages.
 struct addrspace *as_create_image(const void *img, uint64_t len)
 {
     struct addrspace *as = (struct addrspace *)pmm_alloc();
-    as->l0 = alloc_table();
+    as->l0 = as_alloc_l0();
     as->asid = asid_alloc();
-
-    // Share the kernel mapping (identity, EL1-only) at L0[0].
-    as->l0[0] = mmu_kernel_l0_entry();
 
     // User pages are non-global (ATTR_NG): they're tagged by this space's ASID,
     // so they stay isolated even though we no longer flush on every switch.

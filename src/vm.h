@@ -15,7 +15,13 @@ struct addrspace {
 
 void vm_init(void);                              // (no-op; kept for callers)
 struct addrspace *as_create(void);               // address space from the embedded program
-struct addrspace *as_create_image(const void *img, uint64_t len); // from a loaded image
+struct addrspace *as_create_image(const void *img, uint64_t len); // from a loaded image (flat)
+
+// ELF program loading (Phase 14).
+uint64_t *as_alloc_l0(void);                      // fresh top table sharing the kernel map
+void as_map_segment(struct addrspace *as, uint64_t vaddr, const void *src,
+                    uint64_t filesz, uint64_t memsz, int writable, int exec);
+struct addrspace *as_create_elf(const void *img, uint64_t len, uint64_t *entry); // build from ELF
 uint64_t as_translate(struct addrspace *as, uint64_t va); // software walk -> PA (0 if unmapped)
 void as_switch(struct addrspace *as);            // TTBR0 = as->l0; flush TLB
 uint64_t user_entry_va(void);                    // entry VA of a loaded program
