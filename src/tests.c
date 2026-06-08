@@ -910,6 +910,38 @@ static void test_sbrk_multi_page(void)
     KASSERT(as_translate(as, USER_HEAP_BASE + 8192) != 0);
 }
 
+// --- mmap (Phase 16) ---
+
+static void test_mmap_maps_zeroed(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = fresh_elf_as();
+    uint64_t va = as_mmap(as, 100);
+    KASSERT(va >= USER_MMAP_BASE);
+    uint64_t pa = as_translate(as, va);
+    KASSERT(pa != 0);
+    KASSERT(*(volatile uint8_t *)(uintptr_t)pa == 0);       // demand-zeroed
+}
+
+static void test_mmap_two_distinct(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = fresh_elf_as();
+    uint64_t a = as_mmap(as, 4096), b = as_mmap(as, 4096);
+    KASSERT(a != b);
+    KASSERT(as_translate(as, a) != as_translate(as, b));    // distinct pages
+}
+
+static void test_munmap_unmaps(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    struct addrspace *as = fresh_elf_as();
+    uint64_t va = as_mmap(as, 4096);
+    KASSERT(as_translate(as, va) != 0);
+    as_munmap(as, va, 4096);
+    KASSERT(as_translate(as, va) == 0);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -971,6 +1003,9 @@ static const struct ktest tests[] = {
     { "elf: as_create_elf maps stack",    test_as_create_elf_has_stack },
     { "mem: sbrk grows + maps + zeroes",  test_sbrk_grows_and_maps },
     { "mem: sbrk spans multiple pages",   test_sbrk_multi_page },
+    { "mem: mmap maps zeroed page",       test_mmap_maps_zeroed },
+    { "mem: mmap returns distinct pages", test_mmap_two_distinct },
+    { "mem: munmap unmaps",               test_munmap_unmaps },
 };
 
 int run_self_tests(void)

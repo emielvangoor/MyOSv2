@@ -8,12 +8,14 @@
 #define USER_STACK_TOP 0x8000100000UL   // private stack grows down from here
 #define USER_DATA_VA   0x8000180000UL   // one private data page (flat loader only)
 #define USER_HEAP_BASE 0x8000200000UL   // heap grows up from here (sbrk)
+#define USER_MMAP_BASE 0x8000400000UL   // mmap + shm mappings, bump up from here
 
 struct addrspace {
     uint64_t *l0;        // top-level table (a PMM page); load into TTBR0_EL1
     uint16_t  asid;      // address-space ID; tags this space's TLB entries
     uint64_t  heap_base; // fixed bottom of the heap (== USER_HEAP_BASE)
     uint64_t  heap_end;  // current program break (grown by sbrk)
+    uint64_t  mmap_next; // next free VA for mmap/shm mappings (bump allocator)
 };
 
 void vm_init(void);                              // (no-op; kept for callers)
@@ -22,6 +24,12 @@ struct addrspace *as_create_image(const void *img, uint64_t len); // from a load
 
 // User heap (Phase 15): grow the per-process heap on demand; returns old break.
 uint64_t as_sbrk(struct addrspace *as, long incr);
+
+// mmap + shared memory (Phase 16).
+uint64_t as_mmap(struct addrspace *as, uint64_t len);                 // anon RW -> base VA (0 fail)
+int      as_munmap(struct addrspace *as, uint64_t va, uint64_t len);  // unmap + free
+uint64_t as_map_phys(struct addrspace *as, const uint64_t *pa, uint64_t n); // map given phys pages
+void     page_incref_pub(uint64_t pa);                                // public ++ (for shm table ref)
 
 // ELF program loading (Phase 14).
 uint64_t *as_alloc_l0(void);                      // fresh top table sharing the kernel map

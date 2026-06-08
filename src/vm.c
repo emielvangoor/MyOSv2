@@ -215,6 +215,7 @@ struct addrspace *as_create_image(const void *img, uint64_t len)
 
     as->heap_base = USER_HEAP_BASE;
     as->heap_end  = USER_HEAP_BASE;
+    as->mmap_next = USER_MMAP_BASE;
     return as;
 }
 
@@ -248,6 +249,7 @@ struct addrspace *as_create_elf(const void *img, uint64_t len, uint64_t *entry)
     }
     as->heap_base = USER_HEAP_BASE;     // empty heap, ready for sbrk
     as->heap_end  = USER_HEAP_BASE;
+    as->mmap_next = USER_MMAP_BASE;
     return as;
 }
 
@@ -460,4 +462,66 @@ int cow_fault(struct addrspace *as, uint64_t va)
     page_decref(oldpa);
     flush_tlb_asid(as->asid);
     return 1;
+}
+
+// ---- mmap + shared memory (Phase 16) ----
+//
+// A simple bump allocator hands out virtual addresses from USER_MMAP_BASE upward.
+// Anonymous mmap allocates fresh zeroed pages; as_map_phys maps a caller-supplied
+// set of physical pages (used by shared memory, which shares the same pages
+// across address spaces).
+
+// Public ++ on a page's refcount (the shm table holds its own reference).
+void page_incref_pub(uint64_t pa) { page_incref(pa); }
+
+// Map an anonymous, demand-zeroed, read/write region of `len` bytes; return its
+// base VA (or 0 on out-of-memory).
+uint64_t as_mmap(struct addrspace *as, uint64_t len)
+{
+    if (len == 0) { return 0; }
+    uint64_t pages = (len + PAGE - 1) / PAGE;
+    uint64_t base = as->mmap_next;
+    uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
+                  ATTR_UXN | ATTR_PXN | ATTR_NG;
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
+        if (!pa) { return 0; }
+        uint8_t *p = (uint8_t *)(uintptr_t)pa;
+        for (uint64_t j = 0; j < PAGE; j++) { p[j] = 0; }
+        map_page(as->l0, base + i * PAGE, pa, rw);
+        page_incref(pa);
+    }
+    as->mmap_next = base + pages * PAGE;
+    return base;
+}
+
+// Unmap a region: drop each page's mapping and reference.
+int as_munmap(struct addrspace *as, uint64_t va, uint64_t len)
+{
+    uint64_t pages = (len + PAGE - 1) / PAGE;
+    for (uint64_t i = 0; i < pages; i++) {
+        uint64_t *pte = pte_ptr(as->l0, va + i * PAGE);
+        if (pte && (*pte & 1)) {
+            page_decref(*pte & PA_MASK);
+            *pte = 0;
+        }
+    }
+    flush_tlb_asid(as->asid);
+    return 0;
+}
+
+// Map `n` caller-supplied physical pages read/write at the next mmap VA, bumping
+// each page's refcount. Returns the base VA. (Shared memory uses this so several
+// address spaces map the SAME physical pages.)
+uint64_t as_map_phys(struct addrspace *as, const uint64_t *pa, uint64_t n)
+{
+    uint64_t base = as->mmap_next;
+    uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
+                  ATTR_UXN | ATTR_PXN | ATTR_NG;
+    for (uint64_t i = 0; i < n; i++) {
+        map_page(as->l0, base + i * PAGE, pa[i], rw);
+        page_incref(pa[i]);
+    }
+    as->mmap_next = base + n * PAGE;
+    return base;
 }
