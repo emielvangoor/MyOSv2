@@ -203,6 +203,13 @@ struct thread *thread_create_image(const void *img, uint64_t len, int priority)
 // (kmain, or the test harness). Its context is filled in on the first switch.
 static struct thread boot_thread;
 static int started;
+// Set once the kernel is fully interrupt-driven (timer + device IRQs live). Until
+// then -- notably during the boot self-tests -- blocking primitives that rely on
+// an interrupt to wake them must fall back to polling instead of sleeping
+// forever. kmain flips this on right after enabling IRQs.
+static int irqs_live;
+void sched_set_irqs_live(int v) { irqs_live = v; }
+int  sched_irqs_live(void) { return irqs_live; }
 static int slice_left = SCHED_TIME_SLICE;   // ticks remaining for `current`
 static uint64_t jiffies;                    // ticks since sched_init (sleep clock)
 
@@ -305,7 +312,24 @@ void sched_block(void *chan)
     irq_restore(flags);
 }
 
-// Wake every thread blocked on `chan` (V6 wakeup: advisory, wakes all waiters).
+// Sleep on `chan` like sched_block, but ALSO wake on a timeout (after
+// `timeout_ticks` timer ticks) -- the timer handler wakes it via wake_tick, just
+// like a timed sleep. Used for blocking I/O that needs a deadline (e.g. a network
+// reply that may never come). Woken early by sched_wake(chan) or a signal.
+void sched_wait_event(void *chan, uint64_t timeout_ticks)
+{
+    uint64_t flags = irq_save();
+    current->wait_chan = chan;
+    current->wake_tick = jiffies + timeout_ticks;   // deadline for sched_tick()
+    current->state = THREAD_SLEEPING;               // SLEEPING -> sched_tick wakes at deadline
+    schedule();
+    current->wait_chan = 0;
+    irq_restore(flags);
+}
+
+// Wake every thread waiting on `chan` (V6 wakeup: advisory, wakes all waiters).
+// Wakes both indefinite waiters (THREAD_BLOCKED, from sched_block) and timed
+// waiters (THREAD_SLEEPING with a matching wait_chan, from sched_wait_event).
 // Safe to call from an interrupt handler -- it only flips states in the ring.
 void sched_wake(void *chan)
 {
@@ -313,7 +337,8 @@ void sched_wake(void *chan)
     if (current) {
         struct thread *t = current;
         do {
-            if (t->state == THREAD_BLOCKED && t->wait_chan == chan) {
+            if ((t->state == THREAD_BLOCKED || t->state == THREAD_SLEEPING) &&
+                t->wait_chan == chan) {
                 t->state = THREAD_RUNNABLE;
                 t->wait_chan = 0;
             }

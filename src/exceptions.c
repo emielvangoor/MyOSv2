@@ -13,8 +13,8 @@
 #include "syscall.h"
 #include "vm.h"
 #include "signal.h"
-#include "uart.h"
 #include "console.h"
+#include "net.h"
 
 // GIC interrupt id of UART0 on the virt board: shared peripheral interrupt (SPI)
 // 1, and SPIs start at id 32, so 32 + 1 = 33.
@@ -86,6 +86,10 @@ void irq_handler(struct trapframe *tf)
         // Console input arrived: the line discipline queues it (or turns Ctrl-C
         // into a SIGINT) and wakes whatever reader is blocked in console_getc().
         console_isr();
+    } else if (id == net_irq_id()) {
+        // The NIC received a frame (or finished a transmit): acknowledge the
+        // device and wake any thread blocked waiting for a packet.
+        net_isr();
     }
 
     // Tell the controller we're done so it can deliver the next one.

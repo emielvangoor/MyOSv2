@@ -125,6 +125,7 @@ void kmain(void)
     timer_init();
     gic_enable_irq(33);          // UART0 receive interrupt (interrupt-driven input)
     uart_rx_irq_enable();        // now that the GIC + handler are ready, arm RX
+    if (net_present()) { gic_enable_irq(net_irq_id()); }   // NIC receive interrupt
 
     vm_init();
     shm_init();                                           // shared-memory object table
@@ -132,6 +133,7 @@ void kmain(void)
     proc_spawn("/bin/init", 2);                           // the shell, loaded from /bin/init
     kprintf("Starting the shell (loaded from /bin/init):\n");
     enable_irqs();                                  // now the timer can preempt
+    sched_set_irqs_live(1);                         // blocking I/O may now sleep
 
     // The boot thread idles; the scheduler runs the user + kernel threads.
     for (;;) {

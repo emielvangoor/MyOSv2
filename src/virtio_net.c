@@ -63,6 +63,27 @@ void virtio_net_init(void)
 int net_present(void) { return nic_ok; }
 void net_mac(uint8_t out[6]) { for (int i = 0; i < 6; i++) { out[i] = mac[i]; } }
 
+// The GIC interrupt id of this NIC. QEMU's 'virt' lays virtio-mmio transports out
+// at 0x0a000000 + slot*0x200, with SPI (16 + slot) -> GIC id (48 + slot). We
+// derive the slot from the base address virtio_find() gave us.
+int net_irq_id(void)
+{
+    if (!nic_base) { return -1; }
+    uint32_t slot = (uint32_t)((nic_base - 0x0a000000UL) / 0x200);
+    return 48 + (int)slot;
+}
+
+// Acknowledge the device's interrupt: read InterruptStatus (0x60), write the same
+// bits back to InterruptACK (0x64). Until this is done the line stays asserted.
+void net_irq_ack(void)
+{
+    if (!nic_base) { return; }
+    volatile uint32_t *istatus = (volatile uint32_t *)(uintptr_t)(nic_base + 0x60);
+    volatile uint32_t *iack    = (volatile uint32_t *)(uintptr_t)(nic_base + 0x64);
+    *iack = *istatus;
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
 int net_send(const void *frame, int len)
 {
     if (!nic_ok || len > BUFSZ - NET_HDR_LEN) { return -1; }

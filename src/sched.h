@@ -80,6 +80,11 @@ void sleep_ms(uint64_t ms);                                      // block for N 
 // consumed the resource first).
 void sched_block(void *chan);
 void sched_wake(void *chan);
+// Like sched_block, but also wakes after `timeout_ticks` (a deadline) -- for
+// blocking I/O that needs a timeout (a reply that might never arrive).
+void sched_wait_event(void *chan, uint64_t timeout_ticks);
+void sched_set_irqs_live(int v);   // kmain: mark the kernel fully interrupt-driven
+int  sched_irqs_live(void);        // is the timer + device-IRQ machinery running?
 
 // Length of a thread's time slice, in timer ticks (Linux-style quantum).
 #define SCHED_TIME_SLICE 10

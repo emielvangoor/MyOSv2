@@ -10,11 +10,42 @@
 #include <stdint.h>
 #include "net.h"
 #include "timer.h"
+#include "sched.h"
 
 // How long a blocking request (ARP, ping, DNS) waits for its reply before giving
 // up. Timed against the free-running hardware counter, so it's real wall-clock
-// time -- independent of whether the periodic timer interrupt is being serviced.
+// time regardless of scheduling.
 #define NET_TIMEOUT_US 2000000   // 2 seconds
+
+// The wait-channel network requests sleep on. The NIC interrupt wakes it.
+static int net_waitq;
+
+// The NIC's interrupt handler (called from the IRQ dispatcher): acknowledge the
+// device and wake any thread blocked waiting for a packet. The protocol work
+// (net_recv + dispatch) happens later, in the woken thread -- the interrupt
+// itself stays tiny, the Unix "top half / bottom half" split.
+void net_isr(void)
+{
+    net_irq_ack();
+    sched_wake(&net_waitq);
+}
+
+// Block until the NIC interrupt wakes us, a signal arrives, or a short timeout
+// (a safety net against a lost wakeup). Only sleeps once the kernel is fully
+// interrupt-driven; during the boot self-tests (no timer/IRQs to wake a sleeper)
+// it is a no-op and the caller's loop simply polls against its wall-clock limit.
+static void net_sleep(void)
+{
+    if (sched_irqs_live()) { sched_wait_event(&net_waitq, 20); }
+}
+
+// Has a signal been posted to us? A blocking network call returns early (EINTR)
+// so e.g. Ctrl-C can abandon a ping.
+static int net_signal_pending(void)
+{
+    struct thread *t = sched_current();
+    return t && t->sig_pending;
+}
 
 // ---- helpers ----
 
@@ -213,8 +244,9 @@ int net_ping(uint32_t ip, int *ms)
     put16(icmp + 2, inet_csum(icmp, 40));
     if (ip_send(ip, 1, icmp, 40) != 0) { return -1; }
 
-    // Time the round trip with the free-running hardware counter (the periodic
-    // timer's tick count is frozen here, since IRQs are masked during the spin).
+    // Wait for the echo reply: process any delivered frames, then SLEEP until the
+    // NIC interrupt wakes us (or a signal, or the timeout). Round-trip time comes
+    // from the free-running hardware counter.
     uint64_t start = timer_now_us();
     while (timer_now_us() - start < NET_TIMEOUT_US) {
         net_pump();
@@ -222,6 +254,8 @@ int net_ping(uint32_t ip, int *ms)
             if (ms) { *ms = (int)((timer_now_us() - start) / 1000); }   // -> ms
             return 0;
         }
+        if (net_signal_pending()) { return -1; }    // EINTR (e.g. Ctrl-C)
+        net_sleep();
     }
     return -1;                           // no reply within the timeout
 }
@@ -372,10 +406,11 @@ int net_resolve(const char *host, uint32_t *ip)
     uint64_t start = timer_now_us();
     while (timer_now_us() - start < NET_TIMEOUT_US) {
         net_pump();
-        if (dns_got) { break; }
+        if (dns_got || net_signal_pending()) { break; }
+        net_sleep();
     }
     dns_waiting = 0;
-    if (!dns_got) { return -1; }              // timed out
+    if (!dns_got) { return -1; }              // timed out / interrupted
     return dns_parse_answer(dns_rxbuf, dns_rxlen, id, ip);
 }
 
@@ -410,6 +445,8 @@ int arp_resolve(uint32_t ip, uint8_t mac[6])
     while (timer_now_us() - start < NET_TIMEOUT_US) {
         net_pump();
         if (arp_cache_get(ip, mac)) { return 0; }
+        if (net_signal_pending()) { return -1; }    // EINTR
+        net_sleep();
     }
     return -1;                                       // timed out
 }

@@ -7,6 +7,9 @@ int  net_present(void);                     // is a NIC attached?
 void net_mac(uint8_t out[6]);               // our hardware (MAC) address
 int  net_send(const void *frame, int len);  // transmit one Ethernet frame; 0 ok
 int  net_recv(void *buf, int max);          // receive one frame (payload only); 0 if none
+int  net_irq_id(void);                       // the NIC's GIC interrupt id (-1 if none)
+void net_irq_ack(void);                      // acknowledge the NIC's interrupt
+void net_isr(void);                          // NIC interrupt handler (ack + wake waiters)
 
 // --- TCP/IP stack (Phase 22). IP addresses are host-order uint32_t. ---
 #define IP_OURS    0x0a00020fu   // 10.0.2.15 (QEMU user-net guest address)

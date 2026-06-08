@@ -317,6 +317,37 @@ static void test_block_woken_by_signal(void)
     KASSERT(blk_sig_n == 1);               // it ran past sched_block()
 }
 
+// sched_wait_event: a channel wait with a timeout (Phase 3 foundation).
+static int we_chan;
+static int we_n;
+static void we_worker(void *a) { (void)a; sched_wait_event(&we_chan, 3); we_n++; }
+static void test_wait_event_times_out(void)
+{
+    pmm_init(); kheap_init(); we_n = 0;
+    sched_init();
+    thread_create(we_worker, 0, 1);
+    yield();                               // worker sleeps on the channel (deadline +3)
+    KASSERT(we_n == 0);
+    sched_tick(); yield(); KASSERT(we_n == 0);   // tick 1
+    sched_tick(); yield(); KASSERT(we_n == 0);   // tick 2
+    sched_tick(); yield();                        // tick 3: deadline -> wakes
+    KASSERT(we_n == 1);
+}
+static int we2_chan;
+static int we2_n;
+static void we2_worker(void *a) { (void)a; sched_wait_event(&we2_chan, 1000); we2_n++; }
+static void test_wait_event_early_wake(void)
+{
+    pmm_init(); kheap_init(); we2_n = 0;
+    sched_init();
+    thread_create(we2_worker, 0, 1);
+    yield();                               // worker sleeps (long deadline)
+    KASSERT(we2_n == 0);
+    sched_wake(&we2_chan);                  // a packet "arrives" -> wake early
+    yield();
+    KASSERT(we2_n == 1);                    // woke well before the 1000-tick deadline
+}
+
 // --- console line discipline (Phase 2) ---
 static void noop_worker(void *a) { (void)a; }
 
@@ -1493,6 +1524,8 @@ static const struct ktest tests[] = {
     { "sched: sleep wakes after ticks",   test_sleep_wakes_after_ticks },
     { "sched: block wakes on channel",    test_block_wakes_on_channel },
     { "sched: block woken by signal",     test_block_woken_by_signal },
+    { "sched: wait_event times out",      test_wait_event_times_out },
+    { "sched: wait_event early wake",     test_wait_event_early_wake },
     { "console: ring is FIFO",            test_console_ring_fifo },
     { "console: Ctrl-C signals fg",       test_console_ctrlc_signals_foreground },
     { "syscall: write returns len",       test_syscall_write_returns_len },
