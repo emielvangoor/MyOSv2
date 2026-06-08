@@ -12,7 +12,7 @@ TARGET  := $(BUILD)/kernel.elf
 # -MMD -MP: generate header dependency files
 # -g: emit DWARF debug info so GDB can do source-level stepping
 CFLAGS  := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only \
-           -Wall -Wextra -O2 -g -ffunction-sections -MMD -MP
+           -Wall -Wextra -O2 -g -ffunction-sections -MMD -MP $(EXTRA_CFLAGS)
 LDFLAGS := -nostdlib -nostartfiles -T linker.ld -Wl,--gc-sections
 
 CSRC := $(wildcard src/*.c)
@@ -27,7 +27,7 @@ QEMU       := qemu-system-aarch64
 # -m 256M: fix the RAM size so the page allocator knows where RAM ends (0x50000000).
 QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none -serial stdio -kernel $(TARGET)
 
-.PHONY: all run debug gdb clean objdump compile_commands
+.PHONY: all run debug gdb clean objdump compile_commands test
 all: $(TARGET)
 
 $(BUILD):
@@ -45,6 +45,18 @@ $(TARGET): $(OBJ) linker.ld
 # Run in the terminal. Quit QEMU with: Ctrl-C
 run: $(TARGET)
 	$(QEMU) $(QEMU_FLAGS)
+
+# Run the self-tests and return a shell exit code (0 = all passed). Builds a
+# test kernel with -DTEST_EXIT (which exits QEMU via semihosting), runs it under
+# -semihosting, then cleans so the flag never leaks into a normal `make run`.
+test:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory EXTRA_CFLAGS=-DTEST_EXIT $(TARGET)
+	@echo "--- running self-tests in QEMU ---"
+	@$(QEMU) $(QEMU_FLAGS) -semihosting; status=$$?; \
+	  $(MAKE) --no-print-directory clean >/dev/null; \
+	  echo "make test exit code: $$status"; \
+	  exit $$status
 
 # Boot frozen, exposing the GDB stub on :1234
 debug: $(TARGET)

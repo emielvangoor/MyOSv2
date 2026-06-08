@@ -15,6 +15,7 @@
 #include "pmm.h"
 #include "kheap.h"
 #include "tests.h"
+#include "semihost.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -96,7 +97,11 @@ void kmain(void)
     // On a normal build, a failure halts the kernel (don't limp forward broken).
     // The `make test` build (-DTEST_EXIT) instead exits QEMU with a status code.
     int failed = run_self_tests();
-#ifndef TEST_EXIT
+#ifdef TEST_EXIT
+    // `make test` build: report the result to the shell and stop.
+    qemu_exit(failed == 0 ? 0 : 1);
+#else
+    // Normal build: a failure is fatal -- halt rather than run broken.
     if (failed) {
         kprintf("SELF-TESTS FAILED -- halting.\n");
         for (;;) {
