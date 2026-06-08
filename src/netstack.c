@@ -214,6 +214,91 @@ int net_ping(uint32_t ip, int *ms)
     return -1;                           // no reply
 }
 
+// ---- DNS (over UDP) ----
+
+// Encode a hostname as DNS QNAME labels: "a.bc" -> [1]'a'[2]'b''c'[0]. Each dot-
+// separated label is length-prefixed; a zero byte ends the name. Returns the
+// number of bytes written, or -1 if a label is malformed or it doesn't fit.
+static int dns_encode_name(uint8_t *out, int cap, const char *host)
+{
+    int w = 0;
+    const char *p = host;
+    while (*p) {
+        const char *start = p;
+        while (*p && *p != '.') { p++; }
+        int label = (int)(p - start);
+        if (label == 0 || label > 63) { return -1; }   // empty/oversized label
+        if (w + 1 + label >= cap) { return -1; }
+        out[w++] = (uint8_t)label;
+        for (int i = 0; i < label; i++) { out[w++] = (uint8_t)start[i]; }
+        if (*p == '.') { p++; }
+    }
+    if (w + 1 > cap) { return -1; }
+    out[w++] = 0;                                       // root label terminates
+    return w;
+}
+
+int dns_build_query(uint8_t *buf, uint16_t id, const char *host)
+{
+    put16(buf + 0, id);
+    put16(buf + 2, 0x0100);     // QR=0 (query), RD=1 (recursion desired)
+    put16(buf + 4, 1);          // QDCOUNT = 1 question
+    put16(buf + 6, 0);          // ANCOUNT
+    put16(buf + 8, 0);          // NSCOUNT
+    put16(buf + 10, 0);         // ARCOUNT
+    int n = dns_encode_name(buf + 12, 512 - 12 - 4, host);
+    if (n < 0) { return -1; }
+    int w = 12 + n;
+    put16(buf + w, 1); w += 2;  // QTYPE  = A (host address)
+    put16(buf + w, 1); w += 2;  // QCLASS = IN (internet)
+    return w;
+}
+
+// Advance past a DNS name beginning at msg+o. Names are sequences of length-
+// prefixed labels ending in a zero byte, but a label whose top two bits are set
+// is a 2-byte "compression pointer" to a name elsewhere -- which terminates the
+// encoding here. Returns the offset just past the name, or -1 on overrun.
+static int dns_skip_name(const uint8_t *msg, int len, int o)
+{
+    while (o < len) {
+        uint8_t b = msg[o];
+        if ((b & 0xc0) == 0xc0) { return o + 2; }       // compression pointer
+        if (b == 0) { return o + 1; }                   // root label
+        o += 1 + b;                                      // ordinary label
+    }
+    return -1;
+}
+
+int dns_parse_answer(const uint8_t *msg, int len, uint16_t id, uint32_t *ip)
+{
+    if (len < 12) { return -1; }
+    if (get16(msg + 0) != id) { return -1; }            // not our transaction
+    if ((get16(msg + 2) & 0x000f) != 0) { return -1; }  // RCODE != 0 -> error
+    int qd = get16(msg + 4);
+    int an = get16(msg + 6);
+
+    int o = 12;
+    for (int i = 0; i < qd; i++) {                       // skip the question(s)
+        o = dns_skip_name(msg, len, o);
+        if (o < 0 || o + 4 > len) { return -1; }
+        o += 4;                                          // QTYPE + QCLASS
+    }
+    for (int i = 0; i < an; i++) {                       // scan the answer(s)
+        o = dns_skip_name(msg, len, o);
+        if (o < 0 || o + 10 > len) { return -1; }
+        uint16_t type  = get16(msg + o);
+        uint16_t rdlen = get16(msg + o + 8);
+        o += 10;                                         // TYPE+CLASS+TTL+RDLENGTH
+        if (o + rdlen > len) { return -1; }
+        if (type == 1 && rdlen == 4) {                   // an A record: done
+            if (ip) { *ip = get32(msg + o); }
+            return 0;
+        }
+        o += rdlen;                                      // CNAME/other -> keep going
+    }
+    return -1;                                           // no A record present
+}
+
 // ---- inbound dispatch ----
 
 static void net_input(const uint8_t *f, int len)

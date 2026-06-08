@@ -1274,6 +1274,65 @@ static void test_icmp_ping(void)
     KASSERT(net_ping(IP_GATEWAY, &ms) == 0);                  // gateway answers echo
 }
 
+// --- DNS encode/decode (Phase 22, pure -- no network) ---
+
+static void test_dns_build_query(void)
+{
+    uint8_t q[512];
+    int n = dns_build_query(q, 0x1234, "a.bc");
+    // 12 header + [1]'a' + [2]'bc' + [0] root (6) + 4 (qtype/qclass) = 22 bytes
+    KASSERT(n == 22);
+    KASSERT(q[0] == 0x12 && q[1] == 0x34);     // id
+    KASSERT(q[2] == 0x01 && q[3] == 0x00);     // flags: recursion desired
+    KASSERT(q[4] == 0 && q[5] == 1);           // QDCOUNT = 1
+    KASSERT(q[12] == 1 && q[13] == 'a');       // label "a"
+    KASSERT(q[14] == 2 && q[15] == 'b' && q[16] == 'c');  // label "bc"
+    KASSERT(q[17] == 0);                       // root label
+    KASSERT(q[18] == 0 && q[19] == 1);         // QTYPE = A
+    KASSERT(q[20] == 0 && q[21] == 1);         // QCLASS = IN
+}
+
+static void test_dns_parse_a_record(void)
+{
+    // A response to a query for "a" with one A record 1.2.3.4, the answer name
+    // given as a compression pointer (0xC0 0x0C) back to the question.
+    uint8_t m[] = {
+        0xAB,0xCD, 0x81,0x80, 0,1, 0,1, 0,0, 0,0,   // header: 1 question, 1 answer
+        1,'a',0, 0,1, 0,1,                          // question: "a" A IN
+        0xC0,0x0C, 0,1, 0,1, 0,0,0,60, 0,4, 1,2,3,4 // answer: ptr, A, IN, ttl, rdlen 4, IP
+    };
+    uint32_t ip = 0;
+    KASSERT(dns_parse_answer(m, (int)sizeof(m), 0xABCD, &ip) == 0);
+    KASSERT(ip == 0x01020304u);                 // 1.2.3.4
+    KASSERT(dns_parse_answer(m, (int)sizeof(m), 0x0000, &ip) == -1);  // id mismatch
+}
+
+static void test_dns_parse_skips_cname(void)
+{
+    // Two answers: a CNAME (type 5) then the real A record. The parser must skip
+    // the CNAME by its RDLENGTH and return the A record's address.
+    uint8_t m[] = {
+        0xAB,0xCD, 0x81,0x80, 0,1, 0,2, 0,0, 0,0,   // 1 question, 2 answers
+        1,'a',0, 0,1, 0,1,                          // question
+        0xC0,0x0C, 0,5, 0,1, 0,0,0,60, 0,2, 0xC0,0x0C, // answer 1: CNAME, rdlen 2
+        0xC0,0x0C, 0,1, 0,1, 0,0,0,60, 0,4, 9,8,7,6    // answer 2: A 9.8.7.6
+    };
+    uint32_t ip = 0;
+    KASSERT(dns_parse_answer(m, (int)sizeof(m), 0xABCD, &ip) == 0);
+    KASSERT(ip == 0x09080706u);                 // 9.8.7.6
+}
+
+static void test_dns_parse_rcode_error(void)
+{
+    // Header RCODE = 3 (NXDOMAIN) -> parse fails even though counts look sane.
+    uint8_t m[] = {
+        0xAB,0xCD, 0x81,0x83, 0,1, 0,0, 0,0, 0,0,   // flags low nibble = 3
+        1,'a',0, 0,1, 0,1,
+    };
+    uint32_t ip = 0;
+    KASSERT(dns_parse_answer(m, (int)sizeof(m), 0xABCD, &ip) == -1);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1362,6 +1421,10 @@ static const struct ktest tests[] = {
     { "net: internet checksum",           test_inet_checksum },
     { "net: ARP resolve gateway",         test_arp_resolve },
     { "net: ICMP ping gateway",           test_icmp_ping },
+    { "dns: build A query",               test_dns_build_query },
+    { "dns: parse A record",              test_dns_parse_a_record },
+    { "dns: skip CNAME to A",             test_dns_parse_skips_cname },
+    { "dns: RCODE error -> fail",         test_dns_parse_rcode_error },
 };
 
 int run_self_tests(void)
