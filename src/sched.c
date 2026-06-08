@@ -27,6 +27,8 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     t->wake_tick = 0;
     t->as        = 0;            // kernel thread: no user address space
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
+    t->parent      = current;    // the creating thread is our parent
+    t->exit_status = 0;
     t->next      = 0;
 
     // Craft the initial context. On the first cpu_switch into this thread,
@@ -86,6 +88,8 @@ int sched_fork(struct trapframe *parent_tf)
     t->wake_tick = 0;
     t->as        = as_clone(current->as);            // copy-on-write address space
     for (int i = 0; i < 16; i++) { t->fds[i] = current->fds[i]; }  // share open files
+    t->parent      = current;                        // the forking thread is our parent
+    t->exit_status = 0;
     t->next      = 0;
 
     // Place a copy of the parent's trap frame at the top of the child's kernel
@@ -131,6 +135,8 @@ struct thread *thread_create_image(const void *img, uint64_t len, int priority)
     t->wake_tick = 0;
     t->as        = as_create_image(img, len); // its own private address space
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
+    t->parent      = current;                 // the spawning thread is our parent
+    t->exit_status = 0;
     t->next      = 0;
 
     // The trampoline + kernel stack run at EL1; it then drops to EL0 at the user
@@ -173,6 +179,8 @@ void sched_init(void)
     boot_thread.wake_tick = 0;
     boot_thread.as        = 0;            // the idle/kernel thread has no user AS
     for (int i = 0; i < 16; i++) { boot_thread.fds[i] = 0; }
+    boot_thread.parent      = 0;          // the idle thread has no parent
+    boot_thread.exit_status = 0;
     boot_thread.next      = &boot_thread; // a ring of one
     current  = &boot_thread;
     next_id  = 1;
@@ -290,11 +298,61 @@ void yield(void)
     irq_restore(flags);
 }
 
-void thread_exit(void)
+// End the current thread, recording an exit status. It becomes a ZOMBIE -- it
+// stays in the run-ring (the scheduler skips it) until its parent reaps it via
+// sched_wait(). If the parent is already blocked in wait(), wake it.
+void thread_exit(int status)
 {
     uint64_t flags = irq_save();
-    current->state = THREAD_EXITED;   // tombstone; schedule() skips it
+    current->exit_status = status;
+    current->state = THREAD_ZOMBIE;
+    if (current->parent && current->parent->state == THREAD_SLEEPING) {
+        current->parent->state = THREAD_RUNNABLE;   // a waiting parent can now reap us
+    }
     schedule();                       // switch away; never returns here
     irq_restore(flags);               // unreachable
     for (;;) { }
+}
+
+// Rebind the running thread's address space (used by exec to install a new image).
+void sched_set_current_as(struct addrspace *as)
+{
+    current->as = as;
+}
+
+// Wait for a child to exit, reap it, and return its pid (or -1 if the caller has
+// no children). Reaping unlinks the zombie from the ring and frees its kernel
+// stack, address space, and thread struct.
+int sched_wait(int *status)
+{
+    for (;;) {
+        uint64_t flags = irq_save();
+        struct thread *prev = current;   // prev->next is the node under inspection
+        struct thread *child = 0;        // a reapable zombie child
+        struct thread *any = 0;          // any child at all (maybe still running)
+        do {
+            struct thread *n = prev->next;
+            if (n->parent == current) {
+                any = n;
+                if (n->state == THREAD_ZOMBIE) { child = n; break; }
+            }
+            prev = n;
+        } while (prev != current);
+
+        if (child) {
+            if (status) { *status = child->exit_status; }
+            int pid = child->id;
+            prev->next = child->next;             // unlink from the circular ring
+            kfree(child->stack);
+            if (child->as) { as_destroy(child->as); }
+            kfree(child);
+            irq_restore(flags);
+            return pid;
+        }
+        if (!any) { irq_restore(flags); return -1; }   // no children to wait for
+
+        current->state = THREAD_SLEEPING;   // block until a child exits (wakes us)
+        schedule();
+        irq_restore(flags);
+    }
 }

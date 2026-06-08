@@ -92,7 +92,7 @@ long do_syscall(struct trapframe *tf)
         ret = 0;
         break;
     case SYS_EXIT:
-        thread_exit();                       // does not return
+        thread_exit((int)tf->x[0]);          // x0 = exit status; does not return
         ret = 0;
         break;
     case SYS_FORK:

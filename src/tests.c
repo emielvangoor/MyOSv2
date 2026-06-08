@@ -764,6 +764,28 @@ static void test_as_destroy_recycles_asid(void)
     KASSERT(asid_alloc() == a);         // its ASID is reusable
 }
 
+static void wexit7(void *a) { (void)a; thread_exit(7); }
+
+static void test_wait_reaps_child(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    sched_init();
+    thread_create(wexit7, 0, 1);
+    int st = -1;
+    int pid = sched_wait(&st);
+    KASSERT(pid > 0);                    // reaped a child
+    KASSERT(st == 7);                    // with its exit status
+    KASSERT(sched_wait(&st) == -1);      // and it's gone (no children remain)
+}
+
+static void test_wait_no_children(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    sched_init();
+    int st = 0;
+    KASSERT(sched_wait(&st) == -1);      // nothing to wait for
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -816,6 +838,8 @@ static const struct ktest tests[] = {
     { "asid: free recycles",              test_asid_free_recycles },
     { "proc: as_destroy frees pages",     test_as_destroy_frees_pages },
     { "proc: as_destroy recycles asid",   test_as_destroy_recycles_asid },
+    { "proc: wait reaps child + status",  test_wait_reaps_child },
+    { "proc: wait with no children -> -1",test_wait_no_children },
 };
 
 int run_self_tests(void)

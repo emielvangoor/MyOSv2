@@ -99,11 +99,11 @@ void el0_sync_handler(struct trapframe *tf)
             return;              // handled -- eret retries the store
         }
         kprintf("User data abort at 0x%lx (ESR=0x%lx) -- killing thread.\n", far, esr);
-        thread_exit();
+        thread_exit(-1);             // killed by a fault
     } else {
         kprintf("User fault at EL0: EC=0x%x ELR=0x%lx ESR=0x%lx -- killing thread.\n",
                 ec, tf->elr, esr);
-        thread_exit();
+        thread_exit(-1);             // killed by a fault
     }
 }
 

@@ -19,8 +19,9 @@ struct context {
 enum thread_state {
     THREAD_RUNNABLE,   // ready to run
     THREAD_RUNNING,    // currently on the CPU
-    THREAD_SLEEPING,   // blocked until wake_tick
-    THREAD_EXITED      // finished (a tombstone the scheduler skips)
+    THREAD_SLEEPING,   // blocked until wake_tick (or until a child exits, for wait)
+    THREAD_EXITED,     // finished (a tombstone the scheduler skips)
+    THREAD_ZOMBIE      // exited, awaiting reap by its parent (Phase 13)
 };
 
 struct thread {
@@ -32,6 +33,8 @@ struct thread {
     uint64_t wake_tick;    // jiffy to wake at (when SLEEPING)
     struct addrspace *as;  // user address space (NULL for kernel threads)
     struct file *fds[16];  // open file table (a process). NULL = free.
+    struct thread *parent; // who created us (NULL for the boot/idle thread)
+    int exit_status;       // status passed to exit() (read by the parent's wait)
     struct thread *next;   // circular run-queue link
 };
 
@@ -51,7 +54,9 @@ struct trapframe;
 int sched_fork(struct trapframe *parent_tf);   // fork: clone current; returns child pid
 void yield(void);                                                 // cooperative switch
 void schedule(void);                                             // pick highest-prio + switch
-void thread_exit(void);                                          // end current thread
+void thread_exit(int status);                                    // end current thread with a status
+int  sched_wait(int *status);                                    // reap a zombie child; -1 if none
+void sched_set_current_as(struct addrspace *as);                 // rebind current's address space (exec)
 int  sched_started(void);
 int  sched_current_id(void);                                     // id of running thread (-1 if none)
 int  sched_tick(void);                                           // per-tick: wake sleepers + slice

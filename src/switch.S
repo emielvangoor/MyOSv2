@@ -35,4 +35,5 @@ thread_trampoline:
     msr     daifclr, #2             // unmask IRQs for this thread
     mov     x0, x20                 // arg
     blr     x19                     // fn(arg)
+    mov     x0, #0                  // exit status 0
     bl      thread_exit             // fn returned -> terminate
