@@ -23,6 +23,7 @@
 #include "initrd.h"
 #include "proc.h"
 #include "fwcfg.h"
+#include "fb.h"
 
 #define PAGE 0x1000UL
 
@@ -744,6 +745,28 @@ static void test_bswap_roundtrip(void)
     KASSERT(bswap32(bswap32(0xDEADBEEF)) == 0xDEADBEEF);   // involution
 }
 
+static void test_fb_geometry(void)
+{
+    KASSERT(FB_WIDTH == 1280);
+    KASSERT(FB_HEIGHT == 720);
+    KASSERT(FB_PITCH_PX == 1280);
+    KASSERT(FB_STRIDE_BYTES == 5120);          // 1280 * 4
+    KASSERT(FB_PAGES == 900);                  // 1280*720*4 / 4096
+}
+
+static void test_ramfb_cfg_layout(void)
+{
+    struct ramfb_cfg cfg;
+    ramfb_build_cfg(&cfg, 0x40500000ULL, 1280, 720);
+    KASSERT(cfg.addr   == bswap64(0x40500000ULL));
+    KASSERT(cfg.fourcc == bswap32(0x34325258u));   // 'XR24' = XRGB8888
+    KASSERT(cfg.flags  == 0);
+    KASSERT(cfg.width  == bswap32(1280));
+    KASSERT(cfg.height == bswap32(720));
+    KASSERT(cfg.stride == bswap32(5120));          // 1280 * 4
+    KASSERT(sizeof(struct ramfb_cfg) == 28);       // packed, no padding
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -794,6 +817,8 @@ static const struct ktest tests[] = {
     { "asid: user page is non-global",    test_asid_user_page_nonglobal },
     { "asid: rollover recycles",          test_asid_rollover_recycles },
     { "gfx: bswap roundtrip",             test_bswap_roundtrip },
+    { "gfx: fb geometry",                 test_fb_geometry },
+    { "gfx: ramfb cfg byte layout",       test_ramfb_cfg_layout },
 };
 
 int run_self_tests(void)
