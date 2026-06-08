@@ -26,6 +26,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
   processes can map to communicate.
 - **Pipes** — `pipe` + `dup2` with refcounted file handles, so the shell runs
   pipelines like `hello | wc`.
+- **Signals** — `kill`, default actions, user handlers (with a sigreturn
+  trampoline), and **Ctrl-C** → `SIGINT` to the foreground program.
 
 Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
 and eventually a TCP/IP network stack — lives in
