@@ -808,7 +808,47 @@ static void test_exec_missing_returns_neg1(void)
     pmm_init(); kheap_init(); vm_init();
     vfs_mount_root(ramfs_type());        // empty root: no files to exec
     struct trapframe tf;
-    KASSERT(proc_exec(&tf, "/no/such/file") == -1);   // clean failure, no swap
+    KASSERT(proc_exec(&tf, "/no/such/file", 0) == -1);   // clean failure, no swap
+}
+
+// Read a little-endian 64-bit word at user VA `v` from the top stack page,
+// reached through the identity-mapped physical window `page` (base VA `pbase`).
+static uint64_t stack_u64(const uint8_t *page, uint64_t pbase, uint64_t v)
+{
+    uint64_t x = 0;
+    for (int b = 0; b < 8; b++) { x |= (uint64_t)page[(v - pbase) + b] << (b * 8); }
+    return x;
+}
+
+static int build_min_elf(uint8_t *buf, uint64_t vaddr, const uint8_t *code, int clen);
+
+static void test_exec_argv_on_stack(void)
+{
+    pmm_init(); kheap_init(); vm_init();
+    uint8_t img[256];
+    uint8_t code[4] = {0, 0, 0, 0};
+    int n = build_min_elf(img, USER_CODE_VA, code, 4);
+    uint64_t entry = 0;
+    struct addrspace *as = as_create_elf(img, (uint64_t)n, &entry);
+    KASSERT(as != 0);
+
+    char *argv[] = { "ping", "example.com", 0 };
+    int argc = -1;
+    uint64_t sp = proc_setup_argv(as, argv, &argc);
+    KASSERT(argc == 2);
+    KASSERT((sp & 15) == 0);                       // AArch64 needs a 16-aligned sp
+
+    uint64_t pbase = USER_STACK_TOP - 0x1000;      // VA of the top stack page
+    uint8_t *page = (uint8_t *)(uintptr_t)as_translate(as, pbase);
+    uint64_t a0 = stack_u64(page, pbase, sp);      // argv[0]
+    uint64_t a1 = stack_u64(page, pbase, sp + 8);  // argv[1]
+    uint64_t aN = stack_u64(page, pbase, sp + 16); // argv[2]
+    KASSERT(aN == 0);                              // NULL-terminated
+
+    const char *s0 = (const char *)&page[a0 - pbase];
+    const char *s1 = (const char *)&page[a1 - pbase];
+    KASSERT(s0[0]=='p' && s0[1]=='i' && s0[2]=='n' && s0[3]=='g' && s0[4]==0);
+    KASSERT(s1[0]=='e' && s1[10]=='m' && s1[11]==0);   // "example.com" (len 11)
 }
 
 // --- ELF loader (Phase 14) ---
@@ -1399,6 +1439,7 @@ static const struct ktest tests[] = {
     { "proc: wait reaps child + status",  test_wait_reaps_child },
     { "proc: wait with no children -> -1",test_wait_no_children },
     { "proc: exec missing path -> -1",    test_exec_missing_returns_neg1 },
+    { "proc: exec sets up argv on stack", test_exec_argv_on_stack },
     { "elf: map_segment zeroes bss",      test_as_map_segment_bss_zeroed },
     { "elf: rejects bad magic",           test_elf_rejects_bad_magic },
     { "elf: loads entry + segment",       test_elf_entry_and_segment },

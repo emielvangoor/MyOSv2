@@ -20,7 +20,7 @@ void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }
 void sys_sleep(long ms)                       { syscall3(SYS_SLEEP, ms, 0, 0); }
 long sys_fork(void)                           { return syscall3(SYS_FORK, 0, 0, 0); }
-long sys_exec(const char *p)                  { return syscall3(SYS_EXEC, (long)p, 0, 0); }
+long sys_exec(const char *p, char *const argv[]) { return syscall3(SYS_EXEC, (long)p, (long)argv, 0); }
 long sys_wait(int *status)                    { return syscall3(SYS_WAIT, (long)status, 0, 0); }
 void *sys_sbrk(long incr)                     { return (void *)syscall3(SYS_SBRK, incr, 0, 0); }
 void *mmap(unsigned long len)                 { return (void *)syscall3(SYS_MMAP, (long)len, 0, 0); }

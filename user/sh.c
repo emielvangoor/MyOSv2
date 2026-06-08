@@ -67,21 +67,37 @@ static void bin_path(char *dst, const char *cmd)
     dst[i] = 0;
 }
 
-// In a freshly-forked child: exec /bin/<cmd>, or report + exit 127 if not found.
-static void child_exec(const char *cmd)
+// In a freshly-forked child: exec /bin/<argv[0]> with argv, or report + exit 127
+// if not found. argv must be NULL-terminated.
+static void child_exec(char *const argv[])
 {
     char path[64];
-    bin_path(path, cmd);
-    sys_exec(path);                 // returns only if exec failed
+    bin_path(path, argv[0]);
+    sys_exec(path, argv);           // returns only if exec failed
     puts1("exec: not found\n");
     sys_exit(127);
 }
 
-// fork a child, exec /bin/<cmd>, and wait for it.
-static void run_external(const char *cmd)
+// fork a child, exec /bin/<cmd> with its arguments, and wait for it. `cmd` is the
+// command word; `arg` is the (possibly multi-token, space-separated) remainder,
+// which is tokenised in place into the rest of argv.
+static void run_external(const char *cmd, char *arg)
 {
+    char *argv[16];
+    int argc = 0;
+    argv[argc++] = (char *)cmd;
+    char *p = arg;
+    while (*p && argc < 15) {
+        while (*p == ' ') { p++; }
+        if (!*p) { break; }
+        argv[argc++] = p;
+        while (*p && *p != ' ') { p++; }
+        if (*p) { *p = 0; p++; }
+    }
+    argv[argc] = 0;
+
     long pid = sys_fork();
-    if (pid == 0) { child_exec(cmd); }
+    if (pid == 0) { child_exec(argv); }
     int st = 0;
     sys_wait(&st);                  // parent reaps the child
     puts1("[exit "); put_int(st); puts1("]\n");
@@ -90,22 +106,24 @@ static void run_external(const char *cmd)
 // Run a two-stage pipeline: `left | right`. left's stdout is connected to
 // right's stdin through a pipe. The parent closes both pipe ends (so right sees
 // EOF once left finishes) and waits for both children.
-static void run_pipeline(const char *left, const char *right)
+static void run_pipeline(char *left, char *right)
 {
     int fd[2];
     if (pipe(fd) < 0) { puts1("pipe: failed\n"); return; }
 
+    char *lv[2] = { left, 0 };
+    char *rv[2] = { right, 0 };
     long c1 = sys_fork();
     if (c1 == 0) {                  // left: stdout -> pipe write end
         dup2(fd[1], 1);
         sys_close(fd[0]); sys_close(fd[1]);
-        child_exec(left);
+        child_exec(lv);
     }
     long c2 = sys_fork();
     if (c2 == 0) {                  // right: stdin -> pipe read end
         dup2(fd[0], 0);
         sys_close(fd[0]); sys_close(fd[1]);
-        child_exec(right);
+        child_exec(rv);
     }
     sys_close(fd[0]); sys_close(fd[1]);   // parent holds neither end
     int st;
@@ -170,6 +188,6 @@ int umain(void)
         else if (streq(cmd, "cat"))  { cmd_cat(arg); }
         else if (streq(cmd, "spawn")){ cmd_spawn(); }
         else if (streq(cmd, "exit")) { sys_exit(0); }
-        else                         { run_external(cmd); }   // fork + exec + wait
+        else                         { run_external(cmd, arg); }   // fork + exec + wait
     }
 }

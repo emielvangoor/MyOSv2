@@ -103,8 +103,9 @@ long do_syscall(struct trapframe *tf)
     case SYS_FORK:
         ret = sched_fork(tf);                // child pid (parent); child gets 0
         break;
-    case SYS_EXEC:                           // x0 = path
-        ret = proc_exec(tf, (const char *)(uintptr_t)tf->x[0]);
+    case SYS_EXEC:                           // x0 = path, x1 = argv (NULL-terminated)
+        ret = proc_exec(tf, (const char *)(uintptr_t)tf->x[0],
+                            (char *const *)(uintptr_t)tf->x[1]);
         break;                               // on success tf is rewritten to the new image
     case SYS_WAIT:                           // x0 = int *status
         ret = sched_wait((int *)(uintptr_t)tf->x[0]);
