@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include "vfs.h"
 #include "kheap.h"
+#include "pipe.h"
 
 static struct vnode *root;
 
@@ -82,11 +83,15 @@ struct file *vfs_open(const char *path)
     struct file *f = kmalloc(sizeof(struct file));
     f->vnode = vn;
     f->off = 0;
+    f->pipe = 0;
+    f->writable = 0;
+    f->ref = 1;
     return f;
 }
 
 int vfs_read(struct file *f, void *buf, uint64_t len)
 {
+    if (f->pipe) { return pipe_read(f, buf, len); }    // pipe end
     if (!f->vnode->ops->read) { return -1; }
     int n = f->vnode->ops->read(f->vnode, f->off, buf, len);
     if (n > 0) { f->off += (uint64_t)n; }
@@ -95,6 +100,7 @@ int vfs_read(struct file *f, void *buf, uint64_t len)
 
 int vfs_write(struct file *f, const void *buf, uint64_t len)
 {
+    if (f->pipe) { return pipe_write(f, buf, len); }   // pipe end
     if (!f->vnode->ops->write) { return -1; }
     int n = f->vnode->ops->write(f->vnode, f->off, buf, len);
     if (n > 0) { f->off += (uint64_t)n; }
@@ -109,5 +115,14 @@ int vfs_readdir(struct vnode *dir, int index, char *name_out)
 
 void vfs_close(struct file *f)
 {
+    if (--f->ref > 0) { return; }     // other fds still reference this file
+    if (f->pipe) { pipe_close(f); }   // drop our end of the pipe
     kfree(f);
+}
+
+// Bump a file's reference count (used by dup2 and fork to share a handle).
+struct file *file_dup(struct file *f)
+{
+    f->ref++;
+    return f;
 }

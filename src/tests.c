@@ -1029,6 +1029,21 @@ static void test_pipe_wraps(void)
     for (int i = 0; i < 50; i++) { KASSERT(out[i] == (char)i); }
 }
 
+static void test_file_refcount(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/f", VN_FILE);
+    struct file *f = vfs_open("/f");
+    KASSERT(f->ref == 1);
+    file_dup(f);
+    KASSERT(f->ref == 2);
+    vfs_close(f);                            // ref 2 -> 1, NOT freed
+    KASSERT(f->ref == 1);
+    KASSERT(vfs_write(f, "x", 1) == 1);      // still usable
+    vfs_close(f);                            // ref 1 -> 0, freed (no crash after)
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1100,6 +1115,7 @@ static const struct ktest tests[] = {
     { "pipe: read EOF when no writers",   test_pipe_eof },
     { "pipe: write -1 when no readers",   test_pipe_broken },
     { "pipe: ring buffer wraps",          test_pipe_wraps },
+    { "file: refcount dup/close",         test_file_refcount },
 };
 
 int run_self_tests(void)

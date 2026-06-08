@@ -3,6 +3,7 @@
 #include "sched.h"
 #include "kheap.h"
 #include "exceptions.h"   // struct trapframe (for fork)
+#include "vfs.h"          // file_dup (share fds across fork)
 
 #define STACK_SIZE (16 * 1024)   // 16 KiB per-thread stack
 
@@ -87,7 +88,10 @@ int sched_fork(struct trapframe *parent_tf)
     t->priority  = current->priority;
     t->wake_tick = 0;
     t->as        = as_clone(current->as);            // copy-on-write address space
-    for (int i = 0; i < 16; i++) { t->fds[i] = current->fds[i]; }  // share open files
+    for (int i = 0; i < 16; i++) {
+        t->fds[i] = current->fds[i];                 // share open files...
+        if (t->fds[i]) { file_dup(t->fds[i]); }      // ...with a reference each
+    }
     t->parent      = current;                        // the forking thread is our parent
     t->exit_status = 0;
     t->next      = 0;
