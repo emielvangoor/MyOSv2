@@ -305,13 +305,6 @@ connections. This phase is itself large — pick milestones from it.
 - **Larger transfers.** Segment a `write` larger than one MSS; coalesce small
   writes (**Nagle**) and **delayed ACKs** for efficiency.
 
-### Known bug to fix here
-- **TCP output into a blocking pipe stalls** (`http | wc` hangs): while the client
-  is blocked writing its output to a full pipe, it stops pumping/ACKing the
-  connection, and the recv/flow path doesn't make progress. The fix is to keep
-  the receive/ACK path serviced independently of the output fd's backpressure
-  (decouple "pump the connection" from "deliver bytes to the app"), or to buffer.
-
 ### Missing API / features
 - **TCP server:** `listen`/`accept` (passive open), a listen backlog, demultiplex
   incoming SYNs to accepted sockets. (Then: a tiny in-guest HTTP server.)
@@ -329,9 +322,13 @@ connections. This phase is itself large — pick milestones from it.
 (fragmentation, ICMP errors, DHCP), `syscall.c` (`poll`/`select`, new socket
 calls), `virtio_blk.c` (IRQ completion).
 
-**Done looks like:** a download survives packet loss/reordering; `http | wc`
-works; the guest runs a tiny TCP server an outside client can connect to;
-`poll`/`select` lets one program juggle multiple sockets.
+**Done looks like:** a download survives packet loss/reordering; the guest runs a
+tiny TCP server an outside client can connect to; `poll`/`select` lets one
+program juggle multiple sockets.
+
+> The `http | wc` deadlock noted earlier is **fixed** — pipes now sleep/wake
+> (`sched_block`/`sched_wake`) instead of yield-spinning, so a blocked reader no
+> longer starves the interrupts a network-waiting peer needs.
 
 **Depends on:** 22. **Size:** very large — treat each bullet as its own milestone.
 

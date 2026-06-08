@@ -67,6 +67,22 @@ static void bin_path(char *dst, const char *cmd)
     dst[i] = 0;
 }
 
+// Split `line` in place on spaces into a NULL-terminated argv. Returns argc.
+static int tokenize(char *line, char **argv, int max)
+{
+    int argc = 0;
+    char *p = line;
+    while (*p && argc < max - 1) {
+        while (*p == ' ') { p++; }
+        if (!*p) { break; }
+        argv[argc++] = p;
+        while (*p && *p != ' ') { p++; }
+        if (*p) { *p = 0; p++; }
+    }
+    argv[argc] = 0;
+    return argc;
+}
+
 // In a freshly-forked child: exec /bin/<argv[0]> with argv, or report + exit 127
 // if not found. argv must be NULL-terminated.
 static void child_exec(char *const argv[])
@@ -111,8 +127,10 @@ static void run_pipeline(char *left, char *right)
     int fd[2];
     if (pipe(fd) < 0) { puts1("pipe: failed\n"); return; }
 
-    char *lv[2] = { left, 0 };
-    char *rv[2] = { right, 0 };
+    char *lv[16], *rv[16];           // each side gets its own argv (args + all)
+    tokenize(left, lv, 16);
+    tokenize(right, rv, 16);
+    if (!lv[0] || !rv[0]) { sys_close(fd[0]); sys_close(fd[1]); return; }
     long c1 = sys_fork();
     if (c1 == 0) {                  // left: stdout -> pipe write end
         dup2(fd[1], 1);
