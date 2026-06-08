@@ -30,6 +30,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
   trampoline), and **Ctrl-C** → `SIGINT` to the foreground program.
 - **Block device** — a **virtio-blk** disk driver on a generic virtio-mmio +
   virtqueue layer, reading and writing 512-byte sectors.
+- **Persistent filesystem** — a small on-disk inode FS (SFS) mounted at `/disk`;
+  files survive reboots.
 
 Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
 and eventually a TCP/IP network stack — lives in
