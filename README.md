@@ -22,7 +22,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
   from `/bin` (`true`, `false`, `hello`, `mtest`) via fork→exec→wait and reports
   their exit status.
 - **User-space memory** — `sbrk`-grown per-process heap (demand-zeroed pages) and
-  a small `malloc`/`free` in the user library.
+  a small `malloc`/`free`; anonymous `mmap`; and **shared memory** objects two
+  processes can map to communicate.
 
 Where it goes next — user-space dynamic memory, IPC, persistent on-disk storage,
 and eventually a TCP/IP network stack — lives in
