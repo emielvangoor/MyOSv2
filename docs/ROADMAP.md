@@ -37,29 +37,80 @@ Target throughout: **ARM64 (AArch64), C + assembly, QEMU `virt` board.**
 
 ## Recommended core path
 
-The cleanest learning arc, each phase building on the last:
+Graphics is an **independent output track** — it depends only on the MMU
+(Phase 6) and PMM (Phase 4), *not* on the process work — so it can go first
+without blocking anything. After it, the Unix process model builds up in order:
 
 ```
-12 exec+wait ──► 13 ELF loader / real /bin ──► 14 pipes ──► 15 signals
-      │
-      └─ unlocks: shell runs real programs the Unix way (fork→exec→wait)
+12 graphics (framebuffer)          ◄── independent; do it next, it's self-contained
+       │
+13 exec+wait ──► 14 ELF loader / real /bin ──► 15 pipes ──► 16 signals
+       │
+       └─ unlocks: shell runs real programs the Unix way (fork→exec→wait)
 ```
 
 Then branch into whichever track interests you:
 
 ```
-memory track:   16 user heap (brk/malloc) ──► (later) mmap / demand paging
-storage track:  17 virtio-blk driver ──► 18 on-disk filesystem (persistence)
-scaling track:  19 SMP (multicore) ──► 20 networking (stretch)
+memory track:   17 user heap (brk/malloc) ──► (later) mmap / demand paging
+storage track:  18 virtio-blk driver ──► 19 on-disk filesystem (persistence)
 ```
+
+**Deferred for now** (your call): SMP/multicore and networking — see the bottom.
 
 ---
 
-## Phase 12 — Process lifecycle: `exec` + `exit` status + `wait`
+## Phase 12 — Graphics: high-res framebuffer (`ramfb`)
 
-**Why now:** finishes the Unix process model. `fork` (Phase 9) without
-`exec`/`wait` is only half a model. This is the natural next step and it resolves
-the Phase 11 ASID-recycling limitation.
+**Why now:** a brand-new device class and instantly rewarding — real pixels in a
+window. It's fully **independent** of the process-model phases (depends only on
+the MMU and the page allocator), so it slots in cleanly right here without
+blocking anything else. If you'd rather finish the Unix process model first, it
+can equally well go after Phase 16 — placement is free.
+
+**The approach — `ramfb`.** QEMU's `-device ramfb` exposes a simple linear
+framebuffer through the **fw_cfg** interface. We allocate a contiguous pixel
+buffer (e.g. 1280×720 or 1920×1080 × 4 bytes ≈ 2–8 MB via `pmm_alloc_pages`),
+then hand QEMU its physical address + width/height/stride/format with one DMA
+write to the `etc/ramfb` fw_cfg file. After that it's a raw `XRGB8888` array we
+write colors into — **arbitrary resolution, genuinely high-res**, with no PCI and
+no virtqueues. (A richer `virtio-gpu` path — dynamic resolution, a cursor — is a
+later upgrade once the virtio transport from Phase 18 exists; see Deferred.)
+
+**Adds**
+- A tiny **fw_cfg driver** (`fwcfg.c`): MMIO at `0x09020000`, select a file by
+  name from the fw_cfg directory, read it, and DMA-write to it.
+- A **framebuffer driver** (`fb.c`): allocate the buffer, register it via
+  `etc/ramfb` (big-endian `RAMFBCfg`: address, fourcc `XR24`, flags, width,
+  height, stride), expose `fb_info()` (base/width/height/pitch).
+- **Drawing primitives** (`draw.c`): `put_pixel`, `fill_rect`, `clear`, plus an
+  8×8/8×16 bitmap **font** for `draw_char`/`draw_text`. Stretch: blit an embedded
+  image, and/or a framebuffer **console** (mirror `kprintf`/the shell to screen).
+- **Run setup:** swap `-display none` → `-display cocoa` (your Mac) and add
+  `-device ramfb`, keeping `-serial stdio` for the shell. Kept easy to close.
+
+**Key files:** new `fwcfg.c`/`.h`, `fb.c`/`.h`, `draw.c`/`.h`, `font8x16.h`;
+`mmu.c` (map the framebuffer region cacheable/normal); `Makefile` (QEMU flags);
+`kmain.c` (init + a demo frame); `tests.c` (framebuffer-geometry tests).
+
+**Done looks like:** a QEMU window opens at your chosen resolution showing drawn
+shapes and text (e.g. "MyOSv2" rendered from the bitmap font), while the shell
+keeps running on the serial console.
+
+**Depends on:** MMU/MMIO (6), PMM (4). **Size:** medium.
+
+**Testing note:** pixels on screen aren't unit-testable, so tests pin the
+*machinery* — framebuffer geometry (pitch = width × bpp), `put_pixel` writing the
+right offset in a mock buffer, `fill_rect` bounds, font glyph lookup — and the
+visible frame is the manual confirmation (same pattern as the shell).
+
+---
+
+## Phase 13 — Process lifecycle: `exec` + `exit` status + `wait`
+
+**Why:** finishes the Unix process model. `fork` (Phase 9) without
+`exec`/`wait` is only half a model. This resolves the Phase 11 ASID-recycling
+limitation.
 
 **Adds**
 - `SYS_EXEC(path)` — replace the *current* process's image with a program loaded
@@ -83,7 +134,7 @@ the prompt. Processes are properly cleaned up; ASIDs get reused.
 
 ---
 
-## Phase 13 — ELF loader + real `/bin` programs
+## Phase 14 — ELF loader + real `/bin` programs
 
 **Why:** today user programs are flat binaries all linked at `USER_CODE_VA`. To
 ship several real programs and load them properly, parse ELF and place each
@@ -102,11 +153,11 @@ multiple user binaries into the initrd), `user/*.c`.
 **Done looks like:** `ls /bin` shows several programs; running each from the
 shell works; the loader handles a multi-segment binary.
 
-**Depends on:** 12. **Size:** medium.
+**Depends on:** 13. **Size:** medium.
 
 ---
 
-## Phase 14 — Pipes
+## Phase 15 — Pipes
 
 **Why:** the first IPC primitive; enables shell pipelines like `ls | cat`.
 
@@ -124,11 +175,11 @@ parsing).
 **Done looks like:** `ls | cat` at the shell streams output through the pipe;
 a blocked reader wakes when the writer produces data.
 
-**Depends on:** 12 (and the fd table from 8). **Size:** medium.
+**Depends on:** 13 (and the fd table from 8). **Size:** medium.
 
 ---
 
-## Phase 15 — Signals
+## Phase 16 — Signals
 
 **Why:** asynchronous notification, and a real **Ctrl-C** to interrupt a running
 program.
@@ -146,11 +197,11 @@ program.
 **Done looks like:** start a long-running program, press Ctrl-C, it's killed and
 you're back at the shell; a program with a `SIGINT` handler runs its handler.
 
-**Depends on:** 12. **Size:** medium-large (touches the trap-return path).
+**Depends on:** 13. **Size:** medium-large (touches the trap-return path).
 
 ---
 
-## Phase 16 — User-space dynamic memory (`brk`/`sbrk` + `malloc`)
+## Phase 17 — User-space dynamic memory (`brk`/`sbrk` + `malloc`)
 
 **Why:** let user programs allocate memory at runtime instead of only fixed
 stack/data pages.
@@ -171,7 +222,7 @@ demand paging / lazy zero-fill.)*
 
 ---
 
-## Phase 17 — virtio-blk block device driver
+## Phase 18 — virtio-blk block device driver
 
 **Why:** the first real device beyond the UART/timer, and the gateway to
 persistent storage.
@@ -188,10 +239,12 @@ persistent storage.
 run are readable in the next.
 
 **Depends on:** MMU/MMIO (6), interrupts (3). **Size:** large (new driver class).
+Also lays the **virtio transport** groundwork that a later `virtio-gpu` graphics
+upgrade would reuse.
 
 ---
 
-## Phase 18 — On-disk filesystem (persistence)
+## Phase 19 — On-disk filesystem (persistence)
 
 **Why:** turn the block device into real, persistent files mounted under the VFS.
 
@@ -205,48 +258,35 @@ run are readable in the next.
 **Done looks like:** create a file from the shell, reboot QEMU, the file is still
 there.
 
-**Depends on:** VFS (7), block driver (17). **Size:** large.
+**Depends on:** VFS (7), block driver (18). **Size:** large.
 
 ---
 
-## Phase 19 — SMP (multicore)
+## Deferred — not now (revisit later)
 
-**Why:** the biggest conceptual leap — real concurrency.
+You've parked these for now; kept here so the ideas aren't lost.
 
-**Adds**
-- Secondary-core boot (PSCI `CPU_ON`), per-CPU data, **spinlocks** (replacing
-  IRQ-masking-only critical sections), a locked/per-CPU run queue, and IPIs for
-  cross-core scheduling. Per-CPU ASID management.
-
-**Key files:** `boot.S`/new `smp.c`, `sched.c` (locking, per-CPU `current`), new
-`spinlock.h`, GIC (IPIs).
-
-**Done looks like:** threads run truly in parallel on 2+ cores; the test suite
-still passes under concurrency.
-
-**Depends on:** scheduler (5), GIC (3). **Size:** very large (concurrency touches
-everything).
-
----
-
-## Phase 20 — Networking (stretch)
-
-**Why:** an optional far-horizon goal — talk to the outside world.
-
-**Adds:** a virtio-net driver, Ethernet/ARP/IP/UDP (and maybe minimal TCP), and a
-small socket-style API.
-
-**Depends on:** virtio transport (17), interrupts. **Size:** very large. Stretch
-goal; revisit once the core OS is mature.
+- **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
+  **spinlocks** replacing IRQ-masking critical sections, per-CPU run queues, IPIs.
+  *Very large* — forces revisiting locking across the whole kernel, so it's most
+  valuable once the feature set is stable.
+- **Networking.** virtio-net driver + Ethernet/ARP/IP/UDP (maybe minimal TCP) and
+  a socket-style API. *Very large* stretch goal. Depends on the virtio transport
+  from Phase 18.
+- **`virtio-gpu` (richer graphics).** An upgrade to Phase 12's framebuffer:
+  dynamic resolution, multiple displays, a hardware cursor, 2D acceleration — over
+  virtqueues. Worth it only after the virtio transport (Phase 18) exists; until
+  then `ramfb` already gives high-res pixels.
 
 ---
 
 ## Notes on sequencing
 
-- **12 is the keystone.** Almost everything social between processes (pipes,
-  signals, a useful shell) gets easier once `exec`/`wait`/`exit` exist.
-- **13 pairs tightly with 12** — exec is most convincing with real `/bin`
+- **12 (graphics) is free-floating.** It depends only on the MMU and PMM, so it
+  can go next (recommended — it's self-contained and fun) or any time later.
+- **13 is the keystone of the process track.** Almost everything social between
+  processes (pipes, signals, a useful shell) gets easier once
+  `exec`/`wait`/`exit` exist.
+- **14 pairs tightly with 13** — exec is most convincing with real `/bin`
   programs to exec into.
-- **Memory (16) and storage (17→18) are independent tracks** — do either order.
-- **SMP (19) is best saved for later**: it forces revisiting locking across the
-  whole kernel, so it's most valuable once the feature set is stable.
+- **Memory (17) and storage (18→19) are independent tracks** — do either order.
