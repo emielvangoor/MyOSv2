@@ -30,61 +30,44 @@ Target throughout: **ARM64 (AArch64), C + assembly, QEMU `virt` board.**
 
 ---
 
-## The north star: a user-space i3-style tiling window manager
+## The north star: a capable, Unix-like OS (with networking)
 
-The headline goal is an **i3-like tiling window manager that runs as a user-space
-process** — windows tiled automatically into a tree of splits, keyboard-driven,
-with a mouse cursor for focus and border-resize, and the shell's terminal living
-inside a tile.
+The goal is to make MyOSv2 a genuinely **capable, Unix-like operating system**: a
+real process model (run programs, pipe and signal them), **persistent on-disk
+storage**, and a working **TCP/IP network stack with sockets**. Networking is the
+capstone — the point where the OS can talk to the outside world.
 
-"User space" is the demanding part. The kernel owns the framebuffer and the input
-devices; the window manager is an **ordinary EL0 program** that asks the kernel
-for those resources and composites everything itself. That only works once a
-handful of foundations exist — which is why most of this roadmap is
-**prerequisites**, built bottom-up, before the WM itself appears.
-
-### Why the prerequisites are non-negotiable
-
-A user-space compositor must be able to:
-- **run as its own program** alongside its clients → process lifecycle (exec/wait),
-  real binaries (ELF loader);
-- **allocate memory freely** for its window tree and buffers → a user-space heap;
-- **see the framebuffer from EL0** and **share pixel buffers with clients** →
-  `mmap` + shared memory (the linchpin);
-- **talk to clients** (create window, resize, deliver input, commit a frame) →
-  an IPC channel;
-- **receive mouse + keyboard in user space** → virtio-input + an event device.
-
-Only then does the window system itself (display server → protocol + terminal
-client → tiling WM) make sense.
+**All graphics work is deferred.** The framebuffer (Phase 12) stays as-is; the
+window-manager track, the display server, and `virtio-gpu` are parked at the
+bottom and revisited later. Everything below builds toward a headless but
+powerful systems OS.
 
 ### Critical path
 
 ```
-Foundations          13 exec+wait ─► 14 ELF loader/ real bin ─► 15 user heap
-                                                                     │
-Share + talk         16 mmap + shared memory ─► 17 IPC channel ─► 18 signals
-                          (framebuffer + client buffers)   (window protocol)  (Ctrl-C / close)
-                                                                     │
-Input                19 virtio transport + virtio-input ─► 20 input → user space
-                                                                     │
-Window system        21 display-server core (user space)  ◄── mmap fb + cursor
-                          │
-                     22 window protocol + terminal client  ◄── shell in a window
-                          │
-                     23 i3-style tiling WM  ◄── THE GOAL: tiles, workspaces, keybinds
+Process model    13 exec+wait ─► 14 ELF loader + coreutils
+                                       │
+Memory           15 user heap (brk/malloc) ─► 16 mmap + shared memory
+                                       │
+IPC              17 pipes ─► 18 signals
+                                       │
+Storage          19 virtio transport + virtio-blk ─► 20 on-disk filesystem
+                                       │
+Networking       21 virtio-net ─► 22 TCP/IP stack + sockets   ◄── CAPSTONE
 ```
 
-Storage (virtio-blk, on-disk FS), networking, virtio-gpu, and SMP are **not on
-this path** — they're parked in *Deferred* at the bottom.
+The **virtio transport** built in Phase 19 is shared: virtio-blk uses it for the
+disk, virtio-net reuses it for the NIC. Storage (19→20) and networking (21→22)
+are independent tracks once the transport exists — do them in either order, though
+persistent storage is the simpler first win.
 
 ---
 
 ## Phase 13 — Process lifecycle: `exec` + `exit` status + `wait`
 
-**Why (for the WM):** the WM and every client are separate processes; the WM must
-launch them and notice when they exit (to close their windows). This also finishes
-the Unix process model and resolves the Phase 11 ASID-recycling gap.
+**Why:** finishes the Unix process model. `fork` (Phase 9) without `exec`/`wait`
+is only half a model; the shell needs to launch and reap real programs. Also
+resolves the Phase 11 ASID-recycling gap.
 
 **Adds**
 - `SYS_EXEC(path)` — replace the current process image with a program from a file
@@ -98,26 +81,27 @@ the Unix process model and resolves the Phase 11 ASID-recycling gap.
 `vm.c` (`as_destroy`, ASID free list), `proc.c` (exec), `user/sh.c`.
 
 **Done looks like:** the shell runs an external program fork→exec→wait, prints its
-exit status, and processes are cleaned up (ASIDs reused).
+exit status, returns to the prompt; processes are cleaned up (ASIDs reused).
 
 **Depends on:** 9, 10, 11. **Size:** medium.
 
 ---
 
-## Phase 14 — ELF loader + real `/bin` programs
+## Phase 14 — ELF loader + coreutils (`/bin`)
 
-**Why (for the WM):** the WM, the terminal, and other clients are distinct
-binaries loaded at their own addresses. Flat blobs all linked at one VA won't do.
+**Why:** today user programs are flat blobs all linked at one VA. A capable OS
+loads real, separately-built binaries — and ships a handful of small utilities.
 
 **Adds**
 - A minimal **ELF64 loader**: map each `PT_LOAD` segment at its `p_vaddr` with the
   right perms (RX code / RW data), zero the `.bss` tail.
-- Several small programs built separately and embedded in the initrd under `/bin`.
+- Several **coreutils** built separately and embedded in the initrd under `/bin`
+  (`echo`, `cat`, `ls`, `wc`, `true`/`false`, …); the shell runs them via exec.
 
 **Key files:** new `elf.c`, `proc.c`/`vm.c`, `Makefile`, `user/*.c`.
 
-**Done looks like:** `ls /bin` shows several programs; each runs; multi-segment
-binaries load correctly.
+**Done looks like:** `ls /bin` lists the utilities; running each works; the loader
+handles a multi-segment binary.
 
 **Depends on:** 13. **Size:** medium.
 
@@ -125,8 +109,8 @@ binaries load correctly.
 
 ## Phase 15 — User-space dynamic memory (`brk`/`sbrk` + `malloc`)
 
-**Why (for the WM):** a window manager needs a heap — for its tiling tree, window
-records, the event queue, per-client state. Fixed stack/data pages aren't enough.
+**Why:** real programs allocate memory at runtime. Fixed stack/data pages aren't
+enough for non-trivial utilities (and the network stack's buffers later).
 
 **Adds**
 - `SYS_BRK`/`SYS_SBRK` growing the user heap, mapping fresh pages on demand.
@@ -141,231 +125,202 @@ page maps it on demand.
 
 ---
 
-## Phase 16 — `mmap` + shared memory  ⟵ the linchpin
+## Phase 16 — `mmap` + shared memory
 
-**Why (for the WM):** this is what makes a *user-space* compositor possible at
-all. The WM must (a) see the **framebuffer** from EL0, and (b) share **pixel
-buffers** with clients so a client can render a window and the WM can read it
-without copying through the kernel.
+**Why:** general-purpose memory mapping — anonymous regions (generalizing the
+heap) and **shared memory** between processes (a building block for IPC and, much
+later, any user-space services).
 
 **Adds**
-- `SYS_MMAP` with anonymous mappings (demand-zeroed pages) — generalizes the
-  Phase 15 heap.
-- **Framebuffer mapping:** map the ramfb framebuffer's physical pages into a user
-  address space (a device mapping), so a user process can draw straight to the
-  screen.
-- **Shared-memory objects:** `shm_create()` → a handle; multiple processes
-  `mmap` the same handle and share the **same physical pages**. This reuses the
-  page-refcount machinery already built for COW (Phase 9) — shared pages are just
-  refcounted pages mapped into more than one address space.
+- `SYS_MMAP`/`SYS_MUNMAP` with anonymous, demand-zeroed mappings.
+- **Shared-memory objects:** `shm_create()` → a handle; multiple processes `mmap`
+  the same handle and share the **same physical pages**, reusing the page-refcount
+  machinery already built for COW (Phase 9).
 
-**Key files:** `vm.c` (shared mappings, device mapping, refcounts), new `shm.c`,
-`syscall.c` (`mmap`/`shm_create`), `fb.c` (expose the framebuffer for mapping).
+**Key files:** `vm.c` (shared/anonymous mappings, refcounts), new `shm.c`,
+`syscall.c`.
 
-**Done looks like:** a user program `mmap`s the framebuffer and draws a rectangle
-that appears on screen; two processes `mmap` one shm handle and one sees the
-other's writes.
+**Done looks like:** a program `mmap`s an anonymous region and uses it; two
+processes `mmap` one shm handle and one sees the other's writes.
 
-**Depends on:** 6b, 9 (refcounts), 12 (framebuffer), 15. **Size:** large.
+**Depends on:** 6b, 9 (refcounts), 15. **Size:** medium-large.
 
 ---
 
-## Phase 17 — IPC channel (message ports)
+## Phase 17 — Pipes
 
-**Why (for the WM):** the window protocol — *create surface, configure size,
-deliver input, commit a frame* — needs a real bidirectional, message-framed
-channel between the WM and each client, with the ability to pass a **shm handle**
-along with a message (so a client can hand the WM its buffer).
+**Why:** the first IPC primitive; enables shell pipelines like `ls | wc`, and
+establishes the blocking-fd pattern sockets will reuse.
 
 **Adds**
-- A **port/channel** abstraction: connect to a named server port; send/receive
-  discrete messages (datagram/SEQPACKET-style, not a raw byte stream); attach a
-  shared-memory handle to a message.
-- Blocking `recv` that wakes on arrival; non-blocking `poll`-style check so the
-  WM can service input *and* client messages in one loop.
-- (Pipes — `ls | cat` — fall out of the same buffering work and can be included.)
+- `SYS_PIPE` — create a pipe, return a read fd + a write fd.
+- A kernel **ring-buffer pipe object** behind the VFS `file` abstraction: `read`
+  blocks until data or all writers close; `write` blocks until space.
+- `SYS_DUP`/`dup2` for wiring fds. The shell parses `|` and connects a child's
+  stdout to the next child's stdin.
 
-**Key files:** new `ipc.c` (ports, message queues), `syscall.c`
-(`connect`/`send`/`recv`/`poll`), `sched.c` (block/wake), fd-table integration.
+**Key files:** new `pipe.c`, `vfs.c`, `syscall.c` (`pipe`/`dup`), `sched.c`
+(block/wake), `user/sh.c`.
 
-**Done looks like:** two processes exchange messages over a named port; a message
-carries an shm handle the receiver then maps and reads.
+**Done looks like:** `ls | wc` streams output through the pipe; a blocked reader
+wakes when the writer produces data.
 
-**Depends on:** 13, 16. **Size:** large.
+**Depends on:** 13 (and the fd table from 8). **Size:** medium.
 
 ---
 
 ## Phase 18 — Signals
 
-**Why (for the WM):** a terminal needs **Ctrl-C** to interrupt the foreground
-program, and the WM wants to ask a client to close. Asynchronous notification.
+**Why:** asynchronous notification and a real **Ctrl-C** to interrupt a running
+program — table-stakes for a usable shell.
 
 **Adds**
-- `SYS_KILL(pid, sig)`, a per-process pending mask, default actions, optional user
-  handlers delivered on the return-to-EL0 path; `SIGINT` from the console.
+- `SYS_KILL(pid, sig)`, a per-process pending mask, default actions (terminate),
+  optional user handlers (`sigaction`) delivered on the return-to-EL0 path via a
+  signal trampoline; console Ctrl-C → `SIGINT` to the foreground process.
 
-**Key files:** new `signal.c`, `sched.c`, `syscall.c`, `vectors.S`.
+**Key files:** new `signal.c`, `sched.c`, `syscall.c`, `vectors.S`, console.
 
 **Done looks like:** Ctrl-C kills a long-running program and returns to the shell;
 a handler-equipped program runs its handler.
 
 **Depends on:** 13. **Size:** medium-large (touches the trap-return path).
-*(Useful companion; can trail the memory/IPC work.)*
 
 ---
 
-## Phase 19 — virtio transport + virtio-input (mouse + keyboard)
+## Phase 19 — virtio transport + virtio-blk (block device)
 
-**Why (for the WM):** a window manager is nothing without a pointer and a
-keyboard. The `virt` board has no PS/2, so input comes from **virtio-input**,
-which requires building the generic **virtio-mmio + virtqueue** machinery first.
+**Why:** the gateway to everything off-board. Build the generic **virtio-mmio +
+virtqueue** machinery once; virtio-blk gives a real disk now, and virtio-net
+(Phase 21) reuses the same transport.
 
 **Adds**
 - Generic **virtio-mmio transport**: device probe, feature negotiation, a
   **virtqueue** (descriptor / available / used rings), notify + (IRQ or polled)
   completion.
-- A **virtio-input** driver bound twice: a **tablet** (absolute X/Y + buttons —
-  absolute coords skip pointer-acceleration math) and a **keyboard** (keycodes).
-- Decode the event stream into `(x, y, buttons)` and key up/down events.
+- A **virtio-blk** driver: read/write 512-byte sectors, backed by a QEMU `-drive`
+  image; a generic block-device abstraction the filesystem sits on.
 
-**Key files:** new `virtio.c` (transport + virtqueue), `virtio_input.c`, GIC
-wiring; `Makefile` (`-device virtio-tablet-device,-keyboard-device`).
+**Key files:** new `virtio.c` (transport + virtqueue), `virtio_blk.c`, `block.h`;
+`Makefile` (`-drive`).
 
-**Done looks like:** moving the host mouse / pressing keys over the QEMU window
-logs live pointer coordinates, button state, and keycodes in the kernel.
+**Done looks like:** read and write sectors to a disk image; bytes written in one
+run are readable in the next.
 
-**Depends on:** 3 (IRQs), 6 (MMIO). **Size:** large (the transport is the bulk;
-reused later for gpu/blk/net).
+**Depends on:** 3 (IRQs), 6 (MMIO). **Size:** large (new driver class; transport
+is reused for networking).
 
 ---
 
-## Phase 20 — Input delivery to user space
+## Phase 20 — On-disk filesystem (persistence)
 
-**Why (for the WM):** the WM (not the kernel) must interpret input — focus
-follows the pointer, keybindings drive tiling. So raw events flow to a user
-process.
+**Why:** turn the block device into real, persistent files mounted under the VFS —
+a defining trait of a capable OS.
 
 **Adds**
-- An **input event device** (e.g. read from an `/dev/input` fd, or a dedicated
-  `recv`): the focused/owning process reads a stream of `{type, code, value}`
-  events. Kernel just queues; user space gives them meaning.
-- Non-blocking/poll integration so the WM's single loop can wait on input *and*
-  IPC together.
+- A real filesystem as a VFS `fs_type` backed by the block device — either
+  **FAT32** (interoperable with your host) or a **simple custom inode FS**.
+  Format/mount/lookup/read/write/create.
 
-**Key files:** `virtio_input.c` (enqueue to a user-readable queue), new
-`evdev.c`, `syscall.c`/`ipc.c` (poll), VFS device node.
+**Key files:** new `fatfs.c` or `sfs.c`, VFS integration, a `mkfs` helper.
 
-**Done looks like:** a small user program reads pointer + key events and prints
-them — proving input reaches EL0.
+**Done looks like:** create a file from the shell, reboot QEMU, the file is still
+there.
 
-**Depends on:** 17 (poll), 19. **Size:** medium.
+**Depends on:** 7 (VFS), 19. **Size:** large.
 
 ---
 
-## Phase 21 — Display-server core (user space)
+## Phase 21 — virtio-net (NIC driver)
 
-**Why (for the WM):** the first genuinely user-space graphics — a program that
-**owns the screen**. It establishes the compositor loop everything else plugs
-into.
+**Why:** the hardware half of networking — get raw Ethernet frames in and out.
 
 **Adds**
-- A user program that `mmap`s the framebuffer (Phase 16), reads input (Phase 20),
-  and runs a **compositor loop** ~30–60×/s: draw a desktop background, a **mouse
-  cursor** sprite at the pointer, into an off-screen **back-buffer**, then copy to
-  the framebuffer (no flicker).
-- A user-space copy of the draw primitives + font (ported from Phase 12), or a
-  shared `libdraw`.
+- A **virtio-net** driver on the Phase-19 transport: RX/TX virtqueues, receive
+  frames into buffers, transmit frames, read the MAC address.
+- A small link-layer interface the IP stack binds to.
 
-**Key files:** new `user/wm/` (compositor main, back-buffer, cursor, libdraw),
-`user/user.ld`/Makefile for the new binary.
+**Key files:** new `virtio_net.c`, `netif.h`; `Makefile`
+(`-netdev user,... -device virtio-net-device,...`).
 
-**Done looks like:** a user-space program shows a desktop with a mouse cursor you
-can move — drawn entirely from EL0.
+**Done looks like:** the kernel receives and transmits Ethernet frames; logs
+inbound frames (e.g. ARP requests from QEMU's user-net gateway).
 
-**Depends on:** 16, 20. **Size:** large.
+**Depends on:** 19 (transport). **Size:** large.
 
 ---
 
-## Phase 22 — Window protocol + terminal client
+## Phase 22 — TCP/IP stack + sockets  ⟵ CAPSTONE
 
-**Why (for the WM):** turn the compositor into a real window system — clients
-create windows, render into shared buffers, and receive input. The first client
-is a **terminal** running the shell, so "the shell lives in a window."
+**Why:** the destination — the OS speaks to the network with a real protocol stack
+and a sockets API user programs can use.
 
 **Adds**
-- A minimal **window protocol** over the IPC channel (Phase 17): `connect`,
-  `create_surface`, `set_size`/`configure`, `attach(shm buffer)` + `commit`,
-  and inbound `pointer`/`key`/`focus`/`close` events. The compositor composites
-  each committed client buffer into its window rectangle.
-- A **terminal emulator** client: a character-cell grid sized to its window,
-  putchar/newline/backspace/scroll rendered with the font, drawing into its shm
-  buffer; it runs the Phase-10 shell with stdio bound to the terminal (writes →
-  cells, key events → shell stdin).
+- **Ethernet + ARP** (resolve IPs to MACs), **IPv4** (routing to QEMU's
+  gateway), **ICMP** (ping), **UDP**, and **TCP** (handshake, sequencing,
+  retransmit, basic windowing).
+- A **sockets API**: `socket`/`bind`/`connect`/`listen`/`accept`/`send`/`recv`/
+  `close`, integrated with the fd table (so `read`/`write`/`poll` work on
+  sockets); DHCP or a static IP for addressing.
+- A demo client (e.g. fetch a page over TCP) and/or a tiny server.
 
-**Key files:** new `user/libwin/` (protocol client lib), `user/term/` (terminal +
-shell glue), compositor-side protocol handling in `user/wm/`.
+**Key files:** new `net/` (`eth.c`, `arp.c`, `ip.c`, `icmp.c`, `udp.c`, `tcp.c`,
+`socket.c`), `syscall.c` (socket calls), fd-table integration.
 
-**Done looks like:** a window appears containing a working shell — type a command,
-see its output rendered in the window; closing the shell closes the window.
+**Done looks like:** `ping` from the guest reaches QEMU's gateway and replies; a
+user program opens a TCP connection and exchanges data with a host service.
 
-**Depends on:** 13, 17, 21. **Size:** large.
-
----
-
-## Phase 23 — i3-style tiling window manager  ⟵ THE GOAL
-
-**Why:** the destination — automatic tiling, keyboard-driven, multiple windows.
-
-**Adds**
-- A **tiling tree** of containers (horizontal/vertical splits); new windows tile
-  into the focused container; closing one re-flows the layout.
-- **Workspaces** (switch with `Mod+number`), **focus movement**
-  (`Mod+h/j/k/l`), **split direction** (`Mod+v`/`Mod+s`), **launch a terminal**
-  (`Mod+Enter`), **move window**, **fullscreen**, optional **floating** windows.
-- Window **borders** with focus highlight and a simple **status bar** (workspace
-  list + clock). Mouse for focus-follows-pointer and dragging a tile **border to
-  resize**.
-
-**Key files:** `user/wm/` (layout tree, workspaces, keybindings, bar), building on
-the compositor + protocol from 21–22.
-
-**Done looks like:** launch several terminals with `Mod+Enter`; they tile
-automatically; move focus and re-split with the keyboard; switch workspaces;
-resize a split by dragging its border — an i3-feeling WM, all in user space.
-
-**Depends on:** 22. **Size:** large.
+**Depends on:** 17 (blocking-fd pattern), 21. **Size:** very large (build it
+incrementally: ARP/IP/ICMP → UDP → TCP → sockets).
 
 ---
 
-## Deferred — parallel / not required for the WM
+## Later / advanced (capable-OS extensions, after the capstone)
 
-Kept so the ideas aren't lost; none are on the window-manager critical path.
+- **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
+  **spinlocks** replacing IRQ-masking critical sections, per-CPU run queues, IPIs.
+  *Very large* — locking touches everything, so best once the feature set is
+  stable. A strong "capable OS" eventually wants this.
+- **Users & permissions.** uid/gid, file permission bits, a `root` vs user
+  distinction — multi-user fundamentals.
+- **More syscalls / POSIX-ish polish.** `poll`/`select`, `fcntl`, working
+  directory, environment, richer `/proc`-style introspection.
 
-- **virtio-blk + on-disk filesystem (persistence).** A real disk via the
-  Phase-19 virtio transport, then a FAT32 / custom FS under the VFS so files
-  survive reboot. *Large.* Independent track.
-- **`virtio-gpu`.** A richer display than ramfb (dynamic resolution, multiple
-  outputs, hardware cursor, 2D accel) over virtqueues. The WM works fine on ramfb;
-  this is a later upgrade once virtio-gpu is worth it.
-- **Networking.** virtio-net + Ethernet/ARP/IP/UDP (+ maybe minimal TCP) and a
-  socket API. *Very large* stretch.
-- **SMP (multicore).** Secondary-core boot, spinlocks, per-CPU run queues, IPIs.
-  *Very large* — best once the feature set is stable, since locking touches
-  everything.
+---
+
+## Deferred — graphics (parked; revisit after the OS is capable)
+
+Your call to defer all graphics. Kept here so the plans aren't lost; none are on
+the current path.
+
+- **mmap-the-framebuffer to user space** — exposing the Phase-12 framebuffer to an
+  EL0 process (a sub-feature of mmap, skipped for now).
+- **Display server (user space)** — a process that owns the screen: desktop +
+  mouse cursor + back-buffer compositing.
+- **Window protocol + terminal client** — clients render into shared buffers; the
+  shell runs in a window.
+- **i3-style tiling window manager** — tiling tree, workspaces, keybindings,
+  borders, status bar.
+- **virtio-input (mouse + keyboard)** — needed for a cursor/GUI; reuses the
+  Phase-19 virtio transport.
+- **virtio-gpu** — a richer display than ramfb (dynamic resolution, hardware
+  cursor, 2D accel).
+
+(The previous user-space-WM roadmap is preserved in git history if you return to
+graphics later.)
 
 ---
 
 ## Notes on sequencing
 
-- **16 (mmap + shared memory) is the true linchpin.** A user-space compositor is
-  impossible without mapping the framebuffer to EL0 and sharing client buffers.
-  Build it carefully — it reuses the Phase-9 page refcounts.
-- **19 (virtio transport) is the other big rock.** It's large but pays off
-  repeatedly (input now; disk/net/gpu later).
-- **21→23 are where it visibly becomes a window manager.** Each is large, but each
-  is a demo you can *see*: cursor on a desktop → a shell in a window → tiled
-  workspaces.
-- **Signals (18) and pipes (in 17) are flexible in order** — useful companions,
-  not strict gates. Slot them where Ctrl-C / pipelines start to matter.
-- The path is long but every phase stands alone (spec → test-first plan → build →
-  notes, gated on `make test`) and leaves the OS working.
+- **13 is the keystone.** A real `exec`/`wait` underpins coreutils, pipes,
+  signals, and a useful shell.
+- **19 (virtio transport) is the big rock.** Large, but it unlocks both storage
+  *and* networking — build it carefully and reuse it.
+- **Storage (19→20) and networking (21→22) are independent** once the transport
+  exists. Persistent storage is the simpler first capstone; networking is the
+  ambitious one.
+- **22 (TCP/IP) is very large** — build it layer by layer (ARP/IP/ICMP first, then
+  UDP, then TCP, then sockets), each its own testable milestone.
+- Every phase stands alone (spec → test-first plan → build → notes, gated on
+  `make test`) and leaves the OS working.
