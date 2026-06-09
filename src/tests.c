@@ -33,6 +33,7 @@
 #include "socket.h"
 #include "tcp.h"
 #include "tcp_reasm.h"
+#include "tcp_rto.h"
 
 #define PAGE 0x1000UL
 
@@ -1674,6 +1675,41 @@ static void test_tcp_reasm_dup_and_out_of_window(void)
     KASSERT(tcp_reasm_read(&g_reasm, out, sizeof(out)) == 0);
 }
 
+// --- TCP RTO estimator (Phase 23.2, RFC 6298) ---
+static void test_tcp_rto_first_sample(void)
+{
+    struct tcp_rto e;
+    tcp_rto_init(&e);
+    KASSERT(tcp_rto_get(&e) == TCP_RTO_INIT);     // 1 s before any measurement
+
+    // First sample R: SRTT = R, RTTVAR = R/2, RTO = SRTT + 4*RTTVAR = 3R.
+    tcp_rto_sample(&e, 100000);                   // 100 ms
+    KASSERT(tcp_rto_get(&e) == 300000);           // 100ms + 4*50ms = 300 ms
+}
+
+static void test_tcp_rto_backoff_and_clamp(void)
+{
+    struct tcp_rto e;
+    tcp_rto_init(&e);
+    tcp_rto_sample(&e, 100000);                   // RTO = 300 ms
+    tcp_rto_backoff(&e);
+    KASSERT(tcp_rto_get(&e) == 600000);           // doubled
+    tcp_rto_backoff(&e);
+    KASSERT(tcp_rto_get(&e) == 1200000);          // doubled again
+    for (int i = 0; i < 40; i++) { tcp_rto_backoff(&e); }
+    KASSERT(tcp_rto_get(&e) == TCP_RTO_MAX);       // capped, never overflows
+
+    // A clean sample collapses the backoff back to the measured estimate.
+    tcp_rto_sample(&e, 100000);
+    KASSERT(tcp_rto_get(&e) < 1000000);
+
+    // A tiny RTT is floored at TCP_RTO_MIN, never zero.
+    struct tcp_rto f;
+    tcp_rto_init(&f);
+    tcp_rto_sample(&f, 1000);                      // 1 ms -> raw RTO 3 ms
+    KASSERT(tcp_rto_get(&f) == TCP_RTO_MIN);       // clamped up to the floor
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1782,6 +1818,8 @@ static const struct ktest tests[] = {
     { "tcp: reasm out-of-order fill",     test_tcp_reasm_out_of_order },
     { "tcp: reasm wraps seq space",       test_tcp_reasm_wraps },
     { "tcp: reasm dup + out-of-window",   test_tcp_reasm_dup_and_out_of_window },
+    { "tcp: rto first sample (RFC6298)",  test_tcp_rto_first_sample },
+    { "tcp: rto backoff + clamp",         test_tcp_rto_backoff_and_clamp },
 };
 
 int run_self_tests(void)

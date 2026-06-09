@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include "tcp.h"
 #include "tcp_reasm.h"
+#include "tcp_rto.h"
 #include "net.h"
 #include "sched.h"
 #include "timer.h"
@@ -46,6 +47,16 @@ struct tcp_conn {
     uint32_t fin_seq;           // ...at this sequence number (consumed when in order)
     int      peer_fin;          // FIN now in order -> EOF once the ring drains
     int      reset;             // peer sent RST
+
+    // Retransmission (Phase 23.2). The single outstanding segment is kept here --
+    // a copy, so the caller's buffer isn't pinned during the send -- and resent
+    // after an adaptive RTO with exponential backoff.
+    struct tcp_rto rto;         // RFC 6298 round-trip-time / timeout estimator
+    uint8_t  sndbuf[TCP_MSS];   // bytes of the in-flight segment (for retransmit)
+    int      sndlen;            // its length
+    uint32_t sndseq;            // its starting sequence number
+    uint64_t snd_time;          // when it was first transmitted (for RTT sampling)
+    int      snd_retx;          // was it retransmitted? (Karn: then don't sample RTT)
 };
 
 static struct tcp_conn conns[NCONN];
@@ -201,6 +212,8 @@ struct tcp_conn *tcp_new(void)
             c->used = 1; c->state = CLOSED;
             c->rxhead = c->rxtail = 0; c->peer_fin = 0; c->reset = 0;
             c->have_fin = 0; c->fin_seq = 0;
+            c->sndlen = 0; c->snd_retx = 0;
+            tcp_rto_init(&c->rto);
             return c;
         }
     }
@@ -221,13 +234,21 @@ int tcp_connect(struct tcp_conn *c, uint32_t ip, uint16_t port)
     c->snd_nxt = isn + 1;                  // SYN consumes one sequence number
 
     uint64_t start = timer_now_us(), last_tx = start;
+    int retx = 0;                          // Karn: was the SYN ever resent?
     while (timer_now_us() - start < 5000000) {     // 5 s
         net_pump();
-        if (c->state == ESTABLISHED) { return 0; }
+        if (c->state == ESTABLISHED) {
+            // Seed the RTT estimator from the handshake, but only if the SYN was
+            // not retransmitted (otherwise the sample is ambiguous -- Karn).
+            if (!retx) { tcp_rto_sample(&c->rto, (int32_t)(timer_now_us() - start)); }
+            return 0;
+        }
         if (c->reset) { return -1; }
         if (tcp_interrupted()) { return -1; }
-        if (timer_now_us() - last_tx > 500000) {   // retransmit the SYN
-            tcp_xmit_seq(c, SYN, isn, 0, 0);
+        if (timer_now_us() - last_tx > (uint64_t)tcp_rto_get(&c->rto)) {
+            tcp_xmit_seq(c, SYN, isn, 0, 0);    // retransmit the SYN
+            tcp_rto_backoff(&c->rto);           // exponential backoff
+            retx = 1;
             last_tx = timer_now_us();
         }
         net_wait(20);
@@ -239,20 +260,37 @@ int tcp_send(struct tcp_conn *c, const void *buf, int len)
 {
     if (!c || c->state != ESTABLISHED) { return -1; }
     if (len > TCP_MSS) { len = TCP_MSS; }
-    const uint8_t *data = buf;
 
-    uint32_t seq = c->snd_nxt;
-    tcp_xmit_seq(c, PSH | ACK, seq, data, len);
-    c->snd_nxt = seq + (uint32_t)len;
+    // Copy into the connection's retransmit buffer so we can resend without the
+    // caller keeping `buf` alive, then transmit the segment once.
+    const uint8_t *src = buf;
+    for (int i = 0; i < len; i++) { c->sndbuf[i] = src[i]; }
+    c->sndlen = len;
+    c->sndseq = c->snd_nxt;
+    c->snd_retx = 0;
 
-    uint64_t start = timer_now_us(), last_tx = start;
+    tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, len);
+    c->snd_nxt = c->sndseq + (uint32_t)len;
+    c->snd_time = timer_now_us();
+
+    uint64_t start = c->snd_time, last_tx = start;
     while (timer_now_us() - start < 5000000) {
         net_pump();
-        if (seq_ge(c->snd_una, c->snd_nxt)) { return len; }   // fully acked
+        if (seq_ge(c->snd_una, c->snd_nxt)) {                 // fully acked
+            // Karn's algorithm: only feed the estimator a round-trip time when
+            // the acked segment was never retransmitted (otherwise we can't tell
+            // which transmission the ACK answered).
+            if (!c->snd_retx) {
+                tcp_rto_sample(&c->rto, (int32_t)(timer_now_us() - c->snd_time));
+            }
+            return len;
+        }
         if (c->reset) { return -1; }
         if (tcp_interrupted()) { return -1; }
-        if (timer_now_us() - last_tx > 500000) {              // retransmit
-            tcp_xmit_seq(c, PSH | ACK, seq, data, len);
+        if (timer_now_us() - last_tx > (uint64_t)tcp_rto_get(&c->rto)) {  // retransmit
+            tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, c->sndlen);
+            c->snd_retx = 1;
+            tcp_rto_backoff(&c->rto);                         // exponential backoff
             last_tx = timer_now_us();
         }
         net_wait(20);

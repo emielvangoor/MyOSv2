@@ -50,3 +50,45 @@ live ESTABLISHED connection (ports, ISNs, a peer). Rather than pollute the
 production API with a test seam, the *algorithm* — the part with real edge cases
 — lives in `tcp_reasm` and is exhaustively unit-tested; the `tcp_input` wiring is
 a thin, reviewed adapter verified end-to-end by the `http` demo.
+
+---
+
+## 23.2 — Real retransmission (RTO estimation + Karn + backoff)
+
+**The gap it closed.** Phase 22 resent the in-flight segment on a *fixed* 500 ms
+timer and pinned the caller's buffer for the duration. A fixed timer is wrong on
+both ends: too eager on a slow path (spurious resends), too patient on a fast one
+(a real loss stalls for half a second). And there was no round-trip learning at
+all.
+
+**The design — an RTO estimator (`src/tcp_rto.{h,c}`).** Another pure module:
+feed it round-trip-time measurements, read back a retransmission timeout.
+
+- RFC 6298 smoothing, in microseconds: first sample seeds `SRTT = R`,
+  `RTTVAR = R/2`; later samples use `RTTVAR = 3/4 RTTVAR + 1/4 |SRTT−R|` then
+  `SRTT = 7/8 SRTT + 1/8 R` (the standard shift forms). `RTO = SRTT + 4·RTTVAR`.
+- Clamped to `[200 ms, 60 s]`. RFC mandates a 1 s floor; we relax it to 200 ms
+  (a common real-world value, e.g. Linux) so the client stays responsive on
+  QEMU's sub-millisecond LAN. Initial RTO before any sample is 1 s.
+- `tcp_rto_backoff()` doubles the RTO on each timeout (capped, overflow-guarded).
+
+**Karn's algorithm** lives in the caller and has two halves: (1) never sample an
+RTT from a segment that was retransmitted — the ACK is ambiguous; (2) on timeout,
+back off instead. A clean later sample collapses the backed-off RTO back to the
+measured estimate.
+
+**Wiring into `tcp.c`.** Each connection now owns a `struct tcp_rto`. The single
+outstanding segment is copied into the connection (`sndbuf`/`sndlen`/`sndseq`),
+so the caller's buffer is no longer pinned. `tcp_send` and `tcp_connect` resend
+after `tcp_rto_get()` rather than a constant, sample the RTT on a clean ACK (and
+seed from the SYN/SYN-ACK), set `snd_retx` to suppress sampling once resent, and
+`tcp_rto_backoff()` on each timeout.
+
+**Scope note.** With the current model there is at most one segment in flight, so
+the "retransmit queue" is that one segment. True pipelined multi-segment
+retransmission arrives alongside the send-window rework in congestion control
+(23.6).
+
+**Tests.** `tcp: rto first sample (RFC6298)`, `tcp: rto backoff + clamp` (doubling,
+the 60 s cap with no overflow, the floor, and backoff collapse). End-to-end:
+`/bin/http` still fetches example.com (200 OK, 797 bytes).

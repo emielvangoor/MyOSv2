@@ -43,7 +43,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
 - **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum
   + next-hop routing), **ICMP** echo, **UDP**, and a minimal **TCP** client with
   **out-of-order reassembly** (a dropped/reordered segment no longer discards the
-  rest of the stream).
+  rest of the stream) and **adaptive retransmission** (RFC 6298 RTO estimation,
+  Karn's algorithm, exponential backoff).
 - **Sockets** — a BSD-style socket API: `socket`/`bind`/`sendto`/`recvfrom` for
   UDP datagrams, and `socket(SOCK_STREAM)`/`connect` + `read`/`write` for TCP.
   `/bin/dnsq` does a DNS lookup over UDP sockets; `/bin/http` fetches a page over
