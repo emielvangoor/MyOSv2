@@ -1710,6 +1710,24 @@ static void test_tcp_rto_backoff_and_clamp(void)
     KASSERT(tcp_rto_get(&f) == TCP_RTO_MIN);       // clamped up to the floor
 }
 
+// --- TCP flow-control window arithmetic (Phase 23.3) ---
+static void test_tcp_flow_windows(void)
+{
+    // Advertised window = free space, capped to the reassembly buffer and the
+    // 16-bit field; never negative.
+    KASSERT(tcp_advertise_wnd(1000) == 1000);
+    KASSERT(tcp_advertise_wnd(0) == 0);
+    KASSERT(tcp_advertise_wnd(-5) == 0);
+    KASSERT(tcp_advertise_wnd(100000) == TCP_REASM_WIN);   // capped to buffer
+
+    // Sendable bytes = room left in the peer's window beyond what's in flight,
+    // capped at the MSS.
+    KASSERT(tcp_window_avail(100, 100, 500, 1400) == 500);  // nothing in flight
+    KASSERT(tcp_window_avail(100, 600, 500, 1400) == 0);    // window full
+    KASSERT(tcp_window_avail(100, 100, 5000, 1400) == 1400);// MSS-capped
+    KASSERT(tcp_window_avail(100, 300, 500, 1400) == 300);  // 200 in flight, 300 left
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1820,6 +1838,7 @@ static const struct ktest tests[] = {
     { "tcp: reasm dup + out-of-window",   test_tcp_reasm_dup_and_out_of_window },
     { "tcp: rto first sample (RFC6298)",  test_tcp_rto_first_sample },
     { "tcp: rto backoff + clamp",         test_tcp_rto_backoff_and_clamp },
+    { "tcp: flow-control windows",        test_tcp_flow_windows },
 };
 
 int run_self_tests(void)

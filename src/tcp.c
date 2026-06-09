@@ -29,8 +29,7 @@ enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT };
 
 #define NCONN     4
 #define TCP_RXBUF 16384
-#define TCP_MSS   1400
-#define TCP_WIN   8192          // advertised receive window (<= ring capacity)
+#define TCP_MSS   1400          // largest payload we put in one segment
 
 struct tcp_conn {
     int      used;
@@ -40,6 +39,8 @@ struct tcp_conn {
     uint32_t snd_nxt;           // next sequence number to send
     uint32_t snd_una;           // oldest unacknowledged sequence number
     uint32_t rcv_nxt;           // next sequence number expected from the peer
+    uint16_t snd_wnd;           // peer's advertised receive window (flow control)
+    uint16_t last_adv;          // the receive window we last advertised to the peer
     uint8_t  rx[TCP_RXBUF];     // received-data ring (in-order bytes, app-visible)
     int      rxhead, rxtail;
     struct tcp_reasm reasm;     // holds out-of-order segments until the gap fills
@@ -105,6 +106,34 @@ uint16_t tcp_checksum(uint32_t sip, uint32_t dip, const uint8_t *seg, int len)
     return (uint16_t)(~sum);
 }
 
+// ---- flow control: advertised-window arithmetic (Phase 23.3) ----
+uint16_t tcp_advertise_wnd(int free_bytes)
+{
+    if (free_bytes < 0) { free_bytes = 0; }
+    // Never promise more than we can buffer ahead of rcv_nxt, nor more than the
+    // 16-bit window field can hold.
+    if (free_bytes > TCP_REASM_WIN) { free_bytes = TCP_REASM_WIN; }
+    if (free_bytes > 65535) { free_bytes = 65535; }
+    return (uint16_t)free_bytes;
+}
+
+int tcp_window_avail(uint32_t snd_una, uint32_t snd_nxt, uint16_t peer_wnd, int mss)
+{
+    int32_t inflight = (int32_t)(snd_nxt - snd_una);    // bytes sent, not yet acked
+    int32_t usable   = (int32_t)peer_wnd - inflight;    // room left in the window
+    if (usable < 0) { usable = 0; }
+    if (usable > mss) { usable = mss; }
+    return usable;
+}
+
+// Bytes currently free in the receive ring (one slot is kept empty to tell full
+// from empty), which is what we advertise to the peer.
+static int ring_free(struct tcp_conn *c)
+{
+    int used = (c->rxhead - c->rxtail + TCP_RXBUF) % TCP_RXBUF;
+    return TCP_RXBUF - 1 - used;
+}
+
 // ---- transmit one segment (header + optional data) ----
 static void tcp_xmit_seq(struct tcp_conn *c, uint8_t flags, uint32_t seq,
                          const uint8_t *data, int dlen)
@@ -116,7 +145,13 @@ static void tcp_xmit_seq(struct tcp_conn *c, uint8_t flags, uint32_t seq,
     put32(seg + 8, c->rcv_nxt);
     seg[12] = 5 << 4;                      // data offset = 5 words (20 bytes)
     seg[13] = flags;
-    put16(seg + 14, TCP_WIN);
+    // Advertise our actual free receive-buffer space (flow control): as the app
+    // falls behind and the ring fills, this shrinks and throttles the peer; as it
+    // drains, it grows again. Remember what we advertised so tcp_recv knows when a
+    // window update is worth sending.
+    uint16_t adv = tcp_advertise_wnd(ring_free(c));
+    c->last_adv = adv;
+    put16(seg + 14, adv);
     put16(seg + 16, 0);                    // checksum (filled below)
     put16(seg + 18, 0);                    // urgent pointer
     for (int i = 0; i < dlen; i++) { seg[20 + i] = data[i]; }
@@ -146,6 +181,7 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
     uint32_t ack   = get32(seg + 8);
     int doff = (seg[12] >> 4) * 4;
     uint8_t flags = seg[13];
+    uint16_t wnd  = get16(seg + 14);       // peer's advertised receive window
     if (doff < 20 || doff > len) { return; }
     const uint8_t *data = seg + doff;
     int dlen = len - doff;
@@ -163,6 +199,7 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
         if ((flags & SYN) && (flags & ACK) && ack == c->snd_nxt) {
             c->rcv_nxt = seq + 1;          // peer's ISN + 1
             c->snd_una = ack;
+            c->snd_wnd = wnd;              // peer's initial receive window
             c->state = ESTABLISHED;
             tcp_reasm_init(&c->reasm, c->rcv_nxt);   // start reassembly from here
             tcp_xmit(c, ACK, 0, 0);        // finish the handshake
@@ -172,6 +209,7 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
 
     if (c->state == ESTABLISHED || c->state == FIN_WAIT) {
         if ((flags & ACK) && seq_gt(ack, c->snd_una)) { c->snd_una = ack; }
+        c->snd_wnd = wnd;                  // track the peer's latest window update
 
         // Hand the payload to the reassembly queue (it ignores anything outside
         // the window), then drain whatever is now contiguous into the app-visible
@@ -213,6 +251,7 @@ struct tcp_conn *tcp_new(void)
             c->rxhead = c->rxtail = 0; c->peer_fin = 0; c->reset = 0;
             c->have_fin = 0; c->fin_seq = 0;
             c->sndlen = 0; c->snd_retx = 0;
+            c->snd_wnd = 0; c->last_adv = 0;
             tcp_rto_init(&c->rto);
             return c;
         }
@@ -261,16 +300,35 @@ int tcp_send(struct tcp_conn *c, const void *buf, int len)
     if (!c || c->state != ESTABLISHED) { return -1; }
     if (len > TCP_MSS) { len = TCP_MSS; }
 
+    // Flow control: never send past the peer's advertised window. While it is
+    // closed (zero window), wait, probing periodically with a bare ACK so we
+    // still hear the window-update even if one was lost (a light persist timer).
+    uint64_t pstart = timer_now_us(), plast = pstart;
+    while (tcp_window_avail(c->snd_una, c->snd_nxt, c->snd_wnd, len) == 0) {
+        if (c->reset) { return -1; }
+        if (tcp_interrupted()) { return -1; }
+        if (timer_now_us() - pstart > 5000000) { return 0; }   // best effort: give up
+        net_pump();
+        if (timer_now_us() - plast > (uint64_t)tcp_rto_get(&c->rto)) {
+            tcp_xmit(c, ACK, 0, 0);        // window probe (also re-advertises ours)
+            plast = timer_now_us();
+        }
+        net_wait(20);
+    }
+    // Send only as much as the window allows right now (<= len <= MSS). The caller
+    // gets the count and resends the remainder; larger writes are split in 23.8.
+    int n = tcp_window_avail(c->snd_una, c->snd_nxt, c->snd_wnd, len);
+
     // Copy into the connection's retransmit buffer so we can resend without the
     // caller keeping `buf` alive, then transmit the segment once.
     const uint8_t *src = buf;
-    for (int i = 0; i < len; i++) { c->sndbuf[i] = src[i]; }
-    c->sndlen = len;
+    for (int i = 0; i < n; i++) { c->sndbuf[i] = src[i]; }
+    c->sndlen = n;
     c->sndseq = c->snd_nxt;
     c->snd_retx = 0;
 
-    tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, len);
-    c->snd_nxt = c->sndseq + (uint32_t)len;
+    tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, n);
+    c->snd_nxt = c->sndseq + (uint32_t)n;
     c->snd_time = timer_now_us();
 
     uint64_t start = c->snd_time, last_tx = start;
@@ -283,7 +341,7 @@ int tcp_send(struct tcp_conn *c, const void *buf, int len)
             if (!c->snd_retx) {
                 tcp_rto_sample(&c->rto, (int32_t)(timer_now_us() - c->snd_time));
             }
-            return len;
+            return n;
         }
         if (c->reset) { return -1; }
         if (tcp_interrupted()) { return -1; }
@@ -295,7 +353,7 @@ int tcp_send(struct tcp_conn *c, const void *buf, int len)
         }
         net_wait(20);
     }
-    return len;                            // best effort: assume delivered
+    return n;                              // best effort: assume delivered
 }
 
 int tcp_recv(struct tcp_conn *c, void *buf, int len)
@@ -307,7 +365,18 @@ int tcp_recv(struct tcp_conn *c, void *buf, int len)
         if (tcp_interrupted()) { return -1; }
         net_wait(20);
     }
-    if (!ring_empty(c)) { return ring_pop(c, buf, len); }
+    if (!ring_empty(c)) {
+        int got = ring_pop(c, buf, len);
+        // Window update: draining the ring frees receive space. If our window can
+        // now grow by at least an MSS over what we last told the peer, send a bare
+        // ACK so it learns it may resume -- without this the peer could stay
+        // throttled against a stale, smaller window (silly-window avoidance).
+        if (c->state == ESTABLISHED &&
+            tcp_advertise_wnd(ring_free(c)) >= c->last_adv + TCP_MSS) {
+            tcp_xmit(c, ACK, 0, 0);
+        }
+        return got;
+    }
     if (c->reset) { return -1; }
     return 0;                              // peer closed, ring drained -> EOF
 }

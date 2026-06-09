@@ -92,3 +92,38 @@ retransmission arrives alongside the send-window rework in congestion control
 **Tests.** `tcp: rto first sample (RFC6298)`, `tcp: rto backoff + clamp` (doubling,
 the 60 s cap with no overflow, the floor, and backoff collapse). End-to-end:
 `/bin/http` still fetches example.com (200 OK, 797 bytes).
+
+---
+
+## 23.3 — Flow control (advertised windows)
+
+**The gap it closed.** Phase 22 advertised a fixed 8 KiB window regardless of how
+full the receive buffer actually was, and ignored the peer's window entirely
+(safe only because it never had more than one segment in flight). A real receiver
+must slow the sender down when its buffer fills, and a real sender must never
+overrun the receiver's.
+
+**The window arithmetic (pure, exposed for tests).**
+- `tcp_advertise_wnd(free_bytes)` — the window to advertise: free receive-buffer
+  space, capped to what we can buffer ahead (`TCP_REASM_WIN`) and the 16-bit field.
+- `tcp_window_avail(snd_una, snd_nxt, peer_wnd, mss)` — how many new bytes we may
+  send: room left in the peer's window beyond what's in flight, capped at the MSS.
+
+**Receive side.** Every outgoing segment now carries `tcp_advertise_wnd(ring_free)`
+instead of a constant, and the connection remembers it in `last_adv`. When the app
+drains the ring (`tcp_recv`), if our advertisable window has grown by at least an
+MSS over `last_adv`, we send a bare ACK as a **window update** — silly-window
+avoidance, so a stale small window doesn't keep the peer throttled.
+
+**Send side.** The connection tracks the peer's `snd_wnd` from every segment's
+window field (seeded at the SYN-ACK). `tcp_send` sends only `tcp_window_avail(...)`
+bytes; while the window is closed it waits, probing periodically with a bare ACK
+(a light zero-window persist) until it reopens.
+
+**Scope note.** Single segment in flight still, so honoring the window rarely
+bites in the demo (servers offer tens of KiB); the machinery is what matters, and
+it composes with the pipelining added in 23.6/23.8. Window *scaling* (RFC 7323)
+is still out.
+
+**Tests.** `tcp: flow-control windows` (advertise cap/floor; sendable vs in-flight
+and MSS). End-to-end: `/bin/http` still fetches example.com (200 OK, 797 bytes).

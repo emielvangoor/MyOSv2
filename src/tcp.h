@@ -4,9 +4,11 @@
 // Just enough TCP to be a client on a reliable path (QEMU user-net): a 3-way
 // handshake, cumulative ACKs, and a FIN close. Out-of-order segments are
 // reassembled (tcp_reasm.h) so a dropped packet no longer discards the rest of
-// the stream, and the single outstanding segment is retransmitted on an adaptive
-// RTO (RFC 6298, tcp_rto.h) with Karn's algorithm + exponential backoff. No
-// window scaling yet -- a corner a real stack handles but a one-page client skips.
+// the stream; the single outstanding segment is retransmitted on an adaptive RTO
+// (RFC 6298, tcp_rto.h) with Karn's algorithm + exponential backoff; and flow
+// control is honored both ways -- we never send past the peer's advertised window
+// and advertise our own from real receive-buffer space. No window scaling yet --
+// a corner a real stack handles but a one-page client skips.
 #pragma once
 #include <stdint.h>
 
@@ -23,3 +25,13 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len);
 
 // The TCP checksum over the IPv4 pseudo-header + segment (exposed for tests).
 uint16_t tcp_checksum(uint32_t sip, uint32_t dip, const uint8_t *seg, int len);
+
+// --- Flow-control window arithmetic (Phase 23.3; exposed for tests) ---
+// tcp_advertise_wnd: the receive window to advertise to the peer given how many
+// bytes of receive-buffer space are currently free -- capped to what we can
+// actually buffer ahead and to the 16-bit window field.
+uint16_t tcp_advertise_wnd(int free_bytes);
+// tcp_window_avail: how many new bytes we may transmit given the oldest unacked
+// sequence number, the next send sequence number, the peer's advertised window,
+// and the MSS. Zero means the window is closed (don't send / probe instead).
+int tcp_window_avail(uint32_t snd_una, uint32_t snd_nxt, uint16_t peer_wnd, int mss);
