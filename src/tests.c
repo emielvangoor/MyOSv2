@@ -34,6 +34,7 @@
 #include "tcp.h"
 #include "tcp_reasm.h"
 #include "tcp_rto.h"
+#include "tcp_cc.h"
 #include "poll.h"
 
 #define PAGE 0x1000UL
@@ -1729,6 +1730,49 @@ static void test_tcp_flow_windows(void)
     KASSERT(tcp_window_avail(100, 300, 500, 1400) == 300);  // 200 in flight, 300 left
 }
 
+// --- TCP congestion control (Phase 23.6, Reno) ---
+static void test_tcp_cc_slow_start(void)
+{
+    struct tcp_cc cc;
+    tcp_cc_init(&cc, 1000);
+    KASSERT(tcp_cc_cwnd(&cc) == 4000);            // initial window = 4*mss
+
+    // Slow start: each ACK adds one MSS (exponential growth per RTT).
+    tcp_cc_on_ack(&cc, 1000);
+    KASSERT(tcp_cc_cwnd(&cc) == 5000);
+    tcp_cc_on_ack(&cc, 1000);
+    KASSERT(tcp_cc_cwnd(&cc) == 6000);
+}
+
+static void test_tcp_cc_avoidance_and_loss(void)
+{
+    struct tcp_cc cc;
+    tcp_cc_init(&cc, 1000);
+
+    // Force congestion avoidance by lowering ssthresh below cwnd: each ACK then
+    // adds only ~mss*mss/cwnd (here 1000*1000/4000 = 250), not a whole MSS.
+    cc.ssthresh = 2000;
+    tcp_cc_on_ack(&cc, 1000);
+    KASSERT(tcp_cc_cwnd(&cc) == 4250);
+
+    // Three duplicate ACKs -> fast retransmit signalled on the third; ssthresh
+    // halves the window (4250/2 = 2125) and cwnd = ssthresh + 3*mss (recovery).
+    KASSERT(tcp_cc_on_dupack(&cc, 1000) == 0);
+    KASSERT(tcp_cc_on_dupack(&cc, 1000) == 0);
+    KASSERT(tcp_cc_on_dupack(&cc, 1000) == 1);     // the 3rd triggers retransmit
+    KASSERT(cc.ssthresh == 2125);
+    KASSERT(tcp_cc_cwnd(&cc) == 2125 + 3000);
+
+    // A new ACK ends recovery: cwnd deflates back to ssthresh.
+    tcp_cc_on_ack(&cc, 1000);
+    KASSERT(tcp_cc_cwnd(&cc) == 2125);
+
+    // A timeout is severe: cwnd collapses to one MSS, ssthresh halves again.
+    tcp_cc_on_timeout(&cc, 1000);
+    KASSERT(tcp_cc_cwnd(&cc) == 1000);
+    KASSERT(cc.ssthresh == 2000);                  // max(2125/2=1062, 2*mss=2000)
+}
+
 // --- poll() readiness scan (Phase 23.5), exercised over pipes ---
 static void test_poll_pipe_readiness(void)
 {
@@ -1843,6 +1887,8 @@ static const struct ktest tests[] = {
     { "pipe: ring buffer wraps",          test_pipe_wraps },
     { "pipe: reader blocks, not spins",   test_pipe_read_blocks_not_spins },
     { "poll: pipe readiness scan",        test_poll_pipe_readiness },
+    { "tcp: cc slow start",               test_tcp_cc_slow_start },
+    { "tcp: cc avoidance + loss",         test_tcp_cc_avoidance_and_loss },
     { "file: refcount dup/close",         test_file_refcount },
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },

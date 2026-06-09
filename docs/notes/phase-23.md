@@ -211,3 +211,38 @@ only, so `make test` never tries to bind host port 8080.
 non-blocking-fd flag (`fcntl`/`O_NONBLOCK`), `getsockname`/`getpeername`,
 `setsockopt`, and `recv`/`send` flags — all straightforward additions on this
 foundation, left for later.
+
+---
+
+## 23.6 — Congestion control (Reno)
+
+**The gap it closed.** Flow control (23.3) stops a sender overrunning the
+*receiver*. Nothing stopped it overrunning the *network* — the routers/links in
+between, which advertise no window. Reno infers the path's capacity from ACKs and
+losses and keeps a second limit on in-flight data, the congestion window `cwnd`.
+
+**The control law (`src/tcp_cc.{h,c}`).** A pure module, fully unit-tested:
+- **Slow start** (cwnd < ssthresh): +1 MSS per ACK — exponential per round-trip.
+- **Congestion avoidance** (cwnd ≥ ssthresh): +mss²/cwnd per ACK — ~+1 MSS/RTT.
+- **Triple duplicate ACK** → fast retransmit: ssthresh = max(cwnd/2, 2·MSS),
+  cwnd = ssthresh + 3·MSS (fast recovery); each further dupack inflates cwnd; the
+  next new ACK deflates back to ssthresh and exits recovery.
+- **Timeout** (severe): ssthresh = max(cwnd/2, 2·MSS), cwnd = 1 MSS — slow-start
+  again.
+
+**Wiring into `tcp.c`.** Each connection owns a `tcp_cc`. A new cumulative ACK
+calls `tcp_cc_on_ack` (grow); a pure duplicate ACK (same ack+window, no data,
+data still in flight) calls `tcp_cc_on_dupack` and fast-retransmits the
+outstanding segment on the third; a data-segment timeout calls
+`tcp_cc_on_timeout`. The send is now bounded by **both** windows:
+`n = min(peer_window_room, cwnd − inflight, len)`.
+
+**Tests.** `tcp: cc slow start`, `tcp: cc avoidance + loss` (the CA increment, the
+3-dupack fast-retransmit signal with exact ssthresh/cwnd, recovery deflate, and
+the timeout collapse). End-to-end: `/bin/http` still fetches example.com (200 OK).
+
+**Scope note (honest).** With the current one-segment-in-flight send path, cwnd
+rarely *binds* (we never have more than an MSS outstanding) and duplicate ACKs
+don't naturally arise, so fast-retransmit is dormant — but slow-start/avoidance
+*are* exercised by every real transfer, and the whole control law is verified by
+unit tests. cwnd becomes load-bearing once sends pipeline (23.8).

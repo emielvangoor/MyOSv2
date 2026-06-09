@@ -7,8 +7,9 @@
 // the stream; the single outstanding segment is retransmitted on an adaptive RTO
 // (RFC 6298, tcp_rto.h) with Karn's algorithm + exponential backoff; and flow
 // control is honored both ways -- we never send past the peer's advertised window
-// and advertise our own from real receive-buffer space. No window scaling yet --
-// a corner a real stack handles but a one-page client skips.
+// and advertise our own from real receive-buffer space -- and Reno congestion
+// control (tcp_cc.h) bounds in-flight data by a congestion window. No window
+// scaling yet -- a corner a real stack handles but a one-page client skips.
 #pragma once
 #include <stdint.h>
 

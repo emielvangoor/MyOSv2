@@ -14,6 +14,7 @@
 #include "tcp.h"
 #include "tcp_reasm.h"
 #include "tcp_rto.h"
+#include "tcp_cc.h"
 #include "net.h"
 #include "sched.h"
 #include "timer.h"
@@ -54,6 +55,7 @@ struct tcp_conn {
     // a copy, so the caller's buffer isn't pinned during the send -- and resent
     // after an adaptive RTO with exponential backoff.
     struct tcp_rto rto;         // RFC 6298 round-trip-time / timeout estimator
+    struct tcp_cc  cc;          // Reno congestion control (cwnd / ssthresh)
     uint8_t  sndbuf[TCP_MSS];   // bytes of the in-flight segment (for retransmit)
     int      sndlen;            // its length
     uint32_t sndseq;            // its starting sequence number
@@ -252,7 +254,21 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
     }
 
     if (c->state == ESTABLISHED || c->state == FIN_WAIT) {
-        if ((flags & ACK) && seq_gt(ack, c->snd_una)) { c->snd_una = ack; }
+        if (flags & ACK) {
+            if (seq_gt(ack, c->snd_una)) {
+                c->snd_una = ack;
+                tcp_cc_on_ack(&c->cc, TCP_MSS);          // new data acked -> grow cwnd
+            } else if (ack == c->snd_una && dlen == 0 && !(flags & (SYN | FIN)) &&
+                       wnd == c->snd_wnd && c->snd_una != c->snd_nxt) {
+                // A pure duplicate ACK (same ack + window, no data, data still in
+                // flight): the network is reordering or dropped a segment. The 3rd
+                // such ACK triggers a fast retransmit without a full timeout.
+                if (tcp_cc_on_dupack(&c->cc, TCP_MSS)) {
+                    tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, c->sndlen);
+                    c->snd_retx = 1;
+                }
+            }
+        }
         c->snd_wnd = wnd;                  // track the peer's latest window update
 
         // Hand the payload to the reassembly queue (it ignores anything outside
@@ -298,6 +314,7 @@ struct tcp_conn *tcp_new(void)
             c->snd_wnd = 0; c->last_adv = 0;
             c->accepted = 0;
             tcp_rto_init(&c->rto);
+            tcp_cc_init(&c->cc, TCP_MSS);
             return c;
         }
     }
@@ -391,9 +408,15 @@ int tcp_send(struct tcp_conn *c, const void *buf, int len)
         }
         net_wait(20);
     }
-    // Send only as much as the window allows right now (<= len <= MSS). The caller
-    // gets the count and resends the remainder; larger writes are split in 23.8.
+    // Send only as much as BOTH windows allow right now (<= len <= MSS): the peer's
+    // advertised window (flow control) and the congestion window (don't overrun the
+    // network). The caller gets the count and resends the remainder; larger writes
+    // are split in 23.8.
     int n = tcp_window_avail(c->snd_una, c->snd_nxt, c->snd_wnd, len);
+    int32_t inflight  = (int32_t)(c->snd_nxt - c->snd_una);
+    int32_t cwnd_room = (int32_t)tcp_cc_cwnd(&c->cc) - inflight;
+    if (cwnd_room < 0) { cwnd_room = 0; }
+    if (cwnd_room < n) { n = cwnd_room; }
 
     // Copy into the connection's retransmit buffer so we can resend without the
     // caller keeping `buf` alive, then transmit the segment once.
@@ -425,6 +448,7 @@ int tcp_send(struct tcp_conn *c, const void *buf, int len)
             tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, c->sndlen);
             c->snd_retx = 1;
             tcp_rto_backoff(&c->rto);                         // exponential backoff
+            tcp_cc_on_timeout(&c->cc, TCP_MSS);              // a timeout collapses cwnd
             last_tx = timer_now_us();
         }
         net_wait(20);
