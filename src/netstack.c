@@ -58,7 +58,11 @@ uint16_t inet_csum(const void *buf, int len)
 
 // ---- stack state ----
 
-static uint8_t our_mac[6];
+static uint8_t  our_mac[6];
+static uint32_t our_ip = IP_OURS;       // runtime IP (DHCP may replace it; see net_dhcp)
+
+uint32_t net_our_ip(void) { return our_ip; }
+void     net_set_ip(uint32_t ip) { our_ip = ip; }
 
 struct arp_entry { uint32_t ip; uint8_t mac[6]; int valid; };
 static struct arp_entry arp_cache[8];
@@ -67,6 +71,22 @@ void net_stack_init(void)
 {
     net_mac(our_mac);
     for (int i = 0; i < 8; i++) { arp_cache[i].valid = 0; }
+}
+
+// The UDP checksum: like the TCP one, a one's-complement sum over an IPv4
+// pseudo-header (src, dst, proto=17, UDP length) plus the UDP header + data.
+uint16_t udp_checksum(uint32_t sip, uint32_t dip, const uint8_t *seg, int len)
+{
+    uint32_t sum = 0;
+    sum += (sip >> 16) & 0xffff; sum += sip & 0xffff;
+    sum += (dip >> 16) & 0xffff; sum += dip & 0xffff;
+    sum += 17;                              // protocol
+    sum += (uint32_t)len;                   // UDP length
+    for (int i = 0; i + 1 < len; i += 2) { sum += (uint32_t)((seg[i] << 8) | seg[i + 1]); }
+    if (len & 1) { sum += (uint32_t)(seg[len - 1] << 8); }
+    while (sum >> 16) { sum = (sum & 0xffff) + (sum >> 16); }
+    uint16_t c = (uint16_t)~sum;
+    return c ? c : 0xffff;                  // 0 would mean "no checksum"; send 0xffff
 }
 
 // ---- Ethernet ----
@@ -120,7 +140,7 @@ static void arp_xmit(uint16_t oper, const uint8_t *tha, uint32_t tpa, const uint
     a[4] = 6; a[5] = 4;       // hlen, plen
     put16(a + 6, oper);
     for (int i = 0; i < 6; i++) { a[8 + i] = our_mac[i]; }   // sender hw
-    put32(a + 14, IP_OURS);                                  // sender proto
+    put32(a + 14, our_ip);                                  // sender proto
     for (int i = 0; i < 6; i++) { a[18 + i] = tha[i]; }      // target hw
     put32(a + 24, tpa);                                      // target proto
     eth_send(dst_mac, 0x0806, a, 28);
@@ -135,7 +155,7 @@ static void arp_input(const uint8_t *f, int len)
     const uint8_t *sha = a + 8;             // sender hardware (MAC) address
     uint32_t tpa = get32(a + 24);           // target protocol address
 
-    if (oper == 1 && tpa == IP_OURS) {      // a request for us -> reply
+    if (oper == 1 && tpa == our_ip) {      // a request for us -> reply
         arp_xmit(2, sha, spa, sha);
     }
     if (oper == 2) {                        // a reply -> cache it
@@ -149,7 +169,7 @@ static void arp_input(const uint8_t *f, int len)
 // gateway unless dst is on our /24) and builds the IPv4 header + checksum.
 static int ip_send(uint32_t dst_ip, uint8_t proto, const uint8_t *payload, int len)
 {
-    uint32_t nexthop = ((dst_ip ^ IP_OURS) & 0xffffff00u) ? IP_GATEWAY : dst_ip;
+    uint32_t nexthop = ((dst_ip ^ our_ip) & 0xffffff00u) ? IP_GATEWAY : dst_ip;
     uint8_t mac[6];
     if (arp_resolve(nexthop, mac) != 0) { return -1; }
 
@@ -162,7 +182,7 @@ static int ip_send(uint32_t dst_ip, uint8_t proto, const uint8_t *payload, int l
     pkt[8] = 64;                         // TTL
     pkt[9] = proto;
     put16(pkt + 10, 0);                  // checksum (computed next)
-    put32(pkt + 12, IP_OURS);
+    put32(pkt + 12, our_ip);
     put32(pkt + 16, dst_ip);
     put16(pkt + 10, inet_csum(pkt, 20));
     for (int i = 0; i < len; i++) { pkt[20 + i] = payload[i]; }
@@ -186,7 +206,9 @@ static void ip_input(const uint8_t *pkt, int len)
     uint8_t proto = pkt[9];
     uint32_t src = get32(pkt + 12);
     uint32_t dst = get32(pkt + 16);
-    if (dst != IP_OURS) { return; }      // not addressed to us
+    // Accept packets addressed to us, or broadcast (255.255.255.255) so the DHCP
+    // client can receive an OFFER/ACK before we have an address of our own.
+    if (dst != our_ip && dst != 0xffffffffu) { return; }
     int total = get16(pkt + 2);
     if (total > len) { total = len; }
     const uint8_t *payload = pkt + ihl;
@@ -348,8 +370,9 @@ static int udp_send(uint32_t dst_ip, uint16_t sport, uint16_t dport,
     put16(seg + 0, sport);
     put16(seg + 2, dport);
     put16(seg + 4, (uint16_t)(8 + len));     // UDP length = header + data
-    put16(seg + 6, 0);                       // checksum 0 = none (allowed on IPv4)
+    put16(seg + 6, 0);                       // checksum field zero while we compute it
     for (int i = 0; i < len; i++) { seg[8 + i] = payload[i]; }
+    put16(seg + 6, udp_checksum(our_ip, dst_ip, seg, 8 + len));   // now fill it in
     return ip_send(dst_ip, 17, seg, 8 + len);
 }
 
@@ -360,6 +383,12 @@ static uint16_t     dns_sport;
 static uint8_t      dns_rxbuf[512];
 static volatile int dns_rxlen;
 static volatile int dns_got;
+
+// A single outstanding DHCP exchange, captured by udp_input (port 68).
+static volatile int dhcp_waiting;
+static uint8_t      dhcp_rxbuf[576];
+static volatile int dhcp_rxlen;
+static volatile int dhcp_got;
 
 // Public UDP send -- the socket layer's transmit path.
 int net_udp_send(uint32_t dst_ip, uint16_t sport, uint16_t dport, const void *data, int len)
@@ -383,6 +412,12 @@ static void udp_input(uint32_t src_ip, const uint8_t *p, int len)
         for (int i = 0; i < n; i++) { dns_rxbuf[i] = data[i]; }
         dns_rxlen = n;
         dns_got = 1;
+    }
+    if (dhcp_waiting && dport == 68 && dlen > 0) {         // a DHCP OFFER/ACK for us
+        int n = dlen > (int)sizeof(dhcp_rxbuf) ? (int)sizeof(dhcp_rxbuf) : dlen;
+        for (int i = 0; i < n; i++) { dhcp_rxbuf[i] = data[i]; }
+        dhcp_rxlen = n;
+        dhcp_got = 1;
     }
     // Hand it to any user socket bound to this port.
     socket_udp_input(src_ip, sport, dport, data, dlen);
@@ -411,6 +446,121 @@ int net_resolve(const char *host, uint32_t *ip)
     dns_waiting = 0;
     if (!dns_got) { return -1; }              // timed out / interrupted
     return dns_parse_answer(dns_rxbuf, dns_rxlen, id, ip);
+}
+
+// ---- DHCP client (Phase 23.9) ----
+//
+// DHCP rides on BOOTP/UDP (client port 68 -> server port 67): a 236-byte fixed
+// header, a magic cookie, then TLV options. We do the classic four-message
+// handshake: broadcast DISCOVER, receive OFFER, broadcast REQUEST for the offered
+// address, receive ACK -- then adopt the leased address. All sends are broadcast
+// (we have no address yet) with source 0.0.0.0, so they bypass ARP/ip_send.
+
+#define DHCP_COOKIE 0x63825363u
+
+int dhcp_parse(const uint8_t *msg, int len, uint32_t xid, int want_type,
+               uint32_t *yiaddr, uint32_t *server)
+{
+    if (len < 240) { return -1; }
+    if (msg[0] != 2) { return -1; }                  // op = BOOTREPLY
+    if (get32(msg + 4) != xid) { return -1; }        // our transaction id
+    if (get32(msg + 236) != DHCP_COOKIE) { return -1; }
+
+    uint32_t yi = get32(msg + 16);                   // offered address
+    uint32_t sid = 0;
+    int type = -1;
+    int o = 240;
+    while (o < len) {
+        uint8_t code = msg[o++];
+        if (code == 255) { break; }                  // end of options
+        if (code == 0) { continue; }                 // pad
+        if (o >= len) { break; }
+        int olen = msg[o++];
+        if (o + olen > len) { break; }
+        if (code == 53 && olen >= 1) { type = msg[o]; }            // message type
+        else if (code == 54 && olen >= 4) { sid = get32(msg + o); }// server identifier
+        o += olen;
+    }
+    if (type != want_type) { return -1; }
+    if (yiaddr) { *yiaddr = yi; }
+    if (server) { *server = sid; }
+    return 0;
+}
+
+// Build + broadcast one DHCP message (DISCOVER or REQUEST). reqip/server are 0
+// for DISCOVER; for REQUEST they fill options 50 (requested IP) and 54 (server id).
+static void dhcp_send_msg(int type, uint32_t xid, uint32_t reqip, uint32_t server)
+{
+    uint8_t m[300];
+    for (unsigned i = 0; i < sizeof(m); i++) { m[i] = 0; }
+    m[0] = 1; m[1] = 1; m[2] = 6;            // op=BOOTREQUEST, htype=Ethernet, hlen=6
+    put32(m + 4, xid);
+    put16(m + 10, 0x8000);                   // flags: ask the server to broadcast its reply
+    net_mac(m + 28);                         // chaddr = our MAC
+    put32(m + 236, DHCP_COOKIE);
+    int o = 240;
+    m[o++] = 53; m[o++] = 1; m[o++] = (uint8_t)type;       // option 53: message type
+    if (type == 3) {                                       // REQUEST adds these
+        m[o++] = 50; m[o++] = 4; put32(m + o, reqip); o += 4;     // requested IP
+        m[o++] = 54; m[o++] = 4; put32(m + o, server); o += 4;    // server id
+    }
+    m[o++] = 255;                                          // end
+
+    // Wrap in UDP (68->67) then IPv4 (0.0.0.0 -> 255.255.255.255), all broadcast.
+    uint8_t udp[8 + sizeof(m)];
+    put16(udp + 0, 68); put16(udp + 2, 67);
+    put16(udp + 4, (uint16_t)(8 + o));
+    put16(udp + 6, 0);
+    for (int i = 0; i < o; i++) { udp[8 + i] = m[i]; }
+    put16(udp + 6, udp_checksum(0, 0xffffffffu, udp, 8 + o));
+
+    uint8_t pkt[20 + 8 + sizeof(m)];
+    pkt[0] = 0x45; pkt[1] = 0;
+    put16(pkt + 2, (uint16_t)(20 + 8 + o));
+    put16(pkt + 4, 0); put16(pkt + 6, 0);
+    pkt[8] = 64; pkt[9] = 17; put16(pkt + 10, 0);
+    put32(pkt + 12, 0);                      // src 0.0.0.0
+    put32(pkt + 16, 0xffffffffu);            // dst 255.255.255.255
+    put16(pkt + 10, inet_csum(pkt, 20));
+    for (int i = 0; i < 8 + o; i++) { pkt[20 + i] = udp[i]; }
+
+    uint8_t bcast[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
+    eth_send(bcast, 0x0800, pkt, 20 + 8 + o);
+}
+
+// Wait for a DHCP reply of `want_type` matching `xid`; fill *yiaddr/*server.
+static int dhcp_wait_reply(uint32_t xid, int want_type, uint32_t *yiaddr, uint32_t *server)
+{
+    uint64_t start = timer_now_us();
+    while (timer_now_us() - start < NET_TIMEOUT_US) {
+        dhcp_got = 0;
+        net_pump();
+        if (dhcp_got &&
+            dhcp_parse(dhcp_rxbuf, dhcp_rxlen, xid, want_type, yiaddr, server) == 0) {
+            return 0;
+        }
+        if (net_signal_pending()) { return -1; }
+        net_wait(20);
+    }
+    return -1;
+}
+
+int net_dhcp(void)
+{
+    uint32_t xid = (uint32_t)timer_now_us();      // a transaction id for this exchange
+    uint32_t offer = 0, server = 0;
+    dhcp_waiting = 1; dhcp_got = 0;
+
+    dhcp_send_msg(1, xid, 0, 0);                   // DISCOVER
+    if (dhcp_wait_reply(xid, 2, &offer, &server) != 0) { dhcp_waiting = 0; return -1; }
+
+    dhcp_send_msg(3, xid, offer, server);          // REQUEST the offered address
+    uint32_t acked = 0;
+    if (dhcp_wait_reply(xid, 5, &acked, &server) != 0) { dhcp_waiting = 0; return -1; }
+
+    dhcp_waiting = 0;
+    net_set_ip(acked);                             // adopt the lease
+    return 0;
 }
 
 // ---- inbound dispatch ----

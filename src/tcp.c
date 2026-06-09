@@ -191,7 +191,7 @@ static void tcp_xmit_seq(struct tcp_conn *c, uint8_t flags, uint32_t seq,
     put16(seg + 18, 0);                    // urgent pointer
     for (int i = 0; i < dlen; i++) { seg[20 + i] = data[i]; }
     int len = 20 + dlen;
-    put16(seg + 16, tcp_checksum(IP_OURS, c->rip, seg, len));
+    put16(seg + 16, tcp_checksum(net_our_ip(), c->rip, seg, len));
     net_ip_send(c->rip, 6, seg, len);
 }
 static void tcp_xmit(struct tcp_conn *c, uint8_t flags, const uint8_t *data, int dlen)
@@ -247,7 +247,7 @@ static void tcp_send_rst(uint32_t dst_ip, uint16_t lport, uint16_t rport,
     put32(seg + 4, rseq);   put32(seg + 8, rack);
     seg[12] = 5 << 4; seg[13] = rflags;
     put16(seg + 14, 0); put16(seg + 16, 0); put16(seg + 18, 0);
-    put16(seg + 16, tcp_checksum(IP_OURS, dst_ip, seg, 20));
+    put16(seg + 16, tcp_checksum(net_our_ip(), dst_ip, seg, 20));
     net_ip_send(dst_ip, 6, seg, 20);
 }
 

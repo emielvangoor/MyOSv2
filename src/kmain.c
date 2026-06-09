@@ -115,6 +115,17 @@ void kmain(void)
         kprintf("net: virtio-net %x:%x:%x:%x:%x:%x ready\n",
                 m[0], m[1], m[2], m[3], m[4], m[5]);
         net_stack_init();                                 // bring up TCP/IP (ARP/IP/ICMP)
+        // Lease an address via DHCP; if the server doesn't answer, keep the
+        // built-in default so networking still works on QEMU's user-net.
+        if (net_dhcp() == 0) {
+            uint32_t ip = net_our_ip();
+            kprintf("net: DHCP leased %d.%d.%d.%d\n",
+                    (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+        } else {
+            uint32_t ip = net_our_ip();
+            kprintf("net: DHCP failed, using %d.%d.%d.%d\n",
+                    (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+        }
     } else {
         kprintf("net: none\n");
     }

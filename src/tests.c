@@ -1730,6 +1730,46 @@ static void test_tcp_flow_windows(void)
     KASSERT(tcp_window_avail(100, 300, 500, 1400) == 300);  // 200 in flight, 300 left
 }
 
+// --- UDP transmit checksum (Phase 23.9) ---
+static void test_udp_checksum(void)
+{
+    // A datagram carrying its own computed checksum verifies to all-ones (0xffff),
+    // i.e. the raw one's-complement sum is zero -- the standard checksum property.
+    uint8_t seg[12] = {0};
+    seg[0] = 0x30; seg[1] = 0x39;          // source port 12345
+    seg[2] = 0x00; seg[3] = 0x35;          // dest port 53
+    seg[4] = 0x00; seg[5] = 0x0c;          // UDP length = 12
+    seg[8] = 'h'; seg[9] = 'i';            // 4 bytes of payload (10,11 = 0)
+    uint32_t sip = 0x0a00020fu, dip = 0x0a000203u;
+    uint16_t c = udp_checksum(sip, dip, seg, 12);
+    KASSERT(c != 0);                        // a real checksum, never the "none" value
+    seg[6] = (uint8_t)(c >> 8); seg[7] = (uint8_t)c;
+    KASSERT(udp_checksum(sip, dip, seg, 12) == 0xffff);
+}
+
+// --- DHCP reply parsing (Phase 23.9) ---
+static void test_dhcp_parse(void)
+{
+    uint8_t msg[260];
+    for (unsigned i = 0; i < sizeof(msg); i++) { msg[i] = 0; }
+    msg[0] = 2;                                  // op = BOOTREPLY
+    msg[4] = 0xde; msg[5] = 0xad; msg[6] = 0xbe; msg[7] = 0xef;       // xid
+    msg[16] = 0x0a; msg[17] = 0x00; msg[18] = 0x02; msg[19] = 0x0f;   // yiaddr 10.0.2.15
+    msg[236] = 0x63; msg[237] = 0x82; msg[238] = 0x53; msg[239] = 0x63; // magic cookie
+    int o = 240;
+    msg[o++] = 53; msg[o++] = 1; msg[o++] = 2;                        // type = OFFER
+    msg[o++] = 54; msg[o++] = 4;
+    msg[o++] = 0x0a; msg[o++] = 0x00; msg[o++] = 0x02; msg[o++] = 0x02; // server 10.0.2.2
+    msg[o++] = 255;
+
+    uint32_t xid = 0xdeadbeefu, yi = 0, srv = 0;
+    KASSERT(dhcp_parse(msg, o, xid, 2, &yi, &srv) == 0);   // matches an OFFER
+    KASSERT(yi == 0x0a00020fu);
+    KASSERT(srv == 0x0a000202u);
+    KASSERT(dhcp_parse(msg, o, xid, 5, &yi, &srv) != 0);   // not an ACK
+    KASSERT(dhcp_parse(msg, o, 0x12345678u, 2, &yi, &srv) != 0);  // wrong xid
+}
+
 // --- TCP RST generation (Phase 23.7) ---
 static void test_tcp_rst_fields(void)
 {
@@ -1927,6 +1967,8 @@ static const struct ktest tests[] = {
     { "tcp: cc avoidance + loss",         test_tcp_cc_avoidance_and_loss },
     { "tcp: RST reply fields",            test_tcp_rst_fields },
     { "tcp: next segment (Nagle/window)", test_tcp_next_seg },
+    { "udp: transmit checksum",           test_udp_checksum },
+    { "dhcp: parse OFFER/ACK",            test_dhcp_parse },
     { "file: refcount dup/close",         test_file_refcount },
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },

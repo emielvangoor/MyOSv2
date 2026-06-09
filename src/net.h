@@ -19,6 +19,17 @@ void net_wait(unsigned ms);                  // sleep until the NIC interrupt (o
 
 void     net_stack_init(void);                       // initialise the stack
 uint16_t inet_csum(const void *buf, int len);        // internet (one's-complement) checksum
+uint32_t net_our_ip(void);                           // our current IPv4 address (host order)
+void     net_set_ip(uint32_t ip);                    // set it (used by the DHCP client)
+int      net_dhcp(void);                             // lease an address via DHCP; 0 ok, -1 fail
+// Parse a DHCP reply: verify it's a BOOTREPLY for `xid` with the magic cookie and
+// option 53 (message type) == want_type; extract the offered address (yiaddr) and
+// option 54 (server id). Returns 0 on a match. Pure decode -- exposed for tests.
+int      dhcp_parse(const uint8_t *msg, int len, uint32_t xid, int want_type,
+                    uint32_t *yiaddr, uint32_t *server);
+// The UDP checksum over the IPv4 pseudo-header + datagram (exposed for tests). A
+// computed value of 0 is sent as 0xffff, since 0 means "no checksum".
+uint16_t udp_checksum(uint32_t sip, uint32_t dip, const uint8_t *seg, int len);
 int      net_pump(void);                             // process one inbound frame; 1=did, 0=idle
 int      arp_resolve(uint32_t ip, uint8_t mac[6]);   // IP -> MAC (yields/pumps); 0 ok, -1 timeout
 int      net_ping(uint32_t ip, int *ms);             // ICMP echo; 0 + round-trip ms, -1 on timeout

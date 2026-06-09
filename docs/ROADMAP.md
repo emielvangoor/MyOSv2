@@ -279,11 +279,24 @@ full stack — see Phase 23 for the gap.
 
 ---
 
-## Phase 23 — TCP hardening + networking completeness  (next networking phase)
+## Phase 23 — TCP hardening + networking completeness  (largely done)
 
 **Why:** Phase 22's TCP is a deliberately minimal client. To be a real stack it
 needs the parts that handle loss, reordering, flow/congestion, and incoming
 connections. This phase is itself large — pick milestones from it.
+
+**Done (23.1–23.9, see `docs/notes/phase-23.md`):** out-of-order reassembly;
+adaptive retransmission (RFC 6298 RTO + Karn + backoff + a real retransmit
+queue); flow control (advertised windows both ways); a TCP **server**
+(listen/accept) + `/bin/httpd`; socket API polish (`poll`, `shutdown`); Reno
+congestion control; the full RFC 793 state machine (CLOSE_WAIT/LAST_ACK,
+FIN_WAIT/CLOSING/TIME_WAIT) + RST generation; segmentation + pipelining + Nagle;
+and addressing (DHCP client + UDP transmit checksum).
+
+**Still open (independent follow-ups):** `select`, non-blocking fds,
+`getsockname`/`setsockopt`; delayed ACKs; IPv4 fragmentation/reassembly; ICMP
+error replies; honoring TTL / forwarding; window scaling; and converting
+virtio-blk to interrupt-driven completion.
 
 ### Correctness / robustness (the cut corners)
 - **Out-of-order reassembly.** Today only in-order segments are accepted; a gap

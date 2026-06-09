@@ -60,9 +60,13 @@ deadlines; just building it one piece at a time and enjoying the ride.
   (QEMU forwards host:8080 → guest:8080). `poll()` waits on several fds at once
   (sockets, pipes); `shutdown()` half-closes a TCP connection. `/bin/polldemo`
   shows `poll()` blocking on a pipe a forked child fills.
-- **DNS + ping** — a **DNS resolver** over UDP and a user-space `ping` that takes
-  a hostname: `ping https://www.google.com` strips the scheme, resolves the name,
-  and ICMP-echoes the address.
+- **DNS + ping** — a **DNS resolver** over UDP (now with a real **UDP transmit
+  checksum**) and a user-space `ping` that takes a hostname:
+  `ping https://www.google.com` strips the scheme, resolves the name, and
+  ICMP-echoes the address.
+- **DHCP** — the guest **leases its IP address at boot** (DISCOVER/OFFER/REQUEST/
+  ACK) instead of hardcoding it; the address is runtime-configurable throughout
+  the stack, falling back to a built-in default if no server answers.
 - **Program arguments** — `exec` passes `argv` to programs; the shell tokenizes
   the command line, so `/bin/ping <host>` and friends get their arguments.
 - **`shutdown`** — a shell command that halts the machine via PSCI (QEMU exits).

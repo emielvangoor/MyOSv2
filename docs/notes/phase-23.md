@@ -323,3 +323,42 @@ reassembles byte-for-byte. `/bin/http` still fetches example.com.
 **Deferred.** Delayed ACKs — without a background ACK timer they risk the classic
 Nagle/delayed-ACK deadlock, and our ACK volume is already modest; left out
 deliberately. (Real peers' delayed-ACK timers already cover the inbound side.)
+
+---
+
+## 23.9 — Addressing + IPv4 completeness: DHCP + UDP checksum
+
+This last milestone is a grab-bag; per the roadmap I picked the two highest-value,
+testable items and deferred the rest.
+
+**UDP transmit checksum.** `udp_send` sent checksum 0 ("not computed") — valid on
+IPv4 but rejected by some paths. It now fills a real checksum via the pure,
+tested `udp_checksum` (the same pseudo-header one's-complement sum as TCP, proto
+17), with the RFC quirk that a computed 0 is transmitted as 0xffff. The live DNS
+test still resolves, so SLIRP accepts our checksummed datagrams.
+
+**DHCP client — drop the hardcoded 10.0.2.15.** The address `IP_OURS` was a
+compile-time constant wired through ARP, IP, and TCP. It became a runtime variable
+(`net_our_ip()` / `net_set_ip()`, default `IP_OURS` as a fallback), and a DHCP
+client leases the real one at boot:
+- The four-message BOOTP/UDP handshake — broadcast DISCOVER, receive OFFER,
+  broadcast REQUEST, receive ACK — all sent from source 0.0.0.0 to
+  255.255.255.255 with a broadcast MAC, bypassing ARP/`ip_send` (we have no
+  address yet). `ip_input` now also accepts broadcast so the replies get in.
+- The reply decoder `dhcp_parse` (pure, unit-tested) verifies the BOOTREPLY op,
+  xid, and magic cookie, then walks the TLV options for the message type (53),
+  server id (54), and offered `yiaddr`.
+- `kmain` calls `net_dhcp()` after `net_stack_init`; success adopts the lease,
+  failure keeps the default so networking still works.
+
+**Tests.** `udp: transmit checksum` (the verify-to-0xffff property), `dhcp: parse
+OFFER/ACK` (match, wrong-type, wrong-xid). End-to-end: boot logs
+`net: DHCP leased 10.0.2.15` (the full handshake against SLIRP's DHCP server),
+and `/bin/http` then fetches example.com over the leased address (`200 OK`) —
+proving the runtime IP threads correctly through ARP, IP, and TCP.
+
+**Deferred (with reason).** IPv4 fragmentation/reassembly (no path here exceeds
+the MTU — TCP already segments to the MSS); honoring inbound TTL / forwarding
+(we're a host, not a router); ICMP error replies (port-unreachable); and
+converting virtio-blk from polled to interrupt-driven completion. Each is an
+independent, self-contained follow-up.
