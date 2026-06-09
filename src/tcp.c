@@ -41,6 +41,7 @@ enum {
 
 #define NCONN     8
 #define TCP_RXBUF 16384
+#define TCP_SNDBUF 16384        // unacked+unsent send data held for pipelining/retransmit
 #define TCP_MSS   1400          // largest payload we put in one segment
 
 struct tcp_conn {
@@ -64,16 +65,18 @@ struct tcp_conn {
     int      reset;             // peer sent RST
     int      accepted;          // a passively-opened child that accept() has handed out
 
-    // Retransmission (Phase 23.2). The single outstanding segment is kept here --
-    // a copy, so the caller's buffer isn't pinned during the send -- and resent
-    // after an adaptive RTO with exponential backoff.
-    struct tcp_rto rto;         // RFC 6298 round-trip-time / timeout estimator
-    struct tcp_cc  cc;          // Reno congestion control (cwnd / ssthresh)
-    uint8_t  sndbuf[TCP_MSS];   // bytes of the in-flight segment (for retransmit)
-    int      sndlen;            // its length
-    uint32_t sndseq;            // its starting sequence number
-    uint64_t snd_time;          // when it was first transmitted (for RTT sampling)
-    int      snd_retx;          // was it retransmitted? (Karn: then don't sample RTT)
+    // Send queue (Phase 23.2 + 23.8). A whole chunk of the caller's data is copied
+    // here -- so the caller's buffer isn't pinned -- and transmitted as multiple
+    // MSS segments pipelined up to min(cwnd, peer window). snd_una..snd_nxt is the
+    // unacked range; retransmits replay from snd_una. The window-bound is adaptive
+    // (RTO + exponential backoff); cwnd from Reno congestion control.
+    struct tcp_rto rto;            // RFC 6298 round-trip-time / timeout estimator
+    struct tcp_cc  cc;             // Reno congestion control (cwnd / ssthresh)
+    uint8_t  sndbuf[TCP_SNDBUF];   // the chunk being sent (sndbuf[0] has seq snd_base)
+    uint32_t snd_base;             // sequence number of sndbuf[0]
+    int      snd_len;              // bytes in the current chunk
+    uint64_t snd_time;             // when the in-flight flight began (for RTT sampling)
+    int      snd_retx;             // was anything in it retransmitted? (Karn: no RTT sample)
 };
 
 static struct tcp_conn conns[NCONN];
@@ -140,6 +143,22 @@ int tcp_window_avail(uint32_t snd_una, uint32_t snd_nxt, uint16_t peer_wnd, int 
     if (usable < 0) { usable = 0; }
     if (usable > mss) { usable = mss; }
     return usable;
+}
+
+int tcp_next_seg(int unsent, int inflight, int win, int mss)
+{
+    if (unsent <= 0) { return 0; }
+    int room = win - inflight;
+    if (room <= 0) { return 0; }                        // window full -> wait
+    int seg = unsent < mss ? unsent : mss;
+    if (seg > room) { seg = room; }
+    if (seg <= 0) { return 0; }
+    // Nagle / silly-window avoidance: don't dribble a sub-MSS segment while data is
+    // still unacked -- wait until a full MSS is available or the in-flight data is
+    // acknowledged. (When nothing is in flight we always send, so a lone small
+    // write goes out immediately.)
+    if (seg < mss && inflight > 0) { return 0; }
+    return seg;
 }
 
 // Bytes currently free in the receive ring (one slot is kept empty to tell full
@@ -230,6 +249,39 @@ static void tcp_send_rst(uint32_t dst_ip, uint16_t lport, uint16_t rport,
     put16(seg + 14, 0); put16(seg + 16, 0); put16(seg + 18, 0);
     put16(seg + 16, tcp_checksum(IP_OURS, dst_ip, seg, 20));
     net_ip_send(dst_ip, 6, seg, 20);
+}
+
+// Transmit as many new segments from the send queue as the effective window
+// (min of the peer's advertised window and cwnd) allows. Returns 1 if anything
+// went out. Nagle/silly-window handling lives in tcp_next_seg().
+static int tcp_send_window(struct tcp_conn *c)
+{
+    int sent_any = 0;
+    for (;;) {
+        int unsent   = (int)(c->snd_base + (uint32_t)c->snd_len - c->snd_nxt);
+        int inflight = (int)(c->snd_nxt - c->snd_una);
+        uint32_t cwnd = tcp_cc_cwnd(&c->cc);
+        int win = c->snd_wnd < cwnd ? c->snd_wnd : (int)cwnd;   // effective window
+        int seg = tcp_next_seg(unsent, inflight, win, TCP_MSS);
+        if (seg <= 0) { break; }
+        int off = (int)(c->snd_nxt - c->snd_base);
+        tcp_xmit_seq(c, PSH | ACK, c->snd_nxt, c->sndbuf + off, seg);
+        if (c->snd_time == 0) { c->snd_time = timer_now_us(); }  // time the flight
+        c->snd_nxt += (uint32_t)seg;
+        sent_any = 1;
+    }
+    return sent_any;
+}
+
+// Retransmit the oldest unacked segment (from snd_una). Used both by the RTO
+// timeout in the send loop and by fast retransmit (3 dup ACKs) in tcp_input.
+static void tcp_retx_oldest(struct tcp_conn *c)
+{
+    int acked_off = (int)(c->snd_una - c->snd_base);
+    int remain = c->snd_len - acked_off;
+    if (remain <= 0) { return; }                  // nothing outstanding
+    int seg = remain < TCP_MSS ? remain : TCP_MSS;
+    tcp_xmit_seq(c, PSH | ACK, c->snd_una, c->sndbuf + acked_off, seg);
 }
 
 // ---- the receive state machine ----
@@ -330,7 +382,7 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
                 // flight): the network is reordering or dropped a segment. The 3rd
                 // such ACK triggers a fast retransmit without a full timeout.
                 if (tcp_cc_on_dupack(&c->cc, TCP_MSS)) {
-                    tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, c->sndlen);
+                    tcp_retx_oldest(c);             // fast retransmit the oldest unacked
                     c->snd_retx = 1;
                 }
             }
@@ -400,7 +452,7 @@ struct tcp_conn *tcp_new(void)
             c->used = 1; c->state = CLOSED;
             c->rxhead = c->rxtail = 0; c->peer_fin = 0; c->reset = 0;
             c->have_fin = 0; c->fin_seq = 0; c->fin_sent = 0; c->tw_start = 0;
-            c->sndlen = 0; c->snd_retx = 0;
+            c->snd_len = 0; c->snd_base = 0; c->snd_time = 0; c->snd_retx = 0;
             c->snd_wnd = 0; c->last_adv = 0;
             c->accepted = 0;
             tcp_rto_init(&c->rto);
@@ -478,72 +530,65 @@ int tcp_connect(struct tcp_conn *c, uint32_t ip, uint16_t port)
     return -1;                             // handshake timed out
 }
 
-int tcp_send(struct tcp_conn *c, const void *buf, int len)
+// Send one chunk (already copied into c->sndbuf, snd_base..snd_base+snd_len) by
+// transmitting MSS segments pipelined up to the window and retransmitting from
+// snd_una on timeout, until every byte is acked. Returns 0 on success, -1 on
+// reset/EINTR. Blocks (pumping the network) but never busy-spins.
+static int tcp_flush_chunk(struct tcp_conn *c)
 {
-    if (!c || c->state != ESTABLISHED) { return -1; }
-    if (len > TCP_MSS) { len = TCP_MSS; }
-
-    // Flow control: never send past the peer's advertised window. While it is
-    // closed (zero window), wait, probing periodically with a bare ACK so we
-    // still hear the window-update even if one was lost (a light persist timer).
-    uint64_t pstart = timer_now_us(), plast = pstart;
-    while (tcp_window_avail(c->snd_una, c->snd_nxt, c->snd_wnd, len) == 0) {
-        if (c->reset) { return -1; }
-        if (tcp_interrupted()) { return -1; }
-        if (timer_now_us() - pstart > 5000000) { return 0; }   // best effort: give up
-        net_pump();
-        if (timer_now_us() - plast > (uint64_t)tcp_rto_get(&c->rto)) {
-            tcp_xmit(c, ACK, 0, 0);        // window probe (also re-advertises ours)
-            plast = timer_now_us();
-        }
-        net_wait(20);
-    }
-    // Send only as much as BOTH windows allow right now (<= len <= MSS): the peer's
-    // advertised window (flow control) and the congestion window (don't overrun the
-    // network). The caller gets the count and resends the remainder; larger writes
-    // are split in 23.8.
-    int n = tcp_window_avail(c->snd_una, c->snd_nxt, c->snd_wnd, len);
-    int32_t inflight  = (int32_t)(c->snd_nxt - c->snd_una);
-    int32_t cwnd_room = (int32_t)tcp_cc_cwnd(&c->cc) - inflight;
-    if (cwnd_room < 0) { cwnd_room = 0; }
-    if (cwnd_room < n) { n = cwnd_room; }
-
-    // Copy into the connection's retransmit buffer so we can resend without the
-    // caller keeping `buf` alive, then transmit the segment once.
-    const uint8_t *src = buf;
-    for (int i = 0; i < n; i++) { c->sndbuf[i] = src[i]; }
-    c->sndlen = n;
-    c->sndseq = c->snd_nxt;
+    c->snd_time = 0;                   // set when the first segment of a flight goes out
     c->snd_retx = 0;
+    uint32_t chunk_end = c->snd_base + (uint32_t)c->snd_len;
 
-    tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, n);
-    c->snd_nxt = c->sndseq + (uint32_t)n;
-    c->snd_time = timer_now_us();
-
-    uint64_t start = c->snd_time, last_tx = start;
-    while (timer_now_us() - start < 5000000) {
+    uint64_t start = timer_now_us(), last_tx = start;
+    while (timer_now_us() - start < 30000000) {            // overall cap (best effort)
+        if (tcp_send_window(c)) { last_tx = timer_now_us(); }   // push new segments
         net_pump();
-        if (seq_ge(c->snd_una, c->snd_nxt)) {                 // fully acked
-            // Karn's algorithm: only feed the estimator a round-trip time when
-            // the acked segment was never retransmitted (otherwise we can't tell
-            // which transmission the ACK answered).
-            if (!c->snd_retx) {
+
+        if (seq_ge(c->snd_una, chunk_end)) {              // whole chunk acknowledged
+            // Karn: only sample RTT if nothing in this flight was retransmitted.
+            if (!c->snd_retx && c->snd_time) {
                 tcp_rto_sample(&c->rto, (int32_t)(timer_now_us() - c->snd_time));
             }
-            return n;
+            return 0;
         }
         if (c->reset) { return -1; }
         if (tcp_interrupted()) { return -1; }
-        if (timer_now_us() - last_tx > (uint64_t)tcp_rto_get(&c->rto)) {  // retransmit
-            tcp_xmit_seq(c, PSH | ACK, c->sndseq, c->sndbuf, c->sndlen);
+
+        if (timer_now_us() - last_tx > (uint64_t)tcp_rto_get(&c->rto)) {  // RTO -> resend
+            tcp_retx_oldest(c);
             c->snd_retx = 1;
-            tcp_rto_backoff(&c->rto);                         // exponential backoff
-            tcp_cc_on_timeout(&c->cc, TCP_MSS);              // a timeout collapses cwnd
+            tcp_rto_backoff(&c->rto);                     // exponential backoff
+            tcp_cc_on_timeout(&c->cc, TCP_MSS);          // a timeout collapses cwnd
             last_tx = timer_now_us();
         }
         net_wait(20);
     }
-    return n;                              // best effort: assume delivered
+    return 0;                          // gave up waiting; assume delivered (best effort)
+}
+
+int tcp_send(struct tcp_conn *c, const void *buf, int len)
+{
+    if (!c || c->state != ESTABLISHED) { return -1; }
+    if (len <= 0) { return 0; }
+
+    // Stream the whole write, a buffer-sized chunk at a time, splitting each chunk
+    // into MSS segments inside tcp_flush_chunk. The caller's buffer is copied, so
+    // it isn't pinned across the (blocking) send.
+    const uint8_t *src = buf;
+    int total = 0;
+    while (total < len) {
+        int chunk = len - total;
+        if (chunk > TCP_SNDBUF) { chunk = TCP_SNDBUF; }
+        for (int i = 0; i < chunk; i++) { c->sndbuf[i] = src[total + i]; }
+        c->snd_base = c->snd_nxt;
+        c->snd_len  = chunk;
+        if (tcp_flush_chunk(c) < 0) {
+            return total > 0 ? total : -1;       // partial progress or hard error
+        }
+        total += chunk;
+    }
+    return total;
 }
 
 int tcp_recv(struct tcp_conn *c, void *buf, int len)

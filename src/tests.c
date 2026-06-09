@@ -1790,6 +1790,25 @@ static void test_tcp_cc_avoidance_and_loss(void)
     KASSERT(cc.ssthresh == 2000);                  // max(2125/2=1062, 2*mss=2000)
 }
 
+// --- TCP segmentation / Nagle (Phase 23.8) ---
+static void test_tcp_next_seg(void)
+{
+    // Plenty of data, nothing in flight, big window: send a full MSS.
+    KASSERT(tcp_next_seg(5000, 0, 8000, 1400) == 1400);
+    // A lone small write with nothing in flight goes out immediately.
+    KASSERT(tcp_next_seg(500, 0, 8000, 1400) == 500);
+    // First segment into a small window (nothing in flight) uses the window.
+    KASSERT(tcp_next_seg(5000, 0, 1000, 1400) == 1000);
+    // Nagle: a small remainder while data is in flight waits (returns 0).
+    KASSERT(tcp_next_seg(500, 1400, 8000, 1400) == 0);
+    // Window-limited to a sub-MSS slice while in flight: also wait (silly-window).
+    KASSERT(tcp_next_seg(5000, 7000, 8000, 1400) == 0);
+    // Window full: wait.
+    KASSERT(tcp_next_seg(5000, 8000, 8000, 1400) == 0);
+    // Nothing to send.
+    KASSERT(tcp_next_seg(0, 0, 8000, 1400) == 0);
+}
+
 // --- poll() readiness scan (Phase 23.5), exercised over pipes ---
 static void test_poll_pipe_readiness(void)
 {
@@ -1907,6 +1926,7 @@ static const struct ktest tests[] = {
     { "tcp: cc slow start",               test_tcp_cc_slow_start },
     { "tcp: cc avoidance + loss",         test_tcp_cc_avoidance_and_loss },
     { "tcp: RST reply fields",            test_tcp_rst_fields },
+    { "tcp: next segment (Nagle/window)", test_tcp_next_seg },
     { "file: refcount dup/close",         test_file_refcount },
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },

@@ -284,3 +284,42 @@ the host curls `/bin/httpd` three times in a row — each is a passive close
 rather than via a background timer, so the "port quarantine" lasts the close
 call, not a true 2·MSL wall-clock window — adequate here since each `tcp_connect`
 picks a fresh ephemeral port anyway.
+
+---
+
+## 23.8 — Larger transfers: segmentation + Nagle
+
+**The gap it closed.** `tcp_send` sent exactly one ≤MSS segment and made the
+caller loop for the rest — so a write bigger than 1400 bytes was the caller's
+problem, only one segment was ever in flight, and the congestion window from 23.6
+never actually bound anything.
+
+**The send queue.** Each connection now holds a `TCP_SNDBUF` (16 KiB) chunk of the
+caller's data with `snd_base` as the sequence of `sndbuf[0]`. `tcp_send` copies
+the write a chunk at a time and calls `tcp_flush_chunk`, which:
+- `tcp_send_window` pushes as many new MSS segments as the **effective window** —
+  `min(peer window, cwnd)` — allows, pipelining several in flight at once;
+- waits for cumulative ACKs to slide `snd_una` forward (freeing window for more);
+- on RTO, `tcp_retx_oldest` replays from `snd_una` (a real retransmit queue, not
+  just "resend the last segment"), backs off, and collapses cwnd;
+- samples RTT once per flight, Karn-style.
+
+This is also what makes 23.6 live: with several segments outstanding, the receiver
+*can* now emit the duplicate ACKs that drive fast retransmit, and cwnd genuinely
+limits how much goes out.
+
+**Nagle / silly-window.** The per-segment decision is the pure, tested
+`tcp_next_seg(unsent, inflight, win, mss)`: send `min(unsent, room, mss)`, but
+return 0 (wait) for a sub-MSS segment while data is still in flight — coalescing
+small writes and avoiding silly-window dribbles. When nothing is in flight it
+always sends, so a lone small write goes immediately.
+
+**Tests.** `tcp: next segment (Nagle/window)` covers full-MSS, lone-small,
+window-limited, Nagle-hold, window-full, and empty cases. End-to-end: `/bin/httpd`
+now serves a **4000-byte** body; a host `curl … | wc -c` gets exactly 4000 bytes,
+and the md5 is identical across repeated fetches — the multi-segment transfer
+reassembles byte-for-byte. `/bin/http` still fetches example.com.
+
+**Deferred.** Delayed ACKs — without a background ACK timer they risk the classic
+Nagle/delayed-ACK deadlock, and our ACK volume is already modest; left out
+deliberately. (Real peers' delayed-ACK timers already cover the inbound side.)

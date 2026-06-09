@@ -48,12 +48,21 @@ int umain(int argc, char **argv)
 
     puts1("httpd: listening on :"); put_int(port); puts1(" (Ctrl-C to stop)\n");
 
-    const char *resp =
+    // A body deliberately larger than one MSS (1400 B), so the response is sent as
+    // several TCP segments -- exercising the segmentation/pipelining path. Each
+    // line is 50 chars incl. '\n'; 80 lines = 4000 bytes.
+    static char body[4000];
+    const int BODY = (int)sizeof(body);
+    for (int i = 0; i < BODY; i++) {
+        int col = i % 50;
+        body[i] = (col == 49) ? '\n' : (char)('a' + (i / 50) % 26);
+    }
+    const char *hdr =
         "HTTP/1.0 200 OK\r\n"
         "Content-Type: text/plain\r\n"
+        "Content-Length: 4000\r\n"
         "Connection: close\r\n"
-        "\r\n"
-        "Hello from MyOSv2!\n";
+        "\r\n";
 
     int served = 0;
     for (;;) {
@@ -63,7 +72,8 @@ int umain(int argc, char **argv)
         char buf[512];
         int n = (int)sys_read(cfd, buf, sizeof(buf));   // read the request line(s)
         (void)n;
-        sys_write(cfd, resp, ustrlen(resp));
+        sys_write(cfd, hdr, ustrlen(hdr));
+        sys_write(cfd, body, BODY);            // 4000 bytes -> multiple segments
         sys_close(cfd);
 
         served++;

@@ -49,7 +49,8 @@ deadlines; just building it one piece at a time and enjoying the ride.
   **Reno congestion control** (slow start, congestion avoidance, fast
   retransmit/recovery), and a **full RFC 793 state machine** (graceful four-way
   close — CLOSE_WAIT/LAST_ACK, FIN_WAIT/CLOSING/TIME_WAIT — and RST replies to
-  stray segments).
+  stray segments). Writes larger than one MSS are **segmented** and pipelined up
+  to the window (with Nagle); `/bin/httpd` serves a 4 KB body in several segments.
 - **Sockets** — a BSD-style socket API: `socket`/`bind`/`sendto`/`recvfrom` for
   UDP datagrams, and `socket(SOCK_STREAM)`/`connect`/`listen`/`accept` +
   `read`/`write` for TCP — both client *and* server. `/bin/dnsq` does a DNS lookup

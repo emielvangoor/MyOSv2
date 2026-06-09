@@ -7,9 +7,10 @@
 // the stream; the single outstanding segment is retransmitted on an adaptive RTO
 // (RFC 6298, tcp_rto.h) with Karn's algorithm + exponential backoff; and flow
 // control is honored both ways -- we never send past the peer's advertised window
-// and advertise our own from real receive-buffer space -- and Reno congestion
-// control (tcp_cc.h) bounds in-flight data by a congestion window. No window
-// scaling yet -- a corner a real stack handles but a one-page client skips.
+// and advertise our own from real receive-buffer space -- Reno congestion control
+// (tcp_cc.h) bounds in-flight data by a congestion window, and a write larger than
+// one MSS is split into segments pipelined up to that window (with Nagle). No
+// window scaling yet -- a corner a real stack handles but a one-page client skips.
 #pragma once
 #include <stdint.h>
 
@@ -53,3 +54,10 @@ uint16_t tcp_advertise_wnd(int free_bytes);
 // sequence number, the next send sequence number, the peer's advertised window,
 // and the MSS. Zero means the window is closed (don't send / probe instead).
 int tcp_window_avail(uint32_t snd_una, uint32_t snd_nxt, uint16_t peer_wnd, int mss);
+
+// tcp_next_seg: how many bytes to put in the next segment when streaming a write,
+// given the unsent bytes remaining, the bytes already in flight, the effective
+// window (min of peer + congestion windows), and the MSS. Returns 0 to wait --
+// either the window is full, or Nagle/silly-window avoidance is holding a
+// sub-MSS segment because data is already in flight. (Exposed for tests.)
+int tcp_next_seg(int unsent, int inflight, int win, int mss);
