@@ -246,3 +246,41 @@ rarely *binds* (we never have more than an MSS outstanding) and duplicate ACKs
 don't naturally arise, so fast-retransmit is dormant — but slow-start/avoidance
 *are* exercised by every real transfer, and the whole control law is verified by
 unit tests. cwnd becomes load-bearing once sends pipeline (23.8).
+
+---
+
+## 23.7 — Full state machine + teardown (CLOSE_WAIT, TIME_WAIT, RST)
+
+**The gap it closed.** Close was a single ad-hoc `FIN_WAIT` state that just
+flipped to CLOSED, and a segment hitting no connection was silently dropped (so a
+confused peer would retransmit forever). Neither is how TCP actually closes.
+
+**The states (RFC 793).** The lone `FIN_WAIT` became the real set: active close
+`FIN_WAIT_1 → FIN_WAIT_2 → TIME_WAIT` (and `CLOSING` for a simultaneous close);
+passive close `CLOSE_WAIT → LAST_ACK`. A `synchronized(state)` predicate gates
+the data/ACK/FIN processing across all of them. `tcp_input` now drives:
+- **Our FIN acked** (`snd_una == snd_nxt` once the FIN bumped `snd_nxt`):
+  FIN_WAIT_1→FIN_WAIT_2, CLOSING→TIME_WAIT, LAST_ACK→CLOSED.
+- **Peer's FIN arrives** (consumed in order): ESTABLISHED→CLOSE_WAIT,
+  FIN_WAIT_2→TIME_WAIT, FIN_WAIT_1→TIME_WAIT (if it also acked our FIN) or CLOSING.
+- **TIME_WAIT** lingers `2·MSL` (MSL shortened to 250 ms for a fast LAN), re-ACKing
+  a retransmitted FIN and restarting the timer, before the slot is freed.
+
+`tcp_close` sends the FIN appropriate to the state (ESTABLISHED → active,
+CLOSE_WAIT → passive/LAST_ACK) and pumps the exchange to completion;
+`tcp_shutdown` (half-close) just moves to FIN_WAIT_1 and lets `tcp_input` finish.
+
+**RST generation.** A segment matching no connection (and not a fresh SYN to a
+listener, and not itself a RST) now gets a RST reply. `tcp_rst_fields` computes
+its seq/ack per RFC 793 — seq from the offending ACK, or ack = seq+len with the
+ACK flag if the segment had no ACK — and is unit-tested.
+
+**Tests.** `tcp: RST reply fields` (both RST cases). End-to-end: `/bin/http`
+closes actively (FIN_WAIT_1→…→TIME_WAIT) and still fetches example.com cleanly;
+the host curls `/bin/httpd` three times in a row — each is a passive close
+(CLOSE_WAIT→LAST_ACK→CLOSED) and the connection slot is reused, so nothing leaks.
+
+**Scope note.** TIME_WAIT lingers only inside the (bounded) `tcp_close` pump
+rather than via a background timer, so the "port quarantine" lasts the close
+call, not a true 2·MSL wall-clock window — adequate here since each `tcp_connect`
+picks a fresh ephemeral port anyway.

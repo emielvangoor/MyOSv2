@@ -35,6 +35,12 @@ struct tcp_conn *tcp_accept(struct tcp_conn *listener);
 // The TCP receive path (called from ip_input for protocol 6).
 void tcp_input(uint32_t src_ip, const uint8_t *seg, int len);
 
+// Compute the seq/ack/flags of a RST reply to a segment that matched no
+// connection (RFC 793). Exposed for tests. (flag bits: SYN=0x02, RST=0x04,
+// ACK=0x10.)
+void tcp_rst_fields(unsigned char in_flags, uint32_t in_seq, uint32_t in_ack,
+                    int seg_len, uint32_t *seq, uint32_t *ack, unsigned char *flags);
+
 // The TCP checksum over the IPv4 pseudo-header + segment (exposed for tests).
 uint16_t tcp_checksum(uint32_t sip, uint32_t dip, const uint8_t *seg, int len);
 

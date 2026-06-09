@@ -47,7 +47,9 @@ deadlines; just building it one piece at a time and enjoying the ride.
   Karn's algorithm, exponential backoff), **flow control** (honors the peer's
   advertised window; advertises its own from real receive-buffer space), and
   **Reno congestion control** (slow start, congestion avoidance, fast
-  retransmit/recovery).
+  retransmit/recovery), and a **full RFC 793 state machine** (graceful four-way
+  close — CLOSE_WAIT/LAST_ACK, FIN_WAIT/CLOSING/TIME_WAIT — and RST replies to
+  stray segments).
 - **Sockets** — a BSD-style socket API: `socket`/`bind`/`sendto`/`recvfrom` for
   UDP datagrams, and `socket(SOCK_STREAM)`/`connect`/`listen`/`accept` +
   `read`/`write` for TCP — both client *and* server. `/bin/dnsq` does a DNS lookup

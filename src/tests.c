@@ -1730,6 +1730,23 @@ static void test_tcp_flow_windows(void)
     KASSERT(tcp_window_avail(100, 300, 500, 1400) == 300);  // 200 in flight, 300 left
 }
 
+// --- TCP RST generation (Phase 23.7) ---
+static void test_tcp_rst_fields(void)
+{
+    enum { F_SYN = 0x02, F_RST = 0x04, F_ACK = 0x10 };
+    uint32_t seq, ack; unsigned char fl;
+
+    // An offending segment that carried an ACK: the RST takes its seq from that
+    // ack and carries no ACK of its own.
+    tcp_rst_fields(F_ACK, 5000, 9000, 0, &seq, &ack, &fl);
+    KASSERT(seq == 9000 && fl == F_RST);
+
+    // A bare SYN (no ACK), one sequence number of "data": RST+ACK acknowledging
+    // seq+1 so the peer accepts the reset.
+    tcp_rst_fields(F_SYN, 5000, 0, 1, &seq, &ack, &fl);
+    KASSERT(seq == 0 && ack == 5001 && fl == (F_RST | F_ACK));
+}
+
 // --- TCP congestion control (Phase 23.6, Reno) ---
 static void test_tcp_cc_slow_start(void)
 {
@@ -1889,6 +1906,7 @@ static const struct ktest tests[] = {
     { "poll: pipe readiness scan",        test_poll_pipe_readiness },
     { "tcp: cc slow start",               test_tcp_cc_slow_start },
     { "tcp: cc avoidance + loss",         test_tcp_cc_avoidance_and_loss },
+    { "tcp: RST reply fields",            test_tcp_rst_fields },
     { "file: refcount dup/close",         test_file_refcount },
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },

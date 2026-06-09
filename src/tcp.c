@@ -26,7 +26,18 @@
 #define PSH 0x08
 #define ACK 0x10
 
-enum { CLOSED, LISTEN, SYN_SENT, SYN_RCVD, ESTABLISHED, FIN_WAIT };
+// The TCP connection states (RFC 793). The teardown half -- FIN_WAIT_1/2,
+// CLOSING, TIME_WAIT (active close), CLOSE_WAIT, LAST_ACK (passive close) -- is
+// what makes a clean four-way shutdown work in both directions.
+enum {
+    CLOSED, LISTEN, SYN_SENT, SYN_RCVD, ESTABLISHED,
+    FIN_WAIT_1,    // we sent FIN, awaiting its ACK and/or the peer's FIN
+    FIN_WAIT_2,    // our FIN acked; awaiting the peer's FIN
+    CLOSING,       // both sent FIN (simultaneous close); awaiting ACK of ours
+    TIME_WAIT,     // both FINs acked; linger 2*MSL to absorb stragglers
+    CLOSE_WAIT,    // peer sent FIN first; we may still send until the app closes
+    LAST_ACK,      // passive close: we sent our FIN, awaiting its ACK
+};
 
 #define NCONN     8
 #define TCP_RXBUF 16384
@@ -48,6 +59,8 @@ struct tcp_conn {
     int      have_fin;          // peer's FIN has been seen (maybe out of order)...
     uint32_t fin_seq;           // ...at this sequence number (consumed when in order)
     int      peer_fin;          // FIN now in order -> EOF once the ring drains
+    int      fin_sent;          // we have transmitted our own FIN
+    uint64_t tw_start;          // when TIME_WAIT began (for the 2*MSL linger)
     int      reset;             // peer sent RST
     int      accepted;          // a passively-opened child that accept() has handed out
 
@@ -174,6 +187,51 @@ static int tcp_interrupted(void)
     return t && t->sig_pending;
 }
 
+// Maximum Segment Lifetime. The standard is 2 minutes; on a fast emulated LAN we
+// use a much shorter value so a closing program isn't held in TIME_WAIT for ages.
+#define TCP_MSL_US 250000              // 250 ms
+#define TCP_TIME_WAIT_US (2 * TCP_MSL_US)
+
+// A "synchronized" state is one where the handshake is done, so incoming segments
+// carry data/ACKs/FINs we must process (everything from ESTABLISHED through the
+// teardown states).
+static int synchronized(int s)
+{
+    return s == ESTABLISHED || s == FIN_WAIT_1 || s == FIN_WAIT_2 ||
+           s == CLOSING || s == CLOSE_WAIT || s == LAST_ACK || s == TIME_WAIT;
+}
+
+// Compute the seq/ack/flags of a RST sent in reply to a segment that matched no
+// connection (RFC 793, "Reset Generation"). If the offending segment carried an
+// ACK, the RST takes its seq from that ack (and carries no ACK of its own);
+// otherwise the RST acknowledges the offending segment's sequence space. Pure, so
+// it can be unit-tested.
+void tcp_rst_fields(unsigned char in_flags, uint32_t in_seq, uint32_t in_ack,
+                    int seg_len, uint32_t *seq, uint32_t *ack, unsigned char *flags)
+{
+    if (in_flags & ACK) {
+        *seq = in_ack; *ack = 0; *flags = RST;
+    } else {
+        *seq = 0; *ack = in_seq + (uint32_t)seg_len; *flags = RST | ACK;
+    }
+}
+
+// Build and transmit a bare RST to `dst_ip`, for a segment that hit no connection.
+// lport/rport are our side / their side (i.e. the offending segment's dest/src).
+static void tcp_send_rst(uint32_t dst_ip, uint16_t lport, uint16_t rport,
+                         uint32_t in_seq, uint32_t in_ack, uint8_t in_flags, int seg_len)
+{
+    uint32_t rseq, rack; uint8_t rflags;
+    tcp_rst_fields(in_flags, in_seq, in_ack, seg_len, &rseq, &rack, &rflags);
+    uint8_t seg[20];
+    put16(seg + 0, lport);  put16(seg + 2, rport);
+    put32(seg + 4, rseq);   put32(seg + 8, rack);
+    seg[12] = 5 << 4; seg[13] = rflags;
+    put16(seg + 14, 0); put16(seg + 16, 0); put16(seg + 18, 0);
+    put16(seg + 16, tcp_checksum(IP_OURS, dst_ip, seg, 20));
+    net_ip_send(dst_ip, 6, seg, 20);
+}
+
 // ---- the receive state machine ----
 void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
 {
@@ -221,6 +279,14 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
                 tcp_xmit_seq(ch, SYN | ACK, isn, 0, 0);
                 ch->snd_nxt = isn + 1;                     // SYN consumes one seq
             }
+            return;
+        }
+        // A segment for a connection we don't have (and not a new SYN): reply with
+        // a RST so the peer stops retransmitting into the void. (Never RST a RST,
+        // or two dead endpoints would ping-pong resets forever.)
+        if (!(flags & RST)) {
+            int seg_len = dlen + ((flags & SYN) ? 1 : 0) + ((flags & FIN) ? 1 : 0);
+            tcp_send_rst(src_ip, dport, sport, seq, ack, flags, seg_len);
         }
         return;
     }
@@ -253,7 +319,7 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
         return;
     }
 
-    if (c->state == ESTABLISHED || c->state == FIN_WAIT) {
+    if (synchronized(c->state)) {
         if (flags & ACK) {
             if (seq_gt(ack, c->snd_una)) {
                 c->snd_una = ack;
@@ -288,16 +354,40 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
         // has arrived -- otherwise an out-of-order FIN would falsely report EOF
         // ahead of a still-missing segment.
         if (flags & FIN) { c->have_fin = 1; c->fin_seq = seq + (uint32_t)dlen; }
+        int peer_fin_now = 0;
         if (c->have_fin && !c->peer_fin && c->rcv_nxt == c->fin_seq) {
             c->rcv_nxt += 1;
             c->peer_fin = 1;
+            peer_fin_now = 1;              // the peer's FIN was consumed this segment
         }
 
         // Cumulatively ACK anything that advanced (or could advance) our window;
         // a pure duplicate/out-of-order segment still gets a duplicate ACK, which
-        // is exactly what a sender's fast-retransmit logic later keys on.
+        // is exactly what a sender's fast-retransmit logic later keys on. A
+        // retransmitted FIN in TIME_WAIT is re-ACKed and restarts the linger.
         if (dlen > 0 || (flags & FIN)) { tcp_xmit(c, ACK, 0, 0); }
-        if (c->peer_fin && c->state == FIN_WAIT) { c->state = CLOSED; }
+        if ((flags & FIN) && c->state == TIME_WAIT) { c->tw_start = timer_now_us(); }
+
+        // --- teardown transitions ---
+        // Our own FIN is acknowledged once everything we sent (including the FIN,
+        // which bumped snd_nxt) has been acked.
+        int our_fin_acked = c->fin_sent && c->snd_una == c->snd_nxt;
+        if (our_fin_acked) {
+            if      (c->state == FIN_WAIT_1) { c->state = FIN_WAIT_2; }
+            else if (c->state == CLOSING)    { c->state = TIME_WAIT; c->tw_start = timer_now_us(); }
+            else if (c->state == LAST_ACK)   { c->state = CLOSED; }
+        }
+        // The peer's FIN just arrived.
+        if (peer_fin_now) {
+            if      (c->state == ESTABLISHED) { c->state = CLOSE_WAIT; }   // passive close
+            else if (c->state == FIN_WAIT_2)  { c->state = TIME_WAIT; c->tw_start = timer_now_us(); }
+            else if (c->state == FIN_WAIT_1)  {
+                // Simultaneous close: if this same segment also acked our FIN we go
+                // straight to TIME_WAIT, otherwise CLOSING until that ACK arrives.
+                c->state = our_fin_acked ? TIME_WAIT : CLOSING;
+                if (c->state == TIME_WAIT) { c->tw_start = timer_now_us(); }
+            }
+        }
     }
 }
 
@@ -309,7 +399,7 @@ struct tcp_conn *tcp_new(void)
             struct tcp_conn *c = &conns[i];
             c->used = 1; c->state = CLOSED;
             c->rxhead = c->rxtail = 0; c->peer_fin = 0; c->reset = 0;
-            c->have_fin = 0; c->fin_seq = 0;
+            c->have_fin = 0; c->fin_seq = 0; c->fin_sent = 0; c->tw_start = 0;
             c->sndlen = 0; c->snd_retx = 0;
             c->snd_wnd = 0; c->last_adv = 0;
             c->accepted = 0;
@@ -507,21 +597,39 @@ void tcp_shutdown(struct tcp_conn *c)
     if (!c || c->state != ESTABLISHED) { return; }
     tcp_xmit(c, FIN | ACK, 0, 0);
     c->snd_nxt += 1;                   // FIN consumes one sequence number
-    c->state = FIN_WAIT;
+    c->fin_sent = 1;
+    c->state = FIN_WAIT_1;             // active close; tcp_input drives the rest
 }
 
 void tcp_close(struct tcp_conn *c)
 {
     if (!c) { return; }
+
+    // Send our FIN if we haven't already. From ESTABLISHED this is the active
+    // close (-> FIN_WAIT_1); from CLOSE_WAIT (the peer closed first) it completes
+    // the passive close (-> LAST_ACK).
     if (c->state == ESTABLISHED) {
         tcp_xmit(c, FIN | ACK, 0, 0);
-        c->snd_nxt += 1;                   // FIN consumes one sequence number
-        c->state = FIN_WAIT;
-        uint64_t start = timer_now_us();
-        while (timer_now_us() - start < 2000000 && c->state != CLOSED && !c->reset) {
-            net_pump();
-            net_wait(20);
-        }
+        c->snd_nxt += 1;
+        c->fin_sent = 1;
+        c->state = FIN_WAIT_1;
+    } else if (c->state == CLOSE_WAIT) {
+        tcp_xmit(c, FIN | ACK, 0, 0);
+        c->snd_nxt += 1;
+        c->fin_sent = 1;
+        c->state = LAST_ACK;
     }
-    c->used = 0;
+
+    // Pump the teardown to completion: the FIN/ACK exchange runs in tcp_input as
+    // segments arrive. Bounded so a vanished peer can't wedge us. TIME_WAIT then
+    // lingers a short 2*MSL to absorb a retransmitted FIN before we free the slot.
+    uint64_t start = timer_now_us();
+    while (timer_now_us() - start < 3000000 && c->state != CLOSED && !c->reset) {
+        net_pump();
+        if (c->state == TIME_WAIT && timer_now_us() - c->tw_start > TCP_TIME_WAIT_US) {
+            c->state = CLOSED;
+        }
+        net_wait(20);
+    }
+    c->used = 0;                       // release the connection slot
 }
