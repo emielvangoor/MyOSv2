@@ -67,6 +67,34 @@ int pipe_write(struct file *f, const void *buf, uint64_t len)
     return (int)n;
 }
 
+// --- readiness predicates for poll() (no blocking, no side effects) ---
+// A read end is readable when it has buffered bytes, or when all writers have
+// closed (then a read returns EOF immediately rather than blocking). A write end
+// is never "readable".
+int pipe_readable(struct file *f)
+{
+    struct pipe *p = f->pipe;
+    if (f->writable) { return 0; }
+    return p->count > 0 || p->writers == 0;
+}
+
+// A write end is writable when the buffer has room, or when all readers have
+// closed (then a write returns -1 immediately rather than blocking). A read end
+// is never "writable".
+int pipe_writable(struct file *f)
+{
+    struct pipe *p = f->pipe;
+    if (!f->writable) { return 0; }
+    return p->count < PIPE_SIZE || p->readers == 0;
+}
+
+// The read end has hung up: drained and no writers remain (steady EOF).
+int pipe_hangup(struct file *f)
+{
+    struct pipe *p = f->pipe;
+    return !f->writable && p->writers == 0 && p->count == 0;
+}
+
 void pipe_close(struct file *f)
 {
     struct pipe *p = f->pipe;

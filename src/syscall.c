@@ -21,6 +21,8 @@
 #include "net.h"
 #include "power.h"
 #include "socket.h"
+#include "poll.h"
+#include "timer.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -256,6 +258,34 @@ long do_syscall(struct trapframe *tf)
                 if (ret < 0) { socket_free(ns); kfree(f); }     // fd table full
             }
         }
+        break;
+    }
+    case SYS_POLL: {                          // x0=pollfd*, x1=nfds, x2=timeout_ms
+        struct file **fds = sched_current_fds();
+        struct pollfd *pf = (struct pollfd *)(uintptr_t)tf->x[0];
+        int nfds = (int)tf->x[1];
+        int timeout = (int)tf->x[2];
+        if (!fds || !pf || nfds < 0 || nfds > 16) { ret = -1; break; }
+        uint64_t start = timer_now_us();
+        for (;;) {
+            int r = poll_scan(fds, pf, nfds, 16);
+            if (r > 0) { ret = r; break; }            // at least one fd is ready
+            if (timeout == 0) { ret = 0; break; }     // non-blocking poll
+            struct thread *t = sched_current();
+            if (t && t->sig_pending) { ret = -1; break; }   // EINTR
+            if (timeout > 0 &&
+                (timer_now_us() - start) >= (uint64_t)timeout * 1000) { ret = 0; break; }
+            net_pump();                               // let socket readiness advance
+            net_wait(20);                             // sleep on the NIC IRQ / timer
+        }
+        break;
+    }
+    case SYS_SOCKSHUT: {                      // x0=fd, x1=how
+        struct file **fds = sched_current_fds();
+        uint64_t fd = tf->x[0];
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+            ret = socket_shutdown(fds[fd]->sock, (int)tf->x[1]);
+        } else { ret = -1; }
         break;
     }
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame

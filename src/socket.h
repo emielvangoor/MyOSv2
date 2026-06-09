@@ -32,3 +32,12 @@ int socket_read(struct socket *s, void *buf, int len);             // recv; 0 = 
 int socket_write(struct socket *s, const void *buf, int len);      // send
 int socket_listen(struct socket *s, int backlog);                  // passive open; 0 ok
 struct socket *socket_accept(struct socket *s);                    // block for a connection
+int socket_shutdown(struct socket *s, int how);                    // half-close (SHUT_WR)
+
+// Readiness predicates for poll() (non-blocking).
+int socket_readable(struct socket *s);   // recvfrom/read won't block
+int socket_writable(struct socket *s);   // sendto/write can make progress
+
+#define SHUT_RD 0
+#define SHUT_WR 1
+#define SHUT_RDWR 2

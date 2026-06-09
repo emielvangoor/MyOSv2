@@ -34,6 +34,7 @@ extern unsigned char ping_elf[];    extern unsigned int ping_elf_len;
 extern unsigned char dnsq_elf[];    extern unsigned int dnsq_elf_len;
 extern unsigned char http_elf[];    extern unsigned int http_elf_len;
 extern unsigned char httpd_elf[];   extern unsigned int httpd_elf_len;
+extern unsigned char polldemo_elf[]; extern unsigned int polldemo_elf_len;
 
 // Write an embedded program into the filesystem at `path`.
 static void add_prog(const char *path, const void *data, uint64_t len)
@@ -71,4 +72,5 @@ void initrd_unpack(void)
     add_prog("/bin/dnsq", dnsq_elf, (uint64_t)dnsq_elf_len);
     add_prog("/bin/http", http_elf, (uint64_t)http_elf_len);
     add_prog("/bin/httpd", httpd_elf, (uint64_t)httpd_elf_len);
+    add_prog("/bin/polldemo", polldemo_elf, (uint64_t)polldemo_elf_len);
 }

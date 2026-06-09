@@ -20,6 +20,11 @@ int  tcp_send(struct tcp_conn *c, const void *buf, int len);      // bytes sent,
 int  tcp_recv(struct tcp_conn *c, void *buf, int len);            // bytes (0 = peer closed), -1 err
 void tcp_close(struct tcp_conn *c);                               // FIN + free
 
+// --- readiness for poll() + half-close (Phase 23.5) ---
+int  tcp_readable(struct tcp_conn *c);   // recv won't block (data queued, or peer closed/reset)
+int  tcp_writable(struct tcp_conn *c);   // established with an open send window
+void tcp_shutdown(struct tcp_conn *c);   // send FIN (half-close write side); keep reading
+
 // --- passive open (server side, Phase 23.4) ---
 int  tcp_listen(struct tcp_conn *c, uint16_t port);   // become a listener on `port`; 0 ok
 // Block until an inbound connection completes its handshake, then return the new

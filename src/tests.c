@@ -34,6 +34,7 @@
 #include "tcp.h"
 #include "tcp_reasm.h"
 #include "tcp_rto.h"
+#include "poll.h"
 
 #define PAGE 0x1000UL
 
@@ -1728,6 +1729,39 @@ static void test_tcp_flow_windows(void)
     KASSERT(tcp_window_avail(100, 300, 500, 1400) == 300);  // 200 in flight, 300 left
 }
 
+// --- poll() readiness scan (Phase 23.5), exercised over pipes ---
+static void test_poll_pipe_readiness(void)
+{
+    pmm_init(); kheap_init();
+    struct pipe *p = pipe_alloc();                 // readers = writers = 1
+    struct file rd = { .pipe = p, .writable = 0, .ref = 1 };
+    struct file wr = { .pipe = p, .writable = 1, .ref = 1 };
+    struct file *fds[16];
+    for (int i = 0; i < 16; i++) { fds[i] = 0; }
+    fds[3] = &rd; fds[4] = &wr;
+
+    struct pollfd pf[2] = {
+        { .fd = 3, .events = POLLIN,  .revents = 0 },
+        { .fd = 4, .events = POLLOUT, .revents = 0 },
+    };
+
+    // Empty pipe: nothing to read, but room to write.
+    KASSERT(poll_scan(fds, pf, 2, 16) == 1);
+    KASSERT(pf[0].revents == 0);
+    KASSERT(pf[1].revents == POLLOUT);
+
+    // After a write, the read end is readable too.
+    pipe_write(&wr, "hi", 2);
+    KASSERT(poll_scan(fds, pf, 2, 16) == 2);
+    KASSERT(pf[0].revents == POLLIN);
+    KASSERT(pf[1].revents == POLLOUT);
+
+    // A descriptor with no open file reports POLLERR.
+    struct pollfd bad = { .fd = 9, .events = POLLIN, .revents = 0 };
+    KASSERT(poll_scan(fds, &bad, 1, 16) == 1);
+    KASSERT(bad.revents == POLLERR);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1808,6 +1842,7 @@ static const struct ktest tests[] = {
     { "pipe: write -1 when no readers",   test_pipe_broken },
     { "pipe: ring buffer wraps",          test_pipe_wraps },
     { "pipe: reader blocks, not spins",   test_pipe_read_blocks_not_spins },
+    { "poll: pipe readiness scan",        test_poll_pipe_readiness },
     { "file: refcount dup/close",         test_file_refcount },
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },

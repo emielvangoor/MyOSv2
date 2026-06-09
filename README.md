@@ -52,7 +52,9 @@ deadlines; just building it one piece at a time and enjoying the ride.
   over UDP sockets; `/bin/http` fetches a page over TCP (`GET example.com` →
   `HTTP/1.1 200 OK`) — out to the real internet; `/bin/httpd` is a tiny HTTP
   server: run it, then `curl http://localhost:8080/` from the host reaches it
-  (QEMU forwards host:8080 → guest:8080).
+  (QEMU forwards host:8080 → guest:8080). `poll()` waits on several fds at once
+  (sockets, pipes); `shutdown()` half-closes a TCP connection. `/bin/polldemo`
+  shows `poll()` blocking on a pipe a forked child fills.
 - **DNS + ping** — a **DNS resolver** over UDP and a user-space `ping` that takes
   a hostname: `ping https://www.google.com` strips the scheme, resolves the name,
   and ICMP-echoes the address.
@@ -60,7 +62,7 @@ deadlines; just building it one piece at a time and enjoying the ride.
   the command line, so `/bin/ping <host>` and friends get their arguments.
 - **`shutdown`** — a shell command that halts the machine via PSCI (QEMU exits).
 
-Where it goes next — more of the socket API (poll/select, non-blocking),
+Where it goes next — TCP congestion control and fuller teardown,
 and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a
 capable, Unix-like OS; graphics is deferred.
 

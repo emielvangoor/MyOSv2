@@ -68,6 +68,9 @@ int connect(int fd, unsigned int ip, unsigned short port)
 { return (int)syscall3(SYS_CONNECT, fd, ip, port); }
 int listen(int fd, int backlog) { return (int)syscall3(SYS_LISTEN, fd, backlog, 0); }
 int accept(int fd) { return (int)syscall3(SYS_ACCEPT, fd, 0, 0); }
+int sock_shutdown(int fd, int how) { return (int)syscall3(SYS_SOCKSHUT, fd, how, 0); }
+int poll(struct pollfd *fds, int nfds, int timeout_ms)
+{ return (int)syscall3(SYS_POLL, (long)fds, nfds, timeout_ms); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 
 // --- minimal user-space malloc: a first-fit free list over sbrk ---

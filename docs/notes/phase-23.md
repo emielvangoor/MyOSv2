@@ -169,3 +169,45 @@ net for reassembly/RTO/flow-control.
 
 To reproduce: `make run`, type `httpd`, then in another terminal
 `curl http://localhost:8080/`.
+
+---
+
+## 23.5 — Socket API polish: poll() + shutdown()
+
+**The gap it closed.** Every I/O call blocked on exactly one fd. A program that
+must watch several at once (a server with many connections, or anything mixing a
+socket and a pipe) had no way to ask "which of these is ready?" without
+committing to a blocking read on one.
+
+**poll() (`src/poll.{h,c}`).** The pure heart is `poll_scan`: one non-blocking
+pass that fills each `pollfd`'s `revents` from the fd's current readiness
+(POLLIN/POLLOUT/POLLHUP, POLLERR for a bad fd). Readiness dispatches by file
+type to small predicates: `pipe_readable/writable/hangup`, `socket_readable/
+writable` → `tcp_readable/writable`. `SYS_POLL` wraps `poll_scan` in the standard
+pump-and-sleep loop until at least one fd is ready or the timeout (ms) elapses;
+`timeout == 0` makes it a non-blocking probe, a signal makes it return -1 (EINTR).
+
+**shutdown() (TCP half-close).** `tcp_shutdown` sends a FIN and moves to FIN_WAIT
+but, unlike `tcp_close`, keeps the connection so the app can still read what the
+peer sends before its own FIN. Exposed as `socket_shutdown(fd, SHUT_WR)` /
+`SYS_SOCKSHUT` / `sock_shutdown()`.
+
+**Tests.** `poll: pipe readiness scan` builds two pipe ends in-kernel and checks
+the scan: empty pipe → write end writable, read end not readable; after a write →
+both ready; a closed fd → POLLERR. End-to-end: `/bin/polldemo` forks a child that
+writes a pipe after 300 ms while the parent `poll()`s it with a 2 s timeout —
+prints `ready -> read "ping"`.
+
+**A harness quirk found along the way.** The poll test first hung when placed
+after the live-network tests: those call `net_wait` on the single boot thread,
+and `sleep_ticks` leaves it `SLEEPING` when `schedule()` finds nothing else
+runnable (harmless in the real OS, where the idle thread is always runnable and
+the timer wakes sleepers, but it lingers in the bare test harness). Moving the
+poll test next to the pipe tests — a cleaner grouping anyway — runs it in a clean
+environment. Also: `hostfwd` moved off the shared QEMU flags onto `make run`
+only, so `make test` never tries to bind host port 8080.
+
+**Deferred (milestone-picking).** `select` (redundant with `poll`),
+non-blocking-fd flag (`fcntl`/`O_NONBLOCK`), `getsockname`/`getpeername`,
+`setsockopt`, and `recv`/`send` flags — all straightforward additions on this
+foundation, left for later.

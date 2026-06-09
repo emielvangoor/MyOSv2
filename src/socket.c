@@ -109,6 +109,32 @@ struct socket *socket_accept(struct socket *s)
     return 0;
 }
 
+int socket_shutdown(struct socket *s, int how)
+{
+    if (!s) { return -1; }
+    if (s->type == SOCK_STREAM && s->tcp && (how == SHUT_WR || how == SHUT_RDWR)) {
+        tcp_shutdown(s->tcp);          // send FIN, keep the read side open
+    }
+    return 0;
+}
+
+// --- readiness for poll() ---
+int socket_readable(struct socket *s)
+{
+    if (!s) { return 0; }
+    if (s->type == SOCK_DGRAM)  { return s->qcount > 0; }     // a datagram is queued
+    if (s->type == SOCK_STREAM) { return tcp_readable(s->tcp); }
+    return 0;
+}
+
+int socket_writable(struct socket *s)
+{
+    if (!s) { return 0; }
+    if (s->type == SOCK_DGRAM)  { return 1; }                 // UDP send never blocks
+    if (s->type == SOCK_STREAM) { return tcp_writable(s->tcp); }
+    return 0;
+}
+
 int socket_bind(struct socket *s, uint16_t port)
 {
     if (!s) { return -1; }

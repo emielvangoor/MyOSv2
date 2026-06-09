@@ -457,6 +457,35 @@ int tcp_recv(struct tcp_conn *c, void *buf, int len)
     return 0;                              // peer closed, ring drained -> EOF
 }
 
+// --- readiness for poll() ---
+int tcp_readable(struct tcp_conn *c)
+{
+    if (!c) { return 0; }
+    // recv() will return immediately if there is buffered data, or if the peer
+    // has closed (FIN seen) or reset -- all cases where it won't block.
+    return !ring_empty(c) || c->peer_fin || c->reset;
+}
+
+int tcp_writable(struct tcp_conn *c)
+{
+    if (!c) { return 0; }
+    // Writable once connected with room in the peer's window. (Our send is still
+    // synchronous, so this reports "a send can make progress", not "won't block".)
+    return c->state == ESTABLISHED &&
+           tcp_window_avail(c->snd_una, c->snd_nxt, c->snd_wnd, 1) > 0;
+}
+
+// Half-close the write side: send a FIN but keep the connection so the app can
+// still read whatever the peer sends before its own FIN. (tcp_close, by contrast,
+// tears the whole thing down.)
+void tcp_shutdown(struct tcp_conn *c)
+{
+    if (!c || c->state != ESTABLISHED) { return; }
+    tcp_xmit(c, FIN | ACK, 0, 0);
+    c->snd_nxt += 1;                   // FIN consumes one sequence number
+    c->state = FIN_WAIT;
+}
+
 void tcp_close(struct tcp_conn *c)
 {
     if (!c) { return; }

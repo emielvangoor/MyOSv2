@@ -25,3 +25,8 @@ struct pipe *pipe_alloc(void);                                  // readers=write
 int  pipe_read(struct file *f, void *buf, uint64_t len);        // blocks; 0 = EOF
 int  pipe_write(struct file *f, const void *buf, uint64_t len); // blocks; -1 = broken
 void pipe_close(struct file *f);                                // drop an end; free when 0/0
+
+// Readiness predicates for poll() (non-blocking; see poll.h).
+int  pipe_readable(struct file *f);   // read end has data, or all writers closed (EOF)
+int  pipe_writable(struct file *f);   // write end has room, or all readers closed (broken)
+int  pipe_hangup(struct file *f);     // read end drained and all writers have closed

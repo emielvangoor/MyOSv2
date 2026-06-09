@@ -38,6 +38,19 @@ int recvfrom(int fd, void *buf, int len, unsigned int *ip, unsigned short *port)
 int connect(int fd, unsigned int ip, unsigned short port);   // TCP connect (SOCK_STREAM)
 int listen(int fd, int backlog);                             // TCP passive open
 int accept(int fd);                                          // block for a connection -> new fd
+int sock_shutdown(int fd, int how);                          // TCP half-close (SHUT_WR/...)
+#define SHUT_RD 0
+#define SHUT_WR 1
+#define SHUT_RDWR 2
+
+// poll(): wait until one of several fds is ready (or a timeout in ms; -1 = forever,
+// 0 = return immediately). Returns the number of ready fds, 0 on timeout, -1 EINTR.
+#define POLLIN  0x001
+#define POLLOUT 0x004
+#define POLLERR 0x008
+#define POLLHUP 0x010
+struct pollfd { int fd; short events; short revents; };
+int poll(struct pollfd *fds, int nfds, int timeout_ms);
 
 #define SIGINT  2
 #define SIGKILL 9
