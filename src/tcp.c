@@ -1,16 +1,18 @@
 // tcp.c -- a minimal TCP client.
 // ==============================
 //
-// Enough TCP to fetch a page over QEMU user-net: the 3-way handshake, in-order
-// data with cumulative ACKs, a simple retransmit of unacked segments, and a FIN
-// close. It assumes a reliable, in-order path (no reassembly of out-of-order
-// segments) -- fine for a client over SLIRP, a corner a real stack must handle.
+// Enough TCP to fetch a page over QEMU user-net: the 3-way handshake, cumulative
+// ACKs, a simple retransmit of unacked segments, and a FIN close. Segments that
+// arrive out of order are buffered in a per-connection reassembly queue
+// (tcp_reasm.h) and released in order once the gap ahead of them is filled, so a
+// single dropped/reordered packet no longer forces the whole tail to be resent.
 //
 // Sequence numbers are 32-bit and wrap; compare them with signed differences
 // (seq_gt/seq_ge) so the arithmetic stays correct across the wrap.
 
 #include <stdint.h>
 #include "tcp.h"
+#include "tcp_reasm.h"
 #include "net.h"
 #include "sched.h"
 #include "timer.h"
@@ -37,9 +39,12 @@ struct tcp_conn {
     uint32_t snd_nxt;           // next sequence number to send
     uint32_t snd_una;           // oldest unacknowledged sequence number
     uint32_t rcv_nxt;           // next sequence number expected from the peer
-    uint8_t  rx[TCP_RXBUF];     // received-data ring
+    uint8_t  rx[TCP_RXBUF];     // received-data ring (in-order bytes, app-visible)
     int      rxhead, rxtail;
-    int      peer_fin;          // peer sent FIN -> EOF once the ring drains
+    struct tcp_reasm reasm;     // holds out-of-order segments until the gap fills
+    int      have_fin;          // peer's FIN has been seen (maybe out of order)...
+    uint32_t fin_seq;           // ...at this sequence number (consumed when in order)
+    int      peer_fin;          // FIN now in order -> EOF once the ring drains
     int      reset;             // peer sent RST
 };
 
@@ -148,6 +153,7 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
             c->rcv_nxt = seq + 1;          // peer's ISN + 1
             c->snd_una = ack;
             c->state = ESTABLISHED;
+            tcp_reasm_init(&c->reasm, c->rcv_nxt);   // start reassembly from here
             tcp_xmit(c, ACK, 0, 0);        // finish the handshake
         }
         return;
@@ -156,15 +162,33 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
     if (c->state == ESTABLISHED || c->state == FIN_WAIT) {
         if ((flags & ACK) && seq_gt(ack, c->snd_una)) { c->snd_una = ack; }
 
-        if (seq == c->rcv_nxt) {           // in-order segment
-            for (int i = 0; i < dlen; i++) { ring_push(c, data[i]); }
-            c->rcv_nxt += (uint32_t)dlen;
-            if (flags & FIN) { c->rcv_nxt += 1; c->peer_fin = 1; }
-            if (dlen > 0 || (flags & FIN)) { tcp_xmit(c, ACK, 0, 0); }
-            if (c->peer_fin && c->state == FIN_WAIT) { c->state = CLOSED; }
-        } else if (dlen > 0 || (flags & FIN)) {
-            tcp_xmit(c, ACK, 0, 0);        // out of order / retransmit -> re-ACK
+        // Hand the payload to the reassembly queue (it ignores anything outside
+        // the window), then drain whatever is now contiguous into the app-visible
+        // ring. An out-of-order segment buffers silently and yields nothing here;
+        // the missing segment, when it arrives, releases the whole run at once.
+        if (dlen > 0) { tcp_reasm_accept(&c->reasm, seq, data, dlen); }
+        uint8_t tmp[TCP_MSS];
+        int got;
+        while ((got = tcp_reasm_read(&c->reasm, tmp, sizeof(tmp))) > 0) {
+            for (int i = 0; i < got; i++) { ring_push(c, tmp[i]); }
         }
+        c->rcv_nxt = tcp_reasm_pos(&c->reasm);
+
+        // A FIN occupies the sequence number just past its data. Record it, but
+        // only consume it (advance rcv_nxt, signal EOF) once every preceding byte
+        // has arrived -- otherwise an out-of-order FIN would falsely report EOF
+        // ahead of a still-missing segment.
+        if (flags & FIN) { c->have_fin = 1; c->fin_seq = seq + (uint32_t)dlen; }
+        if (c->have_fin && !c->peer_fin && c->rcv_nxt == c->fin_seq) {
+            c->rcv_nxt += 1;
+            c->peer_fin = 1;
+        }
+
+        // Cumulatively ACK anything that advanced (or could advance) our window;
+        // a pure duplicate/out-of-order segment still gets a duplicate ACK, which
+        // is exactly what a sender's fast-retransmit logic later keys on.
+        if (dlen > 0 || (flags & FIN)) { tcp_xmit(c, ACK, 0, 0); }
+        if (c->peer_fin && c->state == FIN_WAIT) { c->state = CLOSED; }
     }
 }
 
@@ -176,6 +200,7 @@ struct tcp_conn *tcp_new(void)
             struct tcp_conn *c = &conns[i];
             c->used = 1; c->state = CLOSED;
             c->rxhead = c->rxtail = 0; c->peer_fin = 0; c->reset = 0;
+            c->have_fin = 0; c->fin_seq = 0;
             return c;
         }
     }

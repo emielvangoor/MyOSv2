@@ -2,9 +2,10 @@
 // ==============================================================
 //
 // Just enough TCP to be a client on a reliable path (QEMU user-net): a 3-way
-// handshake, in-order data with cumulative ACKs, a FIN close, and a simple
-// retransmit of unacked segments. No out-of-order reassembly, no window scaling
-// -- corners a real stack must handle but a fetch-one-page client can skip.
+// handshake, cumulative ACKs, a FIN close, and a simple retransmit of unacked
+// segments. Out-of-order segments are reassembled (see tcp_reasm.h) so a dropped
+// packet no longer discards the rest of the stream. No window scaling yet -- a
+// corner a real stack handles but a fetch-one-page client can skip.
 #pragma once
 #include <stdint.h>
 

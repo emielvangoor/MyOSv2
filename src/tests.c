@@ -32,6 +32,7 @@
 #include "console.h"
 #include "socket.h"
 #include "tcp.h"
+#include "tcp_reasm.h"
 
 #define PAGE 0x1000UL
 
@@ -1599,6 +1600,80 @@ static void test_tcp_checksum(void)
     KASSERT(tcp_checksum(sip, dip, seg, 20) == 0);
 }
 
+// --- TCP reassembly queue (Phase 23.1) ---
+// These tests use a file-scope instance because struct tcp_reasm is ~9 KiB --
+// too large for the boot/test stack the self-tests run on.
+static struct tcp_reasm g_reasm;
+
+static void test_tcp_reasm_in_order(void)
+{
+    tcp_reasm_init(&g_reasm, 1000);
+    tcp_reasm_accept(&g_reasm, 1000, (const uint8_t *)"abc", 3);
+    uint8_t out[8] = {0};
+    int n = tcp_reasm_read(&g_reasm, out, sizeof(out));
+    KASSERT(n == 3);
+    KASSERT(out[0] == 'a' && out[1] == 'b' && out[2] == 'c');
+    KASSERT(tcp_reasm_pos(&g_reasm) == 1003);     // advanced past the run
+}
+
+static void test_tcp_reasm_out_of_order(void)
+{
+    tcp_reasm_init(&g_reasm, 1000);
+    uint8_t out[16] = {0};
+
+    // A segment that arrives AHEAD of the gap is held, not delivered yet.
+    tcp_reasm_accept(&g_reasm, 1003, (const uint8_t *)"def", 3);
+    KASSERT(tcp_reasm_read(&g_reasm, out, sizeof(out)) == 0);
+    KASSERT(tcp_reasm_pos(&g_reasm) == 1000);     // still waiting on [1000,1003)
+
+    // Filling the gap releases BOTH segments as one contiguous run.
+    tcp_reasm_accept(&g_reasm, 1000, (const uint8_t *)"abc", 3);
+    int n = tcp_reasm_read(&g_reasm, out, sizeof(out));
+    KASSERT(n == 6);
+    KASSERT(out[0]=='a' && out[1]=='b' && out[2]=='c' &&
+            out[3]=='d' && out[4]=='e' && out[5]=='f');
+    KASSERT(tcp_reasm_pos(&g_reasm) == 1006);
+}
+
+static void test_tcp_reasm_wraps(void)
+{
+    // base near 2^32: a run that straddles the 32-bit sequence wrap must still
+    // reassemble in order (the comparisons use signed differences).
+    uint32_t base = 0xfffffffeu;                  // -2
+    tcp_reasm_init(&g_reasm, base);
+    uint8_t out[8] = {0};
+    tcp_reasm_accept(&g_reasm, base + 1, (const uint8_t *)"YZ", 2);  // ahead of gap
+    KASSERT(tcp_reasm_read(&g_reasm, out, sizeof(out)) == 0);
+    tcp_reasm_accept(&g_reasm, base, (const uint8_t *)"X", 1);       // fills gap
+    int n = tcp_reasm_read(&g_reasm, out, sizeof(out));
+    KASSERT(n == 3);
+    KASSERT(out[0]=='X' && out[1]=='Y' && out[2]=='Z');
+    KASSERT(tcp_reasm_pos(&g_reasm) == base + 3);  // 0xfffffffe + 3 = 1 (wrapped)
+}
+
+static void test_tcp_reasm_dup_and_out_of_window(void)
+{
+    tcp_reasm_init(&g_reasm, 1000);
+    uint8_t out[16] = {0};
+
+    // Overlapping retransmits are idempotent: "abc"@1000 then "bcd"@1001 -> abcd.
+    tcp_reasm_accept(&g_reasm, 1000, (const uint8_t *)"abc", 3);
+    tcp_reasm_accept(&g_reasm, 1001, (const uint8_t *)"bcd", 3);
+    int n = tcp_reasm_read(&g_reasm, out, sizeof(out));
+    KASSERT(n == 4 && out[0]=='a' && out[1]=='b' && out[2]=='c' && out[3]=='d');
+    KASSERT(tcp_reasm_pos(&g_reasm) == 1004);
+
+    // Already-consumed bytes (before base) are ignored, not re-delivered.
+    tcp_reasm_accept(&g_reasm, 1000, (const uint8_t *)"abc", 3);
+    KASSERT(tcp_reasm_read(&g_reasm, out, sizeof(out)) == 0);
+    KASSERT(tcp_reasm_pos(&g_reasm) == 1004);
+
+    // Bytes at/after base+WIN are too far ahead to buffer -> dropped, leaving a
+    // gap so nothing in front of them is delivered.
+    tcp_reasm_accept(&g_reasm, 1004 + TCP_REASM_WIN, (const uint8_t *)"z", 1);
+    KASSERT(tcp_reasm_read(&g_reasm, out, sizeof(out)) == 0);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
@@ -1703,6 +1778,10 @@ static const struct ktest tests[] = {
     { "dns: resolve localhost (live)",    test_dns_resolve_live },
     { "socket: udp queue + recvfrom",     test_socket_udp_queue },
     { "tcp: checksum verifies to 0",      test_tcp_checksum },
+    { "tcp: reasm in-order run",          test_tcp_reasm_in_order },
+    { "tcp: reasm out-of-order fill",     test_tcp_reasm_out_of_order },
+    { "tcp: reasm wraps seq space",       test_tcp_reasm_wraps },
+    { "tcp: reasm dup + out-of-window",   test_tcp_reasm_dup_and_out_of_window },
 };
 
 int run_self_tests(void)
