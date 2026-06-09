@@ -23,6 +23,7 @@
 #define UART_FR   (*(volatile uint32_t *)(UART0_BASE + 0x18)) // Flag Register
 #define UART_LCRH (*(volatile uint32_t *)(UART0_BASE + 0x2C)) // Line Control
 #define UART_CR   (*(volatile uint32_t *)(UART0_BASE + 0x30)) // Control
+#define UART_IFLS (*(volatile uint32_t *)(UART0_BASE + 0x34)) // Interrupt FIFO Level Select
 #define UART_IMSC (*(volatile uint32_t *)(UART0_BASE + 0x38)) // Interrupt Mask Set/Clear
 #define UART_ICR  (*(volatile uint32_t *)(UART0_BASE + 0x44)) // Interrupt Clear
 
@@ -60,17 +61,32 @@ int uart_getc(void)
 }
 int uart_rx_raw(void) { return uart_getc(); }
 
-// Turn on the receive interrupt. We keep the FIFO DISABLED so the interrupt
-// triggers on EVERY single byte (with the FIFO on, QEMU's PL011 only interrupts
-// once 2 bytes are buffered and never implements the receive-timeout, so lone
-// keystrokes would be missed). This only works because the reader now BLOCKS
-// instead of polling the data register -- nothing drains the byte before the
-// interrupt is delivered.
+// Turn on the receive interrupt. Two RX interrupt sources work together so we
+// never lose a byte and never wait forever for one:
+//
+//   * The 16-deep RX FIFO is ENABLED (FEN=1). It absorbs bursts in hardware --
+//     a pasted line, or a terminal that ships the whole line on Enter, can land
+//     several bytes back-to-back faster than we service interrupts. Without the
+//     FIFO (a single 1-byte holding register) such a burst yields exactly one
+//     interrupt and the rest are silently dropped: the device re-asserts in the
+//     drain/ack/EOI window and QEMU's PL011 never raises a fresh edge, so the
+//     line stalls after the first byte or two. The FIFO removes that race.
+//
+//   * RXIM fires once the FIFO reaches its trigger level. We pick the LOWEST
+//     level (1/8, i.e. 2 bytes) via IFLS so input is delivered promptly.
+//
+//   * RTIM, the receive-timeout interrupt, covers the tail: a lone byte (or the
+//     final 1 below the trigger) that would otherwise sit in the FIFO with no
+//     interrupt. QEMU's PL011 *does* implement it, so single keystrokes arrive.
+//
+// This all relies on the reader BLOCKING (never polling the data register), so
+// nothing drains a byte out from under the interrupt before it is delivered.
 void uart_rx_irq_enable(void)
 {
-    UART_LCRH &= ~(1u << 4);                     // FEN = 0: interrupt per byte
+    UART_IFLS  = 0;                              // RX/TX FIFO trigger at 1/8 (earliest)
+    UART_LCRH |= (1u << 4);                      // FEN = 1: enable the 16-deep FIFO
     UART_ICR   = UART_INT_RX | UART_INT_RT;      // clear any stale state
-    UART_IMSC |= UART_INT_RX | UART_INT_RT;      // unmask receive interrupts
+    UART_IMSC |= UART_INT_RX | UART_INT_RT;      // unmask RX + receive-timeout
     UART_CR   |= (1u << 0) | (1u << 8) | (1u << 9);  // UARTEN | TXE | RXE
 }
 
