@@ -22,11 +22,32 @@ uint16_t inet_csum(const void *buf, int len);        // internet (one's-compleme
 uint32_t net_our_ip(void);                           // our current IPv4 address (host order)
 void     net_set_ip(uint32_t ip);                    // set it (used by the DHCP client)
 int      net_dhcp(void);                             // lease an address via DHCP; 0 ok, -1 fail
-// Parse a DHCP reply: verify it's a BOOTREPLY for `xid` with the magic cookie and
-// option 53 (message type) == want_type; extract the offered address (yiaddr) and
-// option 54 (server id). Returns 0 on a match. Pure decode -- exposed for tests.
-int      dhcp_parse(const uint8_t *msg, int len, uint32_t xid, int want_type,
-                    uint32_t *yiaddr, uint32_t *server);
+uint32_t net_gateway(void);                          // current default gateway (from DHCP/default)
+uint32_t net_dns(void);                              // current DNS server  (from DHCP/default)
+uint32_t net_mask(void);                             // current subnet mask (from DHCP/default)
+
+// What a DHCP reply told us. Fields left 0 if the option was absent.
+struct dhcp_lease {
+    int      type;       // option 53: message type (2 = OFFER, 5 = ACK)
+    uint32_t yiaddr;     // the offered/leased address
+    uint32_t server;     // option 54: server identifier
+    uint32_t mask;       // option 1:  subnet mask
+    uint32_t router;     // option 3:  default gateway
+    uint32_t dns;        // option 6:  DNS server
+    uint32_t lease_secs; // option 51: lease duration in seconds
+};
+
+// Parse a DHCP reply: verify it's a BOOTREPLY for `xid` with the magic cookie,
+// then fill *out from the fixed header + options. Returns 0 on success (a valid
+// BOOTREPLY), -1 otherwise. Pure decode -- exposed for tests.
+int      dhcp_parse(const uint8_t *msg, int len, uint32_t xid, struct dhcp_lease *out);
+
+// The renewal state machine, as a pure function of elapsed lease time (RFC 2131):
+// hold until T1, then unicast-RENEW until T2, then broadcast-REBIND until expiry,
+// then REACQUIRE from scratch. Exposed for tests.
+enum dhcp_action { DHCP_HOLD, DHCP_RENEW, DHCP_REBIND, DHCP_REACQUIRE };
+int      dhcp_lease_action(uint64_t elapsed_us, uint64_t t1_us, uint64_t t2_us,
+                           uint64_t expiry_us);
 // The UDP checksum over the IPv4 pseudo-header + datagram (exposed for tests). A
 // computed value of 0 is sent as 0xffff, since 0 means "no checksum".
 uint16_t udp_checksum(uint32_t sip, uint32_t dip, const uint8_t *seg, int len);

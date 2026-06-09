@@ -118,9 +118,11 @@ void kmain(void)
         // Lease an address via DHCP; if the server doesn't answer, keep the
         // built-in default so networking still works on QEMU's user-net.
         if (net_dhcp() == 0) {
-            uint32_t ip = net_our_ip();
-            kprintf("net: DHCP leased %d.%d.%d.%d\n",
-                    (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+            uint32_t ip = net_our_ip(), gw = net_gateway(), dns = net_dns();
+            kprintf("net: DHCP leased %d.%d.%d.%d  gw %d.%d.%d.%d  dns %d.%d.%d.%d\n",
+                    (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff,
+                    (gw >> 24) & 0xff, (gw >> 16) & 0xff, (gw >> 8) & 0xff, gw & 0xff,
+                    (dns >> 24) & 0xff, (dns >> 16) & 0xff, (dns >> 8) & 0xff, dns & 0xff);
         } else {
             uint32_t ip = net_our_ip();
             kprintf("net: DHCP failed, using %d.%d.%d.%d\n",

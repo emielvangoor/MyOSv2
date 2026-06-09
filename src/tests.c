@@ -1750,24 +1750,42 @@ static void test_udp_checksum(void)
 // --- DHCP reply parsing (Phase 23.9) ---
 static void test_dhcp_parse(void)
 {
-    uint8_t msg[260];
+    uint8_t msg[300];
     for (unsigned i = 0; i < sizeof(msg); i++) { msg[i] = 0; }
     msg[0] = 2;                                  // op = BOOTREPLY
     msg[4] = 0xde; msg[5] = 0xad; msg[6] = 0xbe; msg[7] = 0xef;       // xid
     msg[16] = 0x0a; msg[17] = 0x00; msg[18] = 0x02; msg[19] = 0x0f;   // yiaddr 10.0.2.15
     msg[236] = 0x63; msg[237] = 0x82; msg[238] = 0x53; msg[239] = 0x63; // magic cookie
     int o = 240;
-    msg[o++] = 53; msg[o++] = 1; msg[o++] = 2;                        // type = OFFER
+    msg[o++] = 53; msg[o++] = 1; msg[o++] = 5;                        // type = ACK
     msg[o++] = 54; msg[o++] = 4;
     msg[o++] = 0x0a; msg[o++] = 0x00; msg[o++] = 0x02; msg[o++] = 0x02; // server 10.0.2.2
+    msg[o++] = 1;  msg[o++] = 4;
+    msg[o++] = 0xff; msg[o++] = 0xff; msg[o++] = 0xff; msg[o++] = 0x00; // mask /24
+    msg[o++] = 3;  msg[o++] = 4;
+    msg[o++] = 0x0a; msg[o++] = 0x00; msg[o++] = 0x02; msg[o++] = 0x02; // router 10.0.2.2
+    msg[o++] = 6;  msg[o++] = 4;
+    msg[o++] = 0x0a; msg[o++] = 0x00; msg[o++] = 0x02; msg[o++] = 0x03; // DNS 10.0.2.3
+    msg[o++] = 51; msg[o++] = 4;
+    msg[o++] = 0x00; msg[o++] = 0x00; msg[o++] = 0x0e; msg[o++] = 0x10; // lease 3600 s
     msg[o++] = 255;
 
-    uint32_t xid = 0xdeadbeefu, yi = 0, srv = 0;
-    KASSERT(dhcp_parse(msg, o, xid, 2, &yi, &srv) == 0);   // matches an OFFER
-    KASSERT(yi == 0x0a00020fu);
-    KASSERT(srv == 0x0a000202u);
-    KASSERT(dhcp_parse(msg, o, xid, 5, &yi, &srv) != 0);   // not an ACK
-    KASSERT(dhcp_parse(msg, o, 0x12345678u, 2, &yi, &srv) != 0);  // wrong xid
+    struct dhcp_lease L;
+    KASSERT(dhcp_parse(msg, o, 0xdeadbeefu, &L) == 0);
+    KASSERT(L.type == 5 && L.yiaddr == 0x0a00020fu && L.server == 0x0a000202u);
+    KASSERT(L.mask == 0xffffff00u && L.router == 0x0a000202u && L.dns == 0x0a000203u);
+    KASSERT(L.lease_secs == 3600);
+    KASSERT(dhcp_parse(msg, o, 0x12345678u, &L) != 0);    // wrong xid -> reject
+}
+
+static void test_dhcp_lease_action(void)
+{
+    // T1 = half the lease, T2 = 7/8, expiry = full (microseconds).
+    uint64_t t1 = 1800000000ull, t2 = 3150000000ull, exp = 3600000000ull;
+    KASSERT(dhcp_lease_action(1000000000ull, t1, t2, exp) == DHCP_HOLD);       // before T1
+    KASSERT(dhcp_lease_action(2000000000ull, t1, t2, exp) == DHCP_RENEW);      // T1..T2
+    KASSERT(dhcp_lease_action(3200000000ull, t1, t2, exp) == DHCP_REBIND);     // T2..expiry
+    KASSERT(dhcp_lease_action(3700000000ull, t1, t2, exp) == DHCP_REACQUIRE);  // expired
 }
 
 // --- TCP RST generation (Phase 23.7) ---
@@ -1969,6 +1987,7 @@ static const struct ktest tests[] = {
     { "tcp: next segment (Nagle/window)", test_tcp_next_seg },
     { "udp: transmit checksum",           test_udp_checksum },
     { "dhcp: parse OFFER/ACK",            test_dhcp_parse },
+    { "dhcp: lease renewal action",       test_dhcp_lease_action },
     { "file: refcount dup/close",         test_file_refcount },
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },

@@ -59,10 +59,19 @@ uint16_t inet_csum(const void *buf, int len)
 // ---- stack state ----
 
 static uint8_t  our_mac[6];
-static uint32_t our_ip = IP_OURS;       // runtime IP (DHCP may replace it; see net_dhcp)
+// These default to QEMU user-net's values and are replaced by whatever DHCP leases
+// us (see net_dhcp / dhcp_apply). Keeping them runtime is what lets the OS work on
+// a network other than SLIRP.
+static uint32_t our_ip      = IP_OURS;
+static uint32_t our_gateway = IP_GATEWAY;
+static uint32_t our_dns     = IP_DNS;
+static uint32_t our_mask    = 0xffffff00u;   // /24
 
-uint32_t net_our_ip(void) { return our_ip; }
+uint32_t net_our_ip(void)  { return our_ip; }
 void     net_set_ip(uint32_t ip) { our_ip = ip; }
+uint32_t net_gateway(void) { return our_gateway; }
+uint32_t net_dns(void)     { return our_dns; }
+uint32_t net_mask(void)    { return our_mask; }
 
 struct arp_entry { uint32_t ip; uint8_t mac[6]; int valid; };
 static struct arp_entry arp_cache[8];
@@ -169,7 +178,9 @@ static void arp_input(const uint8_t *f, int len)
 // gateway unless dst is on our /24) and builds the IPv4 header + checksum.
 static int ip_send(uint32_t dst_ip, uint8_t proto, const uint8_t *payload, int len)
 {
-    uint32_t nexthop = ((dst_ip ^ our_ip) & 0xffffff00u) ? IP_GATEWAY : dst_ip;
+    // On-link if dst shares our network (per the subnet mask); otherwise via the
+    // default gateway. Both come from DHCP (or the built-in defaults).
+    uint32_t nexthop = ((dst_ip ^ our_ip) & our_mask) ? our_gateway : dst_ip;
     uint8_t mac[6];
     if (arp_resolve(nexthop, mac) != 0) { return -1; }
 
@@ -435,7 +446,7 @@ int net_resolve(const char *host, uint32_t *ip)
     uint8_t query[512];
     int qn = dns_build_query(query, id, host);
     if (qn < 0) { dns_waiting = 0; return -1; }
-    if (udp_send(IP_DNS, dns_sport, 53, query, qn) != 0) { dns_waiting = 0; return -1; }
+    if (udp_send(our_dns, dns_sport, 53, query, qn) != 0) { dns_waiting = 0; return -1; }
 
     uint64_t start = timer_now_us();
     while (timer_now_us() - start < NET_TIMEOUT_US) {
@@ -448,27 +459,40 @@ int net_resolve(const char *host, uint32_t *ip)
     return dns_parse_answer(dns_rxbuf, dns_rxlen, id, ip);
 }
 
-// ---- DHCP client (Phase 23.9) ----
+// ---- DHCP client (Phase 23.9 + lease renewal) ----
 //
 // DHCP rides on BOOTP/UDP (client port 68 -> server port 67): a 236-byte fixed
-// header, a magic cookie, then TLV options. We do the classic four-message
-// handshake: broadcast DISCOVER, receive OFFER, broadcast REQUEST for the offered
-// address, receive ACK -- then adopt the leased address. All sends are broadcast
-// (we have no address yet) with source 0.0.0.0, so they bypass ARP/ip_send.
+// header, a magic cookie, then TLV options. The initial lease is the classic
+// four-message handshake -- broadcast DISCOVER, receive OFFER, broadcast REQUEST,
+// receive ACK -- after which we adopt the address AND apply the gateway/DNS/mask
+// the server handed us. We then track the lease clock (RFC 2131): at T1 (half the
+// lease) we unicast a RENEW to the server; at T2 (7/8) we broadcast a REBIND; past
+// expiry we re-acquire from scratch. Renewal is *activity-driven* -- checked from
+// net_pump() in the calling thread (no background net thread, so no new
+// concurrency on the shared buffers).
 
 #define DHCP_COOKIE 0x63825363u
 
-int dhcp_parse(const uint8_t *msg, int len, uint32_t xid, int want_type,
-               uint32_t *yiaddr, uint32_t *server)
+// The current lease's clock (microseconds, measured against the free-running
+// hardware counter so it works before the scheduler is up). lease_valid gates the
+// renewal machinery; in_renew guards net_pump re-entry while a renewal runs.
+static int      lease_valid;
+static uint64_t lease_t0;          // when the lease was (re)acquired
+static uint64_t lease_dur_us;      // total lease duration
+static uint32_t lease_server;      // server identifier (for unicast renewals)
+static int      in_renew;
+
+int dhcp_parse(const uint8_t *msg, int len, uint32_t xid, struct dhcp_lease *out)
 {
     if (len < 240) { return -1; }
     if (msg[0] != 2) { return -1; }                  // op = BOOTREPLY
     if (get32(msg + 4) != xid) { return -1; }        // our transaction id
     if (get32(msg + 236) != DHCP_COOKIE) { return -1; }
 
-    uint32_t yi = get32(msg + 16);                   // offered address
-    uint32_t sid = 0;
-    int type = -1;
+    out->type = -1;
+    out->yiaddr = get32(msg + 16);                   // offered/leased address
+    out->server = out->mask = out->router = out->dns = 0;
+    out->lease_secs = 0;
     int o = 240;
     while (o < len) {
         uint8_t code = msg[o++];
@@ -477,66 +501,99 @@ int dhcp_parse(const uint8_t *msg, int len, uint32_t xid, int want_type,
         if (o >= len) { break; }
         int olen = msg[o++];
         if (o + olen > len) { break; }
-        if (code == 53 && olen >= 1) { type = msg[o]; }            // message type
-        else if (code == 54 && olen >= 4) { sid = get32(msg + o); }// server identifier
+        switch (code) {
+            case 53: if (olen >= 1) { out->type = msg[o]; } break;        // message type
+            case 54: if (olen >= 4) { out->server = get32(msg + o); } break; // server id
+            case 1:  if (olen >= 4) { out->mask = get32(msg + o); } break;   // subnet mask
+            case 3:  if (olen >= 4) { out->router = get32(msg + o); } break; // router
+            case 6:  if (olen >= 4) { out->dns = get32(msg + o); } break;    // DNS server
+            case 51: if (olen >= 4) { out->lease_secs = get32(msg + o); } break; // lease
+        }
         o += olen;
     }
-    if (type != want_type) { return -1; }
-    if (yiaddr) { *yiaddr = yi; }
-    if (server) { *server = sid; }
     return 0;
 }
 
-// Build + broadcast one DHCP message (DISCOVER or REQUEST). reqip/server are 0
-// for DISCOVER; for REQUEST they fill options 50 (requested IP) and 54 (server id).
-static void dhcp_send_msg(int type, uint32_t xid, uint32_t reqip, uint32_t server)
+int dhcp_lease_action(uint64_t elapsed_us, uint64_t t1_us, uint64_t t2_us, uint64_t expiry_us)
+{
+    if (elapsed_us >= expiry_us) { return DHCP_REACQUIRE; }
+    if (elapsed_us >= t2_us)     { return DHCP_REBIND; }
+    if (elapsed_us >= t1_us)     { return DHCP_RENEW; }
+    return DHCP_HOLD;
+}
+
+// Build a DHCP message and send it. `bcast` selects broadcast (src 0.0.0.0 ->
+// 255.255.255.255, used for DISCOVER/REBIND/initial-REQUEST) vs unicast to the
+// server via our address (used for renewals). `ciaddr` is our current address for
+// renew/rebind (0 otherwise); options 50/54 are added when reqip/server are set.
+static void dhcp_send_msg(int type, uint32_t xid, uint32_t ciaddr,
+                          uint32_t reqip, uint32_t server, int bcast)
 {
     uint8_t m[300];
     for (unsigned i = 0; i < sizeof(m); i++) { m[i] = 0; }
     m[0] = 1; m[1] = 1; m[2] = 6;            // op=BOOTREQUEST, htype=Ethernet, hlen=6
     put32(m + 4, xid);
-    put16(m + 10, 0x8000);                   // flags: ask the server to broadcast its reply
+    put16(m + 10, bcast ? 0x8000 : 0);       // ask the server to broadcast its reply?
+    put32(m + 12, ciaddr);                   // ciaddr (our address when renewing)
     net_mac(m + 28);                         // chaddr = our MAC
     put32(m + 236, DHCP_COOKIE);
     int o = 240;
     m[o++] = 53; m[o++] = 1; m[o++] = (uint8_t)type;       // option 53: message type
-    if (type == 3) {                                       // REQUEST adds these
-        m[o++] = 50; m[o++] = 4; put32(m + o, reqip); o += 4;     // requested IP
-        m[o++] = 54; m[o++] = 4; put32(m + o, server); o += 4;    // server id
-    }
+    if (reqip)  { m[o++] = 50; m[o++] = 4; put32(m + o, reqip);  o += 4; }  // requested IP
+    if (server) { m[o++] = 54; m[o++] = 4; put32(m + o, server); o += 4; }  // server id
     m[o++] = 255;                                          // end
 
-    // Wrap in UDP (68->67) then IPv4 (0.0.0.0 -> 255.255.255.255), all broadcast.
+    // Wrap in UDP (68->67) then IPv4. Broadcast: 0.0.0.0 -> 255.255.255.255 to a
+    // broadcast MAC. Unicast renewal: our address -> the server.
+    uint32_t src = bcast ? 0 : our_ip;
+    uint32_t dst = bcast ? 0xffffffffu : server;
+
     uint8_t udp[8 + sizeof(m)];
     put16(udp + 0, 68); put16(udp + 2, 67);
     put16(udp + 4, (uint16_t)(8 + o));
     put16(udp + 6, 0);
     for (int i = 0; i < o; i++) { udp[8 + i] = m[i]; }
-    put16(udp + 6, udp_checksum(0, 0xffffffffu, udp, 8 + o));
+    put16(udp + 6, udp_checksum(src, dst, udp, 8 + o));
 
-    uint8_t pkt[20 + 8 + sizeof(m)];
-    pkt[0] = 0x45; pkt[1] = 0;
-    put16(pkt + 2, (uint16_t)(20 + 8 + o));
-    put16(pkt + 4, 0); put16(pkt + 6, 0);
-    pkt[8] = 64; pkt[9] = 17; put16(pkt + 10, 0);
-    put32(pkt + 12, 0);                      // src 0.0.0.0
-    put32(pkt + 16, 0xffffffffu);            // dst 255.255.255.255
-    put16(pkt + 10, inet_csum(pkt, 20));
-    for (int i = 0; i < 8 + o; i++) { pkt[20 + i] = udp[i]; }
-
-    uint8_t bcast[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
-    eth_send(bcast, 0x0800, pkt, 20 + 8 + o);
+    if (bcast) {
+        uint8_t pkt[20 + 8 + sizeof(m)];
+        pkt[0] = 0x45; pkt[1] = 0;
+        put16(pkt + 2, (uint16_t)(20 + 8 + o));
+        put16(pkt + 4, 0); put16(pkt + 6, 0);
+        pkt[8] = 64; pkt[9] = 17; put16(pkt + 10, 0);
+        put32(pkt + 12, src); put32(pkt + 16, dst);
+        put16(pkt + 10, inet_csum(pkt, 20));
+        for (int i = 0; i < 8 + o; i++) { pkt[20 + i] = udp[i]; }
+        uint8_t bc[6] = {0xff,0xff,0xff,0xff,0xff,0xff};
+        eth_send(bc, 0x0800, pkt, 20 + 8 + o);
+    } else {
+        ip_send(dst, 17, udp, 8 + o);        // unicast renewal goes through normal routing
+    }
 }
 
-// Wait for a DHCP reply of `want_type` matching `xid`; fill *yiaddr/*server.
-static int dhcp_wait_reply(uint32_t xid, int want_type, uint32_t *yiaddr, uint32_t *server)
+// Adopt a lease from an ACK: set our address and the gateway/DNS/mask it carried,
+// and start the lease clock.
+static void dhcp_apply(const struct dhcp_lease *L)
+{
+    net_set_ip(L->yiaddr);
+    if (L->mask)   { our_mask = L->mask; }
+    if (L->router) { our_gateway = L->router; }
+    if (L->dns)    { our_dns = L->dns; }
+    if (L->server) { lease_server = L->server; }
+    lease_dur_us = (uint64_t)(L->lease_secs ? L->lease_secs : 3600) * 1000000ull;
+    lease_t0 = timer_now_us();
+    lease_valid = 1;
+}
+
+// Wait for a DHCP reply of `want_type` matching `xid`; fill *out.
+static int dhcp_wait_reply(uint32_t xid, int want_type, struct dhcp_lease *out)
 {
     uint64_t start = timer_now_us();
     while (timer_now_us() - start < NET_TIMEOUT_US) {
         dhcp_got = 0;
         net_pump();
-        if (dhcp_got &&
-            dhcp_parse(dhcp_rxbuf, dhcp_rxlen, xid, want_type, yiaddr, server) == 0) {
+        if (dhcp_got && dhcp_parse(dhcp_rxbuf, dhcp_rxlen, xid, out) == 0 &&
+            out->type == want_type) {
             return 0;
         }
         if (net_signal_pending()) { return -1; }
@@ -548,19 +605,53 @@ static int dhcp_wait_reply(uint32_t xid, int want_type, uint32_t *yiaddr, uint32
 int net_dhcp(void)
 {
     uint32_t xid = (uint32_t)timer_now_us();      // a transaction id for this exchange
-    uint32_t offer = 0, server = 0;
+    struct dhcp_lease offer, ack;
     dhcp_waiting = 1; dhcp_got = 0;
 
-    dhcp_send_msg(1, xid, 0, 0);                   // DISCOVER
-    if (dhcp_wait_reply(xid, 2, &offer, &server) != 0) { dhcp_waiting = 0; return -1; }
+    dhcp_send_msg(1, xid, 0, 0, 0, 1);             // broadcast DISCOVER
+    if (dhcp_wait_reply(xid, 2, &offer) != 0) { dhcp_waiting = 0; return -1; }
 
-    dhcp_send_msg(3, xid, offer, server);          // REQUEST the offered address
-    uint32_t acked = 0;
-    if (dhcp_wait_reply(xid, 5, &acked, &server) != 0) { dhcp_waiting = 0; return -1; }
+    // broadcast REQUEST for the offered address (selecting state: option 50 + 54)
+    dhcp_send_msg(3, xid, 0, offer.yiaddr, offer.server, 1);
+    if (dhcp_wait_reply(xid, 5, &ack) != 0) { dhcp_waiting = 0; return -1; }
 
     dhcp_waiting = 0;
-    net_set_ip(acked);                             // adopt the lease
+    dhcp_apply(&ack);
     return 0;
+}
+
+// Send a RENEW (unicast to the server) or REBIND (broadcast) and wait for the ACK,
+// re-applying the refreshed lease on success. Returns 0 if the lease was renewed.
+static int dhcp_renew(int rebind)
+{
+    uint32_t xid = (uint32_t)timer_now_us();
+    struct dhcp_lease ack;
+    dhcp_waiting = 1; dhcp_got = 0;
+    // REQUEST with ciaddr = our address, no option 50; server id only when renewing.
+    dhcp_send_msg(3, xid, our_ip, 0, rebind ? 0 : lease_server, rebind);
+    int rc = dhcp_wait_reply(xid, 5, &ack);
+    dhcp_waiting = 0;
+    if (rc == 0) { dhcp_apply(&ack); }
+    return rc;
+}
+
+// Activity-driven lease maintenance: called from net_pump in the caller's thread.
+// At T1 renew (unicast), at T2 rebind (broadcast), past expiry re-acquire. The
+// in_renew guard stops the renewal's own net_pump() calls from recursing here.
+static void dhcp_renew_check(void)
+{
+    if (!lease_valid || in_renew || dhcp_waiting) { return; }
+    uint64_t elapsed = timer_now_us() - lease_t0;
+    uint64_t t1 = lease_dur_us / 2;
+    uint64_t t2 = lease_dur_us * 7 / 8;
+    int action = dhcp_lease_action(elapsed, t1, t2, lease_dur_us);
+    if (action == DHCP_HOLD) { return; }
+
+    in_renew = 1;
+    if (action == DHCP_RENEW)        { dhcp_renew(0); }
+    else if (action == DHCP_REBIND)  { dhcp_renew(1); }
+    else /* DHCP_REACQUIRE */        { lease_valid = 0; net_dhcp(); }
+    in_renew = 0;
 }
 
 // ---- inbound dispatch ----
@@ -577,6 +668,7 @@ static uint8_t rxframe[2048];
 
 int net_pump(void)
 {
+    dhcp_renew_check();          // maintain the DHCP lease whenever the net is in use
     int n = net_recv(rxframe, sizeof(rxframe));
     if (n > 0) { net_input(rxframe, n); return 1; }
     return 0;

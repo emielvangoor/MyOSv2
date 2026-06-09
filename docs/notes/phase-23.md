@@ -351,6 +351,24 @@ client leases the real one at boot:
 - `kmain` calls `net_dhcp()` after `net_stack_init`; success adopts the lease,
   failure keeps the default so networking still works.
 
+**Applying the offered config + lease renewal (follow-up).** `dhcp_parse` now fills
+a `struct dhcp_lease` with the subnet mask (option 1), router (3), DNS (6), and
+lease time (51) in addition to the address. `dhcp_apply` adopts all of them:
+`our_gateway`/`our_dns`/`our_mask` became runtime values (defaulting to the SLIRP
+constants) that `ip_send`'s routing and `net_resolve` now read, so the OS works on
+a network other than QEMU's.
+
+Renewal follows RFC 2131's clock via the pure, tested `dhcp_lease_action`: HOLD
+until T1 (½ lease), then RENEW (unicast REQUEST to the server) until T2 (⅞), then
+REBIND (broadcast) until expiry, then re-acquire. It is **activity-driven** —
+`net_pump` calls `dhcp_renew_check` (re-entrancy-guarded) in the caller's own
+thread, so it adds no concurrent access to the shared network buffers. The
+trade-off: a fully idle host won't renew until its next network operation; a
+truly time-driven background renewal would need a net-layer lock, left as future
+work. Verified by temporarily capping the lease to 6 s and watching unicast
+`renew ACKed` cycles during a `ping` loop, plus the boot log
+`DHCP leased 10.0.2.15  gw 10.0.2.2  dns 10.0.2.3` and a working `http` fetch.
+
 **Tests.** `udp: transmit checksum` (the verify-to-0xffff property), `dhcp: parse
 OFFER/ACK` (match, wrong-type, wrong-xid). End-to-end: boot logs
 `net: DHCP leased 10.0.2.15` (the full handshake against SLIRP's DHCP server),

@@ -64,9 +64,11 @@ deadlines; just building it one piece at a time and enjoying the ride.
   checksum**) and a user-space `ping` that takes a hostname:
   `ping https://www.google.com` strips the scheme, resolves the name, and
   ICMP-echoes the address.
-- **DHCP** — the guest **leases its IP address at boot** (DISCOVER/OFFER/REQUEST/
-  ACK) instead of hardcoding it; the address is runtime-configurable throughout
-  the stack, falling back to a built-in default if no server answers.
+- **DHCP** — the guest **leases its address at boot** (DISCOVER/OFFER/REQUEST/ACK)
+  instead of hardcoding it, **applies the offered gateway/DNS/subnet mask**, and
+  **renews the lease** (RFC 2131 T1 renew / T2 rebind, activity-driven). The whole
+  stack is runtime-configurable, falling back to built-in defaults if no server
+  answers.
 - **Program arguments** — `exec` passes `argv` to programs; the shell tokenizes
   the command line, so `/bin/ping <host>` and friends get their arguments.
 - **`shutdown`** — a shell command that halts the machine via PSCI (QEMU exits).
