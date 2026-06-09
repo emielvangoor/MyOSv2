@@ -72,6 +72,15 @@ deadlines; just building it one piece at a time and enjoying the ride.
 - **Program arguments** — `exec` passes `argv` to programs; the shell tokenizes
   the command line, so `/bin/ping <host>` and friends get their arguments.
 - **`shutdown`** — a shell command that halts the machine via PSCI (QEMU exits).
+- **Lisp machine** — `/bin/lisp` is a full **Emacs-architecture Lisp** running at
+  EL0: tagged 64-bit objects, a **mark-and-sweep collector with conservative
+  C-stack scanning** (so it can collect mid-computation in a long-lived process),
+  **Lisp-2** with separate value/function slots, tail-call optimization, closures
+  and `defmacro`. The reader/evaluator/printer are a single portable core shared
+  with the kernel, so the in-kernel test suite red-greens the language itself. It
+  boots its standard library from `/lib/bootstrap.l` and gives you an interactive
+  REPL with error recovery (a typo doesn't kill the session). The plan is for Lisp
+  to become the primary userland — see **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
 Where it goes next — TCP congestion control and fuller teardown,
 and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a

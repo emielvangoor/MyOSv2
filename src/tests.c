@@ -36,6 +36,7 @@
 #include "tcp_rto.h"
 #include "tcp_cc.h"
 #include "poll.h"
+#include "lm.h"
 
 #define PAGE 0x1000UL
 
@@ -1900,8 +1901,151 @@ static void test_poll_pipe_readiness(void)
     KASSERT(bad.revents == POLLERR);
 }
 
+// --- Lisp machine (lm_core: reader, evaluator, printer, GC) ---
+//
+// The portable Lisp core is compiled into the kernel precisely so we can
+// red-green it here, on-target, under `make test`. Each test boots a fresh Lisp
+// image (lm_boot resets the heap + obarray), evaluates source from a string, and
+// asserts on the printed result -- the same read-eval-print path the real REPL
+// uses, minus the tty.
+
+static int lm_streq_(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+// Re-init the allocators (lm_alloc -> kmalloc needs a live heap) then boot a
+// fresh Lisp image. The Lisp tests run before the heap tests in the registry,
+// so -- like every other test here -- they must stand up their own allocators.
+static void lm_fresh(void)
+{
+    pmm_init();
+    kheap_init();
+    lm_boot();
+}
+
+// Evaluate all forms in `src`, print the last result, compare to `expect`.
+static int lm_is(const char *src, const char *expect)
+{
+    char buf[256];
+    lm_print_cstr(lm_eval_all_str(src), buf, sizeof(buf));
+    return lm_streq_(buf, expect);
+}
+
+static void test_lm_arithmetic(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(+ 1 2 3)", "6"));
+    KASSERT(lm_is("(* (+ 1 2) (- 10 6))", "12"));
+    KASSERT(lm_is("(- 5)", "-5"));
+    KASSERT(lm_is("(/ 20 4)", "5"));
+    KASSERT(lm_is("(% 17 5)", "2"));
+}
+
+static void test_lm_lists(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(quote (1 2 3))", "(1 2 3)"));
+    KASSERT(lm_is("(cons 1 2)", "(1 . 2)"));
+    KASSERT(lm_is("(car (quote (a b c)))", "a"));
+    KASSERT(lm_is("(cdr (quote (a b c)))", "(b c)"));
+    KASSERT(lm_is("(list 1 2 (+ 1 2))", "(1 2 3)"));
+}
+
+static void test_lm_conditionals(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(if (< 1 2) 10 20)", "10"));
+    KASSERT(lm_is("(if (> 1 2) 10 20)", "20"));
+    KASSERT(lm_is("(cond ((= 1 2) 'a) ((= 2 2) 'b) (t 'c))", "b"));
+    KASSERT(lm_is("(and 1 2 3)", "3"));
+    KASSERT(lm_is("(or nil nil 7)", "7"));
+    KASSERT(lm_is("(not nil)", "t"));
+}
+
+static void test_lm_let_and_setq(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(let ((x 5) (y 7)) (+ x y))", "12"));
+    KASSERT(lm_is("(progn (setq a 3) (setq a (+ a 4)) a)", "7"));
+}
+
+static void test_lm_defun_and_recursion(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(defun sq (x) (* x x)) (sq 9)", "81"));
+    // Recursion + the evaluator's tail-call path.
+    KASSERT(lm_is("(defun fact (n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 5)", "120"));
+}
+
+static void test_lm_closures(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(defun adder (n) (lambda (x) (+ x n))) (funcall (adder 10) 5)", "15"));
+}
+
+static void test_lm_macros(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(defmacro inc (v) (list 'setq v (list '+ v 1)))"
+                  " (setq a 1) (inc a) (inc a) a", "3"));
+}
+
+static void test_lm_higher_order(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(mapcar (lambda (x) (* x x)) (quote (1 2 3 4)))", "(1 4 9 16)"));
+    KASSERT(lm_is("(apply (function +) (quote (1 2 3 4)))", "10"));
+}
+
+static void test_lm_strings(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(string-concat \"ab\" \"cd\")", "\"abcd\""));
+    KASSERT(lm_is("(string-length \"hello\")", "5"));
+    KASSERT(lm_is("(equal \"hi\" \"hi\")", "t"));
+    KASSERT(lm_is("(type-of 5)", "fixnum"));
+    KASSERT(lm_is("(type-of 'x)", "symbol"));
+}
+
+static void test_lm_gc_keeps_roots(void)
+{
+    lm_fresh();
+    lm_eval_all_str("(setq keep (list 1 2 3))");   // rooted via the obarray
+    lm_eval_all_str("(progn (cons 1 2) (cons 3 4) nil)");  // pure garbage
+    size_t before = gc.alloc_count;
+    gc_collect(global_env);
+    size_t after = gc.alloc_count;
+    KASSERT(after < before);                       // garbage was reclaimed
+    KASSERT(lm_is("keep", "(1 2 3)"));             // the rooted list survived
+    // The image is still fully functional after a collection.
+    KASSERT(lm_is("(+ 2 2)", "4"));
+}
+
+static void test_lm_error_recovery(void)
+{
+    lm_fresh();
+    // An unbound variable raises an error that unwinds to the recovery point;
+    // the image keeps working afterwards (a typo at the REPL must not kill init).
+    Lobj r = lm_eval_cstr("nosuchvariable");
+    KASSERT(r == Qnil);
+    KASSERT(lm_is("(+ 40 2)", "42"));
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
+    { "lm: arithmetic",                  test_lm_arithmetic },
+    { "lm: lists + cons/car/cdr",        test_lm_lists },
+    { "lm: conditionals",                test_lm_conditionals },
+    { "lm: let + setq",                  test_lm_let_and_setq },
+    { "lm: defun + recursion",           test_lm_defun_and_recursion },
+    { "lm: closures",                    test_lm_closures },
+    { "lm: macros",                      test_lm_macros },
+    { "lm: higher-order (mapcar/apply)", test_lm_higher_order },
+    { "lm: strings + type-of",           test_lm_strings },
+    { "lm: GC keeps roots, frees rest",  test_lm_gc_keeps_roots },
+    { "lm: error recovery",              test_lm_error_recovery },
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
     { "pmm: freed page reused",          test_pmm_free_reuse },
     { "pmm: alloc_pages contiguous run", test_pmm_alloc_pages_contiguous },

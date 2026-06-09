@@ -17,16 +17,20 @@ LDFLAGS := -nostdlib -nostartfiles -T linker.ld -Wl,--gc-sections
 
 CSRC := $(wildcard src/*.c)
 ASRC := $(wildcard src/*.S)
+# user_blob.o = embedded user-program ELFs; lisp_blob.o = embedded .l source.
 OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
         $(patsubst src/%.S,$(BUILD)/%.o,$(ASRC)) \
-        $(BUILD)/user_blob.o          # the embedded user program
+        $(BUILD)/user_blob.o \
+        $(BUILD)/lisp_blob.o
 DEP  := $(OBJ:.o=.d)
 
 # User programs are separate ELF64 executables linked at USER_CODE_VA, each
 # embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
 # and unpacked into /bin by the initrd. The kernel's ELF loader maps their
 # segments at load/exec time.
-PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo
+PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm
+# The .l files embedded into the kernel and unpacked to /lib by the initrd.
+LISP_FILES  := bootstrap
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
@@ -83,12 +87,33 @@ $(BUILD)/user/%.elf: user/%.c $(USER_COMMON) user/user.ld user/ulib.h user/sysca
 	mkdir -p $(BUILD)/user
 	$(CC) $(USER_CFLAGS) -T user/user.ld -o $@ $(USER_COMMON) user/$*.c
 
+# /bin/lisp is special: it links the shared Lisp core (the SAME src/lm_core.c the
+# kernel compiles for its tests) plus the freestanding setjmp, so it needs extra
+# sources and -Isrc to find lm.h. This explicit rule overrides the generic one
+# above for lm.elf.
+LM_CORE := src/lm_core.c src/lm_jmp.S
+$(BUILD)/user/lm.elf: user/lm.c $(LM_CORE) src/lm.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
+	mkdir -p $(BUILD)/user
+	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c
+
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
 $(BUILD)/user_blob.c: $(USER_ELFS)
 	cd $(BUILD)/user && : > ../user_blob.c && \
 	  for p in $(PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Embed each Lisp source file as a C byte array (<name>_l / <name>_l_len). We copy
+# into build/lisp first and run xxd from there so the symbol names stay clean
+# (bootstrap_l, not user_lisp_bootstrap_l). The initrd writes these to /lib.
+$(BUILD)/lisp_blob.c: $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
+	mkdir -p $(BUILD)/lisp
+	cp $(patsubst %,user/lisp/%.l,$(LISP_FILES)) $(BUILD)/lisp/
+	cd $(BUILD)/lisp && : > ../lisp_blob.c && \
+	  for f in $(LISP_FILES); do xxd -i $$f.l >> ../lisp_blob.c; done
+
+$(BUILD)/lisp_blob.o: $(BUILD)/lisp_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJ) linker.ld
