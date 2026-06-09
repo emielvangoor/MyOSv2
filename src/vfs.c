@@ -62,7 +62,17 @@ static int under(const char *pfx, const char *path)
 // Walk "/a/b/c" from the right filesystem root, one component at a time.
 struct vnode *vfs_lookup(const char *path)
 {
-    if (path[0] != '/') { return 0; }
+    // A leading '/' marks an absolute path. MyOSv2 has no per-process current
+    // directory, so a path *without* one can only mean "relative to the root" --
+    // we resolve it straight from `root`. This is what lets the shell accept
+    // `cat hello.txt` and `ls bin`, not just their slash-prefixed twins.
+    // (Mounts are matched by absolute prefix below, so a relative path never
+    // crosses into one -- an acceptable limit while there is no cwd.)
+    if (path[0] != '/') {
+        if (!root) { return 0; }
+        if (path[0] == '\0') { return root; }    // "" == the root directory
+        return walk_from(root, path);
+    }
 
     // A mounted filesystem? Resolve the remainder within its root.
     for (int m = 0; m < nmounts; m++) {

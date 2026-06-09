@@ -687,6 +687,26 @@ static void test_vfs_nested_dir(void)
     KASSERT(vfs_lookup("/d")->type == VN_DIR);
 }
 
+// A path without a leading '/' is resolved relative to the root. MyOSv2 has no
+// per-process current directory, so "relative" can only mean "from root" -- and
+// that is exactly what lets the shell accept `cat hello.txt`, not just the more
+// awkward `cat /hello.txt`. A relative path must therefore resolve to the very
+// same vnode as its absolute twin.
+static void test_vfs_lookup_relative(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/a.txt", VN_FILE);
+    vfs_create("/d", VN_DIR);
+    vfs_create("/d/f.txt", VN_FILE);
+
+    KASSERT(vfs_lookup("a.txt") != 0);                          // found at all
+    KASSERT(vfs_lookup("a.txt")   == vfs_lookup("/a.txt"));     // == absolute twin
+    KASSERT(vfs_lookup("d/f.txt") == vfs_lookup("/d/f.txt"));   // nested, too
+    KASSERT(vfs_lookup("")        == vfs_root());               // empty == root
+    KASSERT(vfs_lookup("nope")    == 0);                        // still misses cleanly
+}
+
 static void test_initrd_unpacked(void)
 {
     pmm_init(); kheap_init();
@@ -1618,6 +1638,7 @@ static const struct ktest tests[] = {
     { "vfs: readdir lists entries",       test_vfs_readdir_lists },
     { "vfs: lookup missing -> null",      test_vfs_lookup_missing },
     { "vfs: nested directory",            test_vfs_nested_dir },
+    { "vfs: relative path from root",     test_vfs_lookup_relative },
     { "initrd: unpacks files",            test_initrd_unpacked },
     { "fd: open returns fd",              test_fd_open_returns_fd },
     { "fd: read syscall",                 test_fd_read_syscall },
