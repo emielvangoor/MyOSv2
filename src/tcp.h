@@ -20,6 +20,12 @@ int  tcp_send(struct tcp_conn *c, const void *buf, int len);      // bytes sent,
 int  tcp_recv(struct tcp_conn *c, void *buf, int len);            // bytes (0 = peer closed), -1 err
 void tcp_close(struct tcp_conn *c);                               // FIN + free
 
+// --- passive open (server side, Phase 23.4) ---
+int  tcp_listen(struct tcp_conn *c, uint16_t port);   // become a listener on `port`; 0 ok
+// Block until an inbound connection completes its handshake, then return the new
+// (ESTABLISHED) connection. Returns 0 on EINTR. The listener stays open for more.
+struct tcp_conn *tcp_accept(struct tcp_conn *listener);
+
 // The TCP receive path (called from ip_input for protocol 6).
 void tcp_input(uint32_t src_ip, const uint8_t *seg, int len);
 

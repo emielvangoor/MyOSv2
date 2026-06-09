@@ -127,3 +127,45 @@ is still out.
 
 **Tests.** `tcp: flow-control windows` (advertise cap/floor; sendable vs in-flight
 and MSS). End-to-end: `/bin/http` still fetches example.com (200 OK, 797 bytes).
+
+---
+
+## 23.4 — TCP server: listen/accept + a tiny HTTP server
+
+**The gap it closed.** Everything so far was a *client*: `tcp_connect` actively
+drives the handshake. A server does the opposite — it sits in LISTEN and reacts to
+an inbound SYN (passive open). The stack had no LISTEN/SYN_RCVD states and no way
+to demultiplex a SYN to a listener.
+
+**The state machine.** Two new states, `LISTEN` and `SYN_RCVD`. `tcp_input`'s
+demux now has three outcomes: (1) an exact 4-tuple match → the existing per-conn
+handling; (2) no match but a bare SYN to a `LISTEN` port → spawn a child
+connection from the pool, reply SYN-ACK, enter `SYN_RCVD`; (3) otherwise drop. A
+child shares the listener's local port but carries a concrete peer, so its
+subsequent segments (the final ACK, then data) match exactly. The final ACK
+(`ack == snd_nxt`) promotes the child to `ESTABLISHED`; a duplicate SYN (our
+SYN-ACK was lost) re-sends the SYN-ACK.
+
+**API.** `tcp_listen(c, port)` makes a connection a wildcard listener;
+`tcp_accept(listener)` blocks (pumping the network) until a child reaches
+`ESTABLISHED` and hands it out (`accepted` flag prevents double-hand-out). The
+socket layer wraps these as `socket_listen` / `socket_accept` (the latter wraps
+the already-established child in a fresh socket *without* allocating another
+`tcp_conn`), exposed as `SYS_LISTEN` / `SYS_ACCEPT` and the `listen()`/`accept()`
+ulib calls. The connection pool grew from 4 to 8 to hold a listener plus children.
+
+**Demo.** `/bin/httpd` — `socket → bind → listen → accept`, read the request,
+write a canned `200 OK`, close, repeat. The Makefile adds `hostfwd=tcp::8080-:8080`
+so the guest server is reachable from the host.
+
+**Verification.** This is the one phase whose new behavior can't be cleanly
+unit-tested in-kernel: driving the passive handshake needs the server's
+timer-derived ISN to forge the final ACK, which the test can't know without a
+test-only seam into the connection internals. Instead it's verified by the
+strongest possible test — a **real external TCP client**: boot, run `httpd`, then
+from the host `curl http://localhost:8080/` returns `Hello from MyOSv2!`, twice
+(guest logs `served request #1`, `#2`). The 109 unit tests remain the regression
+net for reassembly/RTO/flow-control.
+
+To reproduce: `make run`, type `httpd`, then in another terminal
+`curl http://localhost:8080/`.

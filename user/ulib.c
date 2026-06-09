@@ -66,6 +66,8 @@ int recvfrom(int fd, void *buf, int len, unsigned int *ip, unsigned short *port)
 { return (int)syscall5(SYS_RECVFROM, fd, (long)buf, len, (long)ip, (long)port); }
 int connect(int fd, unsigned int ip, unsigned short port)
 { return (int)syscall3(SYS_CONNECT, fd, ip, port); }
+int listen(int fd, int backlog) { return (int)syscall3(SYS_LISTEN, fd, backlog, 0); }
+int accept(int fd) { return (int)syscall3(SYS_ACCEPT, fd, 0, 0); }
 long ustrlen(const char *s) { long n = 0; while (s[n]) n++; return n; }
 
 // --- minimal user-space malloc: a first-fit free list over sbrk ---

@@ -25,9 +25,9 @@
 #define PSH 0x08
 #define ACK 0x10
 
-enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT };
+enum { CLOSED, LISTEN, SYN_SENT, SYN_RCVD, ESTABLISHED, FIN_WAIT };
 
-#define NCONN     4
+#define NCONN     8
 #define TCP_RXBUF 16384
 #define TCP_MSS   1400          // largest payload we put in one segment
 
@@ -48,6 +48,7 @@ struct tcp_conn {
     uint32_t fin_seq;           // ...at this sequence number (consumed when in order)
     int      peer_fin;          // FIN now in order -> EOF once the ring drains
     int      reset;             // peer sent RST
+    int      accepted;          // a passively-opened child that accept() has handed out
 
     // Retransmission (Phase 23.2). The single outstanding segment is kept here --
     // a copy, so the caller's buffer isn't pinned during the send -- and resent
@@ -186,14 +187,57 @@ void tcp_input(uint32_t src_ip, const uint8_t *seg, int len)
     const uint8_t *data = seg + doff;
     int dlen = len - doff;
 
+    // Demux to the exact connection (4-tuple). A listener (rport == 0) never
+    // matches here, so its data/ACK segments only ever reach the child spawned
+    // for that peer.
     struct tcp_conn *c = 0;
     for (int i = 0; i < NCONN; i++) {
         if (conns[i].used && conns[i].lport == dport &&
             conns[i].rip == src_ip && conns[i].rport == sport) { c = &conns[i]; break; }
     }
-    if (!c) { return; }
+
+    // No connection yet: a bare SYN aimed at a listening port opens one (passive
+    // open). We spawn a child connection for this peer, reply SYN-ACK, and wait in
+    // SYN_RCVD for the handshake's final ACK.
+    if (!c) {
+        if ((flags & SYN) && !(flags & ACK)) {
+            struct tcp_conn *lis = 0;
+            for (int i = 0; i < NCONN; i++) {
+                if (conns[i].used && conns[i].state == LISTEN && conns[i].lport == dport) {
+                    lis = &conns[i]; break;
+                }
+            }
+            if (lis) {
+                struct tcp_conn *ch = tcp_new();           // a backlog slot
+                if (!ch) { return; }                       // backlog full -> drop the SYN
+                ch->lport = dport; ch->rip = src_ip; ch->rport = sport;
+                ch->rcv_nxt = seq + 1;                     // ack the peer's SYN
+                ch->snd_una = ch->snd_nxt = (uint32_t)timer_now_us();   // our ISN
+                ch->snd_wnd = wnd;
+                ch->state = SYN_RCVD;
+                uint32_t isn = ch->snd_nxt;
+                tcp_xmit_seq(ch, SYN | ACK, isn, 0, 0);
+                ch->snd_nxt = isn + 1;                     // SYN consumes one seq
+            }
+        }
+        return;
+    }
 
     if (flags & RST) { c->reset = 1; c->state = CLOSED; return; }
+
+    if (c->state == SYN_RCVD) {
+        if ((flags & ACK) && ack == c->snd_nxt) {          // handshake completed
+            c->snd_una = ack;
+            c->snd_wnd = wnd;
+            c->state = ESTABLISHED;
+            tcp_reasm_init(&c->reasm, c->rcv_nxt);
+            // The final ACK is normally dataless; if it carried data, the peer
+            // will retransmit it and we'll pick it up once ESTABLISHED.
+        } else if ((flags & SYN) && !(flags & ACK)) {
+            tcp_xmit_seq(c, SYN | ACK, c->snd_una, 0, 0);  // our SYN-ACK was lost -> resend
+        }
+        return;
+    }
 
     if (c->state == SYN_SENT) {
         if ((flags & SYN) && (flags & ACK) && ack == c->snd_nxt) {
@@ -252,11 +296,43 @@ struct tcp_conn *tcp_new(void)
             c->have_fin = 0; c->fin_seq = 0;
             c->sndlen = 0; c->snd_retx = 0;
             c->snd_wnd = 0; c->last_adv = 0;
+            c->accepted = 0;
             tcp_rto_init(&c->rto);
             return c;
         }
     }
     return 0;
+}
+
+// ---- server API (passive open) ----
+int tcp_listen(struct tcp_conn *c, uint16_t port)
+{
+    if (!c) { return -1; }
+    c->lport = port;
+    c->rip = 0; c->rport = 0;               // wildcards: accept from any peer
+    c->state = LISTEN;
+    return 0;
+}
+
+struct tcp_conn *tcp_accept(struct tcp_conn *lis)
+{
+    if (!lis || lis->state != LISTEN) { return 0; }
+    for (;;) {
+        net_pump();
+        // Hand out the first child of this listener whose handshake has completed
+        // and that hasn't been accepted yet. Children share the listener's local
+        // port but carry a concrete peer (rport != 0).
+        for (int i = 0; i < NCONN; i++) {
+            struct tcp_conn *ch = &conns[i];
+            if (ch->used && ch != lis && ch->lport == lis->lport && ch->rport != 0 &&
+                ch->state == ESTABLISHED && !ch->accepted) {
+                ch->accepted = 1;
+                return ch;
+            }
+        }
+        if (tcp_interrupted()) { return 0; }
+        net_wait(20);
+    }
 }
 
 int tcp_connect(struct tcp_conn *c, uint32_t ip, uint16_t port)

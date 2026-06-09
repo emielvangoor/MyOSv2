@@ -31,3 +31,5 @@
 #define SYS_SENDTO   33
 #define SYS_RECVFROM 34
 #define SYS_CONNECT  35
+#define SYS_LISTEN   36
+#define SYS_ACCEPT   37

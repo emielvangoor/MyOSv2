@@ -26,7 +26,7 @@ DEP  := $(OBJ:.o=.d)
 # embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
 # and unpacked into /bin by the initrd. The kernel's ELF loader maps their
 # segments at load/exec time.
-PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http
+PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
@@ -49,8 +49,11 @@ QEMU_DISK  := -global virtio-mmio.force-legacy=false \
               -drive file=$(BUILD)/disk.img,if=none,format=raw,id=hd0 \
               -device virtio-blk-device,drive=hd0
 # QEMU user-mode networking: a virtual LAN (gateway 10.0.2.2, guest 10.0.2.15)
-# with a built-in ARP/ICMP/DHCP responder -- no host setup needed.
-QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
+# with a built-in ARP/ICMP/DHCP responder -- no host setup needed. hostfwd maps
+# host port 8080 to guest 8080 so the in-guest /bin/httpd is reachable from the
+# host: run `httpd` in the shell, then `curl http://localhost:8080/`.
+QEMU_NET   := -netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+              -device virtio-net-device,netdev=net0
 QEMU_SERIAL := -chardev stdio,id=ch0,signal=off -serial chardev:ch0
 QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none $(QEMU_SERIAL) \
               -kernel $(TARGET) $(QEMU_DISK) $(QEMU_NET)

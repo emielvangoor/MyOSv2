@@ -82,6 +82,33 @@ int socket_write(struct socket *s, const void *buf, int len)
     return tcp_send(s->tcp, buf, len);
 }
 
+int socket_listen(struct socket *s, int backlog)
+{
+    (void)backlog;   // the backlog is bounded by the connection pool (see tcp.c)
+    if (!s || s->type != SOCK_STREAM || !s->tcp || s->lport == 0) { return -1; }
+    return tcp_listen(s->tcp, s->lport);
+}
+
+struct socket *socket_accept(struct socket *s)
+{
+    if (!s || s->type != SOCK_STREAM || !s->tcp) { return 0; }
+    struct tcp_conn *child = tcp_accept(s->tcp);   // blocks until a peer connects
+    if (!child) { return 0; }
+
+    // Wrap the already-established child connection in a fresh socket WITHOUT
+    // allocating another tcp_conn (socket_alloc would).
+    for (int i = 0; i < NSOCK; i++) {
+        if (!socks[i].used) {
+            socks[i].used = 1; socks[i].type = SOCK_STREAM; socks[i].lport = s->lport;
+            socks[i].qhead = socks[i].qtail = 0; socks[i].qcount = 0;
+            socks[i].tcp = child;
+            return &socks[i];
+        }
+    }
+    tcp_close(child);   // no socket slot free: don't leak the connection
+    return 0;
+}
+
 int socket_bind(struct socket *s, uint16_t port)
 {
     if (!s) { return -1; }

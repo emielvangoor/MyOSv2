@@ -30,3 +30,5 @@ void socket_udp_input(uint32_t src_ip, uint16_t src_port, uint16_t dst_port,
 int socket_connect(struct socket *s, uint32_t ip, uint16_t port);  // 0 on success
 int socket_read(struct socket *s, void *buf, int len);             // recv; 0 = closed
 int socket_write(struct socket *s, const void *buf, int len);      // send
+int socket_listen(struct socket *s, int backlog);                  // passive open; 0 ok
+struct socket *socket_accept(struct socket *s);                    // block for a connection

@@ -235,6 +235,29 @@ long do_syscall(struct trapframe *tf)
         } else { ret = -1; }
         break;
     }
+    case SYS_LISTEN: {                        // x0 = fd, x1 = backlog
+        struct file **fds = sched_current_fds();
+        uint64_t fd = tf->x[0];
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+            ret = socket_listen(fds[fd]->sock, (int)tf->x[1]);
+        } else { ret = -1; }
+        break;
+    }
+    case SYS_ACCEPT: {                        // x0 = fd -> new connected fd
+        struct file **fds = sched_current_fds();
+        uint64_t fd = tf->x[0];
+        ret = -1;
+        if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+            struct socket *ns = socket_accept(fds[fd]->sock);   // blocks for a peer
+            if (ns) {
+                struct file *f = kmalloc(sizeof(struct file));
+                f->vnode = 0; f->off = 0; f->pipe = 0; f->sock = ns; f->writable = 0; f->ref = 1;
+                for (int i = 3; i < 16; i++) { if (!fds[i]) { fds[i] = f; ret = i; break; } }
+                if (ret < 0) { socket_free(ns); kfree(f); }     // fd table full
+            }
+        }
+        break;
+    }
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame
         const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
         uint64_t *d = (uint64_t *)tf;
