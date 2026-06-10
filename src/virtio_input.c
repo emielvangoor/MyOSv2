@@ -16,6 +16,7 @@
 #include "input.h"
 #include "virtio.h"
 #include "sched.h"
+#include "gfx.h"
 
 #define VIRTIO_ID_INPUT 18
 #define EVN 16
@@ -104,6 +105,15 @@ int input_poll_event(struct input_event *out)
         post(d, id);                                  // recycle it
         *(volatile uint32_t *)(uintptr_t)(d->base + 0x050) = 0;
         d->q.last_used++;
+        // Tablet moves also steer the hardware cursor plane, right here in
+        // the kernel: the pointer stays visible and smooth no matter what
+        // userland is doing with the events.
+        if (out->type == EV_ABS) {
+            static int mx, my;
+            if (out->code == ABS_X) { mx = (int)((uint64_t)out->value * GFX_W / 32768); }
+            if (out->code == ABS_Y) { my = (int)((uint64_t)out->value * GFX_H / 32768); }
+            gfx_cursor_move(mx, my);
+        }
         return 1;
     }
     return 0;

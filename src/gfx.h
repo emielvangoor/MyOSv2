@@ -23,3 +23,7 @@ int  gfx_show(int id);                               // scanout to id + full rep
 int  gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
 // A fresh, zeroed, contiguous GFX_W x GFX_H framebuffer (physical addr; 0 = OOM).
 uint64_t gfx_fb_new(void);
+// Show the hardware cursor plane at (x, y) -- binds the sprite on first use.
+// Driven by the kernel input layer on every tablet move: a visible pointer
+// with zero userland involvement and zero framebuffer redraws.
+int gfx_cursor_move(int x, int y);

@@ -1535,6 +1535,22 @@ static void test_gpu_two_seats(void)
     KASSERT(gfx_flush_rect(0, 0, 8, 8) == 0);
 }
 
+static void test_gpu_cursor_plane(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    uint64_t fb = gfx_fb_new();
+    KASSERT(fb != 0);
+    KASSERT(gfx_resource_setup(1, fb) == 0);
+    KASSERT(gfx_show(1) == 0);
+    // First move binds the sprite (create + backing + transfer + UPDATE);
+    // later moves are single MOVE_CURSOR commands. The device must accept
+    // both -- this is what makes a pointer visible over virtio-gpu, where
+    // QEMU hides the host cursor and expects a guest cursor plane.
+    KASSERT(gfx_cursor_move(10, 10) == 0);
+    KASSERT(gfx_cursor_move(640, 360) == 0);
+}
+
 static void test_seat_logic(void)
 {
     // The multiplexer's bookkeeping, as pure logic: registration is
@@ -2631,6 +2647,7 @@ static const struct ktest tests[] = {
     { "gpu: device present",              test_gpu_present },
     { "gpu: scanout configured",          test_gpu_scanout },
     { "gpu: two seats, two resources",    test_gpu_two_seats },
+    { "gpu: hardware cursor plane",       test_gpu_cursor_plane },
     { "seat: register/switch/release",    test_seat_logic },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },

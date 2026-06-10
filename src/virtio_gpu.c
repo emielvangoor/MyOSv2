@@ -32,11 +32,14 @@
 #define CMD_RESOURCE_FLUSH     0x0104
 #define CMD_TRANSFER_TO_HOST   0x0105
 #define CMD_ATTACH_BACKING     0x0106
+#define CMD_UPDATE_CURSOR      0x0300   // cursor queue: set sprite + position
+#define CMD_MOVE_CURSOR        0x0301   // cursor queue: position only
 #define RESP_OK_NODATA         0x1100
 
 // Pixel format: bytes B,G,R,X in memory = the little-endian word 0x00RRGGBB,
 // which is what every drawing layer above us writes.
 #define FORMAT_B8G8R8X8 2
+#define FORMAT_B8G8R8A8 1   // with alpha -- the cursor sprite needs holes
 
 struct ctrl_hdr {
     uint32_t type, flags;
@@ -73,8 +76,19 @@ struct cmd_flush {
     uint32_t resource_id, padding;
 };
 
+// Cursor-queue command (spec 5.7.6.9): UPDATE binds sprite + position,
+// MOVE repositions. The cursor is a hardware overlay PLANE -- it never
+// touches the framebuffer, so moving it costs no redisplay at all.
+struct cmd_cursor {
+    struct ctrl_hdr hdr;
+    uint32_t scanout_id, x, y, pos_pad;
+    uint32_t resource_id, hot_x, hot_y, padding;
+};
+
 static uint64_t     gpu_base;
 static struct virtq ctlq;                 // queue 0: the control queue
+static struct virtq curq;                 // queue 1: the cursor queue
+static int          cursor_ready;
 static int          gpu_ok;
 static int          shown_id;             // the resource on the scanout (0 = none)
 
@@ -106,8 +120,10 @@ void gfx_init(void)
     if (!gpu_base) { return; }
     if (virtio_init(gpu_base) != 0) { return; }
     if (virtio_queue_init(gpu_base, &ctlq, 0) != 0) { return; }   // controlq
+    if (virtio_queue_init(gpu_base, &curq, 1) != 0) { return; }   // cursorq
     virtio_driver_ok(gpu_base);
     gpu_ok = 1;
+    cursor_ready = 0;
 }
 
 int gfx_present(void)  { return gpu_ok; }
@@ -172,6 +188,80 @@ int gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
     f.r.x = x; f.r.y = y; f.r.w = w; f.r.h = h;
     f.resource_id = (uint32_t)shown_id; f.padding = 0;
     return gpu_cmd(&f, sizeof(f));
+}
+
+// ---- the mouse cursor: a hardware overlay plane ---------------------------
+
+#define CURSOR_RES 100                    // resource id reserved for the sprite
+static uint32_t cursor_px[64 * 64];       // B8G8R8A8 sprite (DMA)
+
+// Draw the classic pointer: a white triangle with a black outline, alpha
+// elsewhere. Procedural, so no asset to embed.
+static void cursor_sprite(void)
+{
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 64; x++) {
+            uint32_t c = 0;                              // transparent
+            if (y < 20 && x <= y) {
+                c = 0xFF000000;                          // black outline
+                if (x > 0 && x < y - 1 && y > 2 && y < 18) {
+                    c = 0xFFFFFFFF;                      // white fill
+                }
+            }
+            cursor_px[y * 64 + x] = c;
+        }
+    }
+}
+
+static int cursor_cmd(uint32_t type, int x, int y)
+{
+    static struct cmd_cursor c;
+    static struct ctrl_hdr resp;
+    c.hdr.type = type; c.hdr.flags = 0; c.hdr.fence_id = 0;
+    c.hdr.ctx_id = 0; c.hdr.ring_idx = 0;
+    c.scanout_id = 0; c.x = (uint32_t)x; c.y = (uint32_t)y; c.pos_pad = 0;
+    c.resource_id = CURSOR_RES; c.hot_x = 0; c.hot_y = 0; c.padding = 0;
+    resp.type = 0;
+    struct vbuf bufs[2] = {
+        { (uint64_t)(uintptr_t)&c,    sizeof(c),    0 },
+        { (uint64_t)(uintptr_t)&resp, sizeof(resp), 1 },
+    };
+    // Unlike the control queue, QEMU completes cursor-queue commands WITHOUT
+    // writing a response struct -- completion itself is the acknowledgement.
+    virtq_submit(gpu_base, &curq, bufs, 2);
+    return 0;
+}
+
+// Bind the sprite (lazily, once a scanout exists) and show it at (x, y).
+int gfx_cursor_move(int x, int y)
+{
+    if (!gpu_ok || shown_id == 0) { return -1; }
+    if (!cursor_ready) {
+        cursor_sprite();
+        static struct cmd_create_2d c;
+        c.hdr.type = CMD_RESOURCE_CREATE_2D; c.hdr.flags = 0; c.hdr.fence_id = 0;
+        c.hdr.ctx_id = 0; c.hdr.ring_idx = 0;
+        c.resource_id = CURSOR_RES; c.format = FORMAT_B8G8R8A8;
+        c.width = 64; c.height = 64;
+        if (gpu_cmd(&c, sizeof(c)) != 0) { return -1; }
+        static struct cmd_attach_backing a;
+        a.hdr.type = CMD_ATTACH_BACKING; a.hdr.flags = 0; a.hdr.fence_id = 0;
+        a.hdr.ctx_id = 0; a.hdr.ring_idx = 0;
+        a.resource_id = CURSOR_RES; a.nr_entries = 1;
+        a.addr = (uint64_t)(uintptr_t)cursor_px; a.length = sizeof(cursor_px);
+        a.padding = 0;
+        if (gpu_cmd(&a, sizeof(a)) != 0) { return -1; }
+        static struct cmd_transfer t;
+        t.hdr.type = CMD_TRANSFER_TO_HOST; t.hdr.flags = 0; t.hdr.fence_id = 0;
+        t.hdr.ctx_id = 0; t.hdr.ring_idx = 0;
+        t.r.x = 0; t.r.y = 0; t.r.w = 64; t.r.h = 64;
+        t.offset = 0; t.resource_id = CURSOR_RES; t.padding = 0;
+        if (gpu_cmd(&t, sizeof(t)) != 0) { return -1; }
+        if (cursor_cmd(CMD_UPDATE_CURSOR, x, y) != 0) { return -1; }
+        cursor_ready = 1;
+        return 0;
+    }
+    return cursor_cmd(CMD_MOVE_CURSOR, x, y);
 }
 
 // A fresh client framebuffer: contiguous (one ATTACH_BACKING entry), zeroed.
