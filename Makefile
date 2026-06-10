@@ -74,7 +74,9 @@ QEMU_INPUT := -device virtio-keyboard-device -device virtio-tablet-device
 # scanout offscreen, so KTEST can drive the device and QMP can screendump it.
 QEMU_GPU   := -device virtio-gpu-device
 # Base flags WITHOUT networking; run/test/debug each add the net variant they want.
-QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none $(QEMU_SERIAL) \
+# Recursively expanded (=, not :=): run/run-gui override DISK_IMG per target,
+# which must reach QEMU_DISK at recipe time, not be baked in at parse time.
+QEMU_FLAGS = -machine virt -cpu cortex-a72 -m 256M -display none $(QEMU_SERIAL) \
               $(QEMU_INPUT) $(QEMU_GPU) -kernel $(TARGET) $(QEMU_DISK)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
@@ -168,7 +170,7 @@ test:
 	  exit $$status
 
 # Boot frozen, exposing the GDB stub on :1234
-debug: $(TARGET)
+debug: $(TARGET) $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_NET) -S -s
 
 # Attach GDB (uses .gdbinit). Run in a second terminal after `make debug`.
