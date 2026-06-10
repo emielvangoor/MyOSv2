@@ -1290,6 +1290,21 @@ static void test_gpu_scanout(void)
     KASSERT(gfx_flush_rect(0, 0, 64, 64) == 0);
 }
 
+static void test_gfx_fb_alloc(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    // The kernel framebuffer behind gfx_acquire: contiguous, page-aligned,
+    // scanout-attached, and flushable. Idempotent -- there is one screen.
+    uint64_t pa = gfx_fb_alloc();
+    KASSERT(pa != 0);
+    KASSERT((pa & 0xFFF) == 0);
+    KASSERT(gfx_fb_alloc() == pa);
+    volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)pa;
+    fb[0] = 0x00FF0000;                       // a red pixel, top-left
+    KASSERT(gfx_flush_rect(0, 0, 1, 1) == 0);
+}
+
 // The blocking input_read syscall: a worker injects an event device-side and
 // then reads it back through the full syscall path.
 static volatile long inputread_res;
@@ -2340,6 +2355,7 @@ static const struct ktest tests[] = {
     { "syscall: input_read drains event", test_syscall_input_read },
     { "gpu: device present",              test_gpu_present },
     { "gpu: scanout configured",          test_gpu_scanout },
+    { "gpu: kernel fb alloc + flush",     test_gfx_fb_alloc },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },

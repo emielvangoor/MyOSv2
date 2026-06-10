@@ -102,4 +102,6 @@ void free(void *p)
 }
 long sys_readdir(const char *p, int i, char *name) { return syscall3(SYS_READDIR, (long)p, i, (long)name); }
 int  input_read(struct input_event *ev) { return (int)syscall3(SYS_INPUT_READ, (long)ev, 0, 0); }
+int  gfx_acquire(struct gfx_info *gi) { return (int)syscall3(SYS_GFX_ACQUIRE, (long)gi, 0, 0); }
+int  gfx_flush(int x, int y, int w, int h) { return (int)syscall5(SYS_GFX_FLUSH, x, y, w, h, 0); }
 int  sys_getc(void) { char c; long n = syscall3(SYS_READ, 0, (long)&c, 1); return n == 1 ? (int)(unsigned char)c : -1; }

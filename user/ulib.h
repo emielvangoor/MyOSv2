@@ -58,6 +58,13 @@ int poll(struct pollfd *fds, int nfds, int timeout_ms);
 struct input_event { unsigned short type, code; unsigned int value; };
 int input_read(struct input_event *ev);   // blocks; 0 on event, -1 on signal
 
+// The framebuffer (virtio-gpu scanout): gfx_acquire maps the 1280x720 BGRX
+// framebuffer into this process; write 0x00RRGGBB words, then gfx_flush the
+// changed rect to make it visible.
+struct gfx_info { void *fb; unsigned int w, h, pitch; };
+int gfx_acquire(struct gfx_info *gi);
+int gfx_flush(int x, int y, int w, int h);
+
 #define SIGINT  2
 #define SIGKILL 9
 #define SIGTERM 15

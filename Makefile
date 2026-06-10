@@ -28,7 +28,7 @@ DEP  := $(OBJ:.o=.d)
 # embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
 # and unpacked into /bin by the initrd. The kernel's ELF loader maps their
 # segments at load/exec time.
-PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest
+PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest
 # The .l files embedded into the kernel and unpacked to /lib by the initrd.
 LISP_FILES  := bootstrap system
 USER_COMMON := user/crt0.S user/ulib.c

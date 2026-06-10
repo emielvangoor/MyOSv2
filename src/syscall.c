@@ -24,6 +24,8 @@
 #include "poll.h"
 #include "timer.h"
 #include "input.h"
+#include "gfx.h"
+#include "vm.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -308,6 +310,32 @@ long do_syscall(struct trapframe *tf)
             if (!sched_irqs_live()) { ret = -1; break; }    // KTEST: don't sleep forever
             sched_wait_event(input_waitq(), 100);
         }
+        break;
+    }
+    case SYS_GFX_ACQUIRE: {                   // x0 = struct {void* fb; u32 w,h,pitch}*
+        struct { uint64_t fb; uint32_t w, h, pitch; } *gi =
+            (void *)(uintptr_t)tf->x[0];
+        struct addrspace *as = sched_current_as();
+        if (!gi || !as) { ret = -1; break; }
+        uint64_t pa = gfx_fb_alloc();         // one screen; idempotent
+        if (!pa) { ret = -1; break; }
+        // Map the kernel framebuffer's pages into THIS process. The pages are
+        // contiguous, so the page array is just pa, pa+4K, ...
+        uint64_t npages = ((uint64_t)GFX_W * GFX_H * 4 + 4095) / 4096;
+        static uint64_t pages[((uint64_t)GFX_W * GFX_H * 4 + 4095) / 4096];
+        for (uint64_t i = 0; i < npages; i++) { pages[i] = pa + i * 4096; }
+        uint64_t va = as_map_phys(as, pages, npages);
+        if (!va) { ret = -1; break; }
+        gi->fb = va; gi->w = GFX_W; gi->h = GFX_H; gi->pitch = GFX_W * 4;
+        ret = 0;
+        break;
+    }
+    case SYS_GFX_FLUSH: {                     // x0=x, x1=y, x2=w, x3=h
+        uint64_t x = tf->x[0], y = tf->x[1], w = tf->x[2], h = tf->x[3];
+        if (x >= GFX_W || y >= GFX_H) { ret = -1; break; }
+        if (x + w > GFX_W) { w = GFX_W - x; }   // clamp: a bad rect must not
+        if (y + h > GFX_H) { h = GFX_H - y; }   // reach the device
+        ret = gfx_flush_rect((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h);
         break;
     }
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame
