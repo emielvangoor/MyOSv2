@@ -65,9 +65,13 @@ QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
 QEMU_NET_RUN := -netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=tcp::7777-:7777 \
                 -device virtio-net-device,netdev=net0
 QEMU_SERIAL := -chardev stdio,id=ch0,signal=off -serial chardev:ch0
+# Keyboard + absolute-pointer tablet for the graphical machine (Phase 25). The
+# tablet reports absolute coordinates, so QEMU never grabs the host mouse.
+# Part of the base flags so `make test` sees the devices too (KTEST drives them).
+QEMU_INPUT := -device virtio-keyboard-device -device virtio-tablet-device
 # Base flags WITHOUT networking; run/test/debug each add the net variant they want.
 QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none $(QEMU_SERIAL) \
-              -kernel $(TARGET) $(QEMU_DISK)
+              $(QEMU_INPUT) -kernel $(TARGET) $(QEMU_DISK)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
 all: $(TARGET)

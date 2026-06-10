@@ -35,6 +35,9 @@ struct vbuf { uint64_t addr; uint32_t len; int write; };
 
 // Find the MMIO base of a virtio device with the given DeviceID (0 = none).
 uint64_t virtio_find(uint32_t device_id);
+// Same, but the nth (0-based) match -- for device types that appear more than
+// once (virtio-input: keyboard and tablet share DeviceID 18).
+uint64_t virtio_find_nth(uint32_t device_id, int nth);
 
 // Reset, negotiate features, and set up queue 0 on a device. Returns 0 on success.
 int virtio_setup_queue(uint64_t base, struct virtq *q);

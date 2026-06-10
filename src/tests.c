@@ -28,6 +28,7 @@
 #include "signal.h"
 #include "block.h"
 #include "sfs.h"
+#include "virtio.h"
 #include "net.h"
 #include "console.h"
 #include "socket.h"
@@ -1230,6 +1231,18 @@ static void test_pipe_write_then_read(void)
     KASSERT(p->count == 0);
 }
 
+// --- virtio-input (Phase 25.1) ---
+
+static void test_input_devices_present(void)
+{
+    // The graphical machine needs BOTH a keyboard and a tablet. They are two
+    // separate virtio devices with the same DeviceID (18), so the transport
+    // needs to enumerate beyond the first match.
+    KASSERT(virtio_find_nth(18, 0) != 0);
+    KASSERT(virtio_find_nth(18, 1) != 0);
+    KASSERT(virtio_find_nth(18, 2) == 0);   // there is no third one
+}
+
 // Regression (found live, Phase 24): SYS_READ/SYS_WRITE dispatch on ->sock
 // BEFORE ->pipe, and SYS_PIPE kmalloc's its two file structs without
 // initializing ->sock. kmalloc doesn't zero, so when the heap recycles a file
@@ -2248,6 +2261,7 @@ static const struct ktest tests[] = {
     { "sfs: readdir lists entries",       test_sfs_readdir },
     { "sfs: multi-block file",            test_sfs_multiblock },
     { "vfs: mount at /disk",              test_vfs_mount_at },
+    { "input: two devices present",       test_input_devices_present },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },
