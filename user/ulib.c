@@ -101,4 +101,5 @@ void free(void *p)
     mfree = b;
 }
 long sys_readdir(const char *p, int i, char *name) { return syscall3(SYS_READDIR, (long)p, i, (long)name); }
+int  input_read(struct input_event *ev) { return (int)syscall3(SYS_INPUT_READ, (long)ev, 0, 0); }
 int  sys_getc(void) { char c; long n = syscall3(SYS_READ, 0, (long)&c, 1); return n == 1 ? (int)(unsigned char)c : -1; }

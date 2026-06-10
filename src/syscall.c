@@ -23,6 +23,7 @@
 #include "socket.h"
 #include "poll.h"
 #include "timer.h"
+#include "input.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -291,6 +292,22 @@ long do_syscall(struct trapframe *tf)
         if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
             ret = socket_shutdown(fds[fd]->sock, (int)tf->x[1]);
         } else { ret = -1; }
+        break;
+    }
+    case SYS_INPUT_READ: {                    // x0 = struct input_event*  -> 0 / -1
+        struct input_event *out = (struct input_event *)(uintptr_t)tf->x[0];
+        if (!out) { ret = -1; break; }
+        // Block (sleep/wake on the input waitq, never spin) until a device
+        // delivers an event. A pending signal aborts the wait (EINTR), so
+        // Ctrl-C can stop a reader. In the pre-IRQ test environment the wait
+        // would never be woken, so poll once more and give up instead.
+        for (;;) {
+            if (input_poll_event(out)) { ret = 0; break; }
+            struct thread *t = sched_current();
+            if (t && t->sig_pending) { ret = -1; break; }   // EINTR
+            if (!sched_irqs_live()) { ret = -1; break; }    // KTEST: don't sleep forever
+            sched_wait_event(input_waitq(), 100);
+        }
         break;
     }
     case SYS_SIGRETURN: {                     // restore the pre-signal trap frame

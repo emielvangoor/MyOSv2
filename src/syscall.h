@@ -38,6 +38,7 @@
 #define SYS_ACCEPT   37 // x0=fd -> new connected fd, or -1
 #define SYS_POLL     38 // x0=pollfd*, x1=nfds, x2=timeout_ms -> #ready, 0 timeout, -1 EINTR
 #define SYS_SOCKSHUT 39 // x0=fd, x1=how (SHUT_WR/...) -> 0/-1 (TCP half-close)
+#define SYS_INPUT_READ 40 // x0=struct input_event* -> 0 (event) / -1 (EINTR)
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.

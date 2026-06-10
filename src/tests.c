@@ -1266,6 +1266,32 @@ static void test_input_poll_drain(void)
     KASSERT(input_poll_event(&ev) == 0);            // consumed
 }
 
+// The blocking input_read syscall: a worker injects an event device-side and
+// then reads it back through the full syscall path.
+static volatile long inputread_res;
+static void input_read_worker(void *a)
+{
+    (void)a;
+    input_test_inject(0, EV_KEY, 30 /*KEY_A*/, 1);
+    struct input_event ev;
+    struct trapframe tf;
+    tf.x[8] = SYS_INPUT_READ; tf.x[0] = (uint64_t)(uintptr_t)&ev;
+    do_syscall(&tf);
+    inputread_res = ((long)tf.x[0] == 0 && ev.type == EV_KEY &&
+                     ev.code == 30 && ev.value == 1) ? 1 : -1;
+}
+
+static void test_syscall_input_read(void)
+{
+    pmm_init(); kheap_init();
+    input_init();
+    sched_init();
+    inputread_res = 0;
+    thread_create(input_read_worker, 0, 1);
+    for (long i = 0; i < 100000 && !inputread_res; i++) { yield(); }
+    KASSERT(inputread_res == 1);
+}
+
 // Regression (found live, Phase 24): SYS_READ/SYS_WRITE dispatch on ->sock
 // BEFORE ->pipe, and SYS_PIPE kmalloc's its two file structs without
 // initializing ->sock. kmalloc doesn't zero, so when the heap recycles a file
@@ -2287,6 +2313,7 @@ static const struct ktest tests[] = {
     { "input: two devices present",       test_input_devices_present },
     { "input: driver present",            test_input_present },
     { "input: poll drains injected event", test_input_poll_drain },
+    { "syscall: input_read drains event", test_syscall_input_read },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },

@@ -52,6 +52,12 @@ int sock_shutdown(int fd, int how);                          // TCP half-close (
 struct pollfd { int fd; short events; short revents; };
 int poll(struct pollfd *fds, int nfds, int timeout_ms);
 
+// Input events (virtio keyboard + tablet): the Linux-evdev triple, end to end.
+// type: 1=EV_KEY (code=KEY_*/BTN_*, value 1=down 0=up), 3=EV_ABS (code 0=X 1=Y,
+// value 0..32767), 0=EV_SYN (event-batch separator).
+struct input_event { unsigned short type, code; unsigned int value; };
+int input_read(struct input_event *ev);   // blocks; 0 on event, -1 on signal
+
 #define SIGINT  2
 #define SIGKILL 9
 #define SIGTERM 15
