@@ -38,3 +38,4 @@
 #define SYS_INPUT_READ 40
 #define SYS_GFX_ACQUIRE 41
 #define SYS_GFX_FLUSH   42
+#define SYS_SEAT_SWITCH 43

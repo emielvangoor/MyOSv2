@@ -41,6 +41,7 @@
 #define SYS_INPUT_READ 40 // x0=struct input_event* -> 0 (event) / -1 (EINTR)
 #define SYS_GFX_ACQUIRE 41 // x0=struct gfx_info* -> 0/-1 (map the framebuffer)
 #define SYS_GFX_FLUSH   42 // x0=x, x1=y, x2=w, x3=h -> 0/-1 (push damage rect)
+#define SYS_SEAT_SWITCH 43 // x0=seat (1-based) -> 0/-1 (VT switch)
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.

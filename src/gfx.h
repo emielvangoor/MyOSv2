@@ -15,14 +15,11 @@ int  gfx_present(void);
 uint32_t gfx_width(void);
 uint32_t gfx_height(void);
 
-// Point scanout 0 at a guest framebuffer: physical, CONTIGUOUS, w*h*4 bytes,
-// BGRX little-endian (a pixel is the u32 word 0x00RRGGBB). Returns 0 on success.
-int  gfx_setup(uint64_t fb_phys, uint32_t w, uint32_t h);
-
-// Push one damage rect to the display: TRANSFER_TO_HOST_2D + RESOURCE_FLUSH.
+// Each SEAT (display client) gets its own resource + framebuffer; switching
+// VMs is a SET_SCANOUT, never a pixel copy.
+int  gfx_resource_setup(int id, uint64_t fb_phys);   // create + attach backing
+int  gfx_show(int id);                               // scanout to id + full repaint
+// Push one damage rect of the CURRENTLY SHOWN resource to the display.
 int  gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
-
-// Allocate (once) the GFX_W x GFX_H kernel framebuffer as contiguous pages and
-// point the scanout at it; returns its physical address (0 on failure). The
-// gfx_acquire syscall maps these same pages into the calling process.
-uint64_t gfx_fb_alloc(void);
+// A fresh, zeroed, contiguous GFX_W x GFX_H framebuffer (physical addr; 0 = OOM).
+uint64_t gfx_fb_new(void);

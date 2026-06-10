@@ -263,6 +263,13 @@ DEFSYS("connect", Sconnect, 3, 3) {
 
 /* ---- the machine itself -------------------------------------------------- */
 
+/* (switch-seat n) -> 0/-1: hand the screen + keyboard to display client n
+ * (the VT switch; Ctrl-Alt-Fn does the same from the keyboard). */
+DEFSYS("switch-seat", Sswitch_seat, 1, 1) {
+    (void)env;
+    return FIXNUM(seat_switch((int)req_fixnum(CAR(args), "switch-seat: expected a fixnum")));
+}
+
 /* (shutdown) -> never returns: halts the machine via PSCI (QEMU exits).
  * The Lisp shell's way to turn the computer off. */
 DEFSYS("shutdown", Sshutdown, 0, 0) {
@@ -283,5 +290,6 @@ void lm_sys_register(void)
     register_Spipe(); register_Sdup2(); register_Sreaddir();
     register_Ssocket(); register_Sbind(); register_Slisten(); register_Saccept();
     register_Sconnect();
+    register_Sswitch_seat();
     register_Sshutdown();
 }

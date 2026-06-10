@@ -1,6 +1,9 @@
 // sched.c -- kernel threads + round-robin scheduler.
 #include <stdint.h>
 #include "sched.h"
+#include "seat.h"
+#include "gfx.h"
+#include "input.h"
 #include "kheap.h"
 #include "exceptions.h"   // struct trapframe (for fork)
 #include "vfs.h"          // file_dup (share fds across fork)
@@ -407,6 +410,14 @@ void thread_exit(int status)
     // forked relative still holds it.
     for (int i = 0; i < 16; i++) {
         if (current->fds[i]) { vfs_close(current->fds[i]); current->fds[i] = 0; }
+    }
+
+    // If this process owned a display seat, hand the screen to a survivor
+    // (a dead VM must not leave a frozen frame on the scanout).
+    {
+        int was = seat_active();
+        int now = seat_release_pid((int)current->id);
+        if (now != was && now > 0) { gfx_show(now); sched_wake(input_waitq()); }
     }
 
     uint64_t flags = irq_save();

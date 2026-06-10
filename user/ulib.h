@@ -71,6 +71,7 @@ int input_read(struct input_event *ev);   // blocks; 0 on event, -1 on signal
 struct gfx_info { void *fb; unsigned int w, h, pitch; };
 int gfx_acquire(struct gfx_info *gi);
 int gfx_flush(int x, int y, int w, int h);
+int seat_switch(int n);   // VT switch to seat n (also: Ctrl-Alt-Fn)
 
 #define SIGINT  2
 #define SIGKILL 9

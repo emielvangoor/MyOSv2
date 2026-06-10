@@ -60,6 +60,15 @@ the buffer, read-string turns text into a form, eval runs it."
          (t (insert (string-from-char ch))))))            ; self-insert
     (t nil)))
 
+(defun spawn-vm ()
+  "Start ANOTHER complete Lisp machine on its own seat: fork, and the child
+becomes a fresh `lisp -frame` (its own image, window tree and framebuffer).
+Switch with Ctrl-Alt-F1..F4 or (switch-seat n). Returns the child's pid."
+  (let ((pid (fork)))
+    (if (= pid 0)
+        (progn (exec "/bin/lisp" (list "lisp" "-frame")) (exit 127))
+      pid)))
+
 (defun frame-loop ()
   "read-event -> dispatch -> redisplay, forever. The machine's heartbeat.
 read-event BLOCKS in the kernel (no polling); redisplay paints only what

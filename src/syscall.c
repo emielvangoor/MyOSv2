@@ -26,6 +26,7 @@
 #include "input.h"
 #include "gfx.h"
 #include "vm.h"
+#include "seat.h"
 
 long do_syscall(struct trapframe *tf)
 {
@@ -307,8 +308,34 @@ long do_syscall(struct trapframe *tf)
         // delivers an event. A pending signal aborts the wait (EINTR), so
         // Ctrl-C can stop a reader. In the pre-IRQ test environment the wait
         // would never be woken, so poll once more and give up instead.
+        // Seat routing: when display clients exist, only the ACTIVE one may
+        // consume events -- inactive VMs sleep here until switched in.
+        // Ctrl-Alt-F1..F4 is the kernel hotkey: it is consumed HERE (by the
+        // active reader's drain) and never reaches any client.
+        static int hk_ctrl, hk_alt;
         for (;;) {
-            if (input_poll_event(out)) { ret = 0; break; }
+            int apid = seat_active_pid();
+            if (apid != -1 && (int)sched_current_id() != apid) {
+                struct thread *t0 = sched_current();
+                if (t0 && t0->sig_pending) { ret = -1; break; }
+                if (!sched_irqs_live()) { ret = -1; break; }
+                sched_wait_event(input_waitq(), 100);
+                continue;
+            }
+            if (input_poll_event(out)) {
+                if (out->type == EV_KEY && out->code == 29) { hk_ctrl = (out->value != 0); }
+                if (out->type == EV_KEY && out->code == 56) { hk_alt  = (out->value != 0); }
+                if (out->type == EV_KEY && out->value == 1 && hk_ctrl && hk_alt &&
+                    out->code >= 59 && out->code <= 62) {     // F1..F4
+                    int n = (int)out->code - 58;
+                    if (seat_switch(n) == 0) {
+                        gfx_show(n);                          // replay its pixels
+                        sched_wake(input_waitq());            // unblock the new owner
+                    }
+                    continue;                                 // consumed
+                }
+                ret = 0; break;
+            }
             struct thread *t = sched_current();
             if (t && t->sig_pending) { ret = -1; break; }   // EINTR
             if (!sched_irqs_live()) { ret = -1; break; }    // KTEST: don't sleep forever
@@ -316,13 +343,31 @@ long do_syscall(struct trapframe *tf)
         }
         break;
     }
+    case SYS_SEAT_SWITCH: {                   // x0 = seat number (1-based)
+        int n = (int)tf->x[0];
+        if (seat_switch(n) != 0) { ret = -1; break; }
+        gfx_show(n);
+        sched_wake(input_waitq());
+        ret = 0;
+        break;
+    }
     case SYS_GFX_ACQUIRE: {                   // x0 = struct {void* fb; u32 w,h,pitch}*
         struct { uint64_t fb; uint32_t w, h, pitch; } *gi =
             (void *)(uintptr_t)tf->x[0];
         struct addrspace *as = sched_current_as();
         if (!gi || !as) { ret = -1; break; }
-        uint64_t pa = gfx_fb_alloc();         // one screen; idempotent
-        if (!pa) { ret = -1; break; }
+        // Every client gets its OWN framebuffer + gpu resource = one SEAT
+        // (the VT model). Re-acquiring returns the seat you already own.
+        int pid = (int)sched_current_id();
+        uint64_t pa = seat_fb(seat_register(pid, 0));
+        if (!pa) {
+            pa = gfx_fb_new();
+            if (!pa) { ret = -1; break; }
+            int seat = seat_register(pid, pa);
+            if (seat < 0) { ret = -1; break; }
+            if (gfx_resource_setup(seat, pa) != 0) { ret = -1; break; }
+            if (seat == seat_active()) { gfx_show(seat); }  // first client
+        }
         // Map the kernel framebuffer's pages into THIS process. The pages are
         // contiguous, so the page array is just pa, pa+4K, ...
         uint64_t npages = ((uint64_t)GFX_W * GFX_H * 4 + 4095) / 4096;
@@ -335,6 +380,10 @@ long do_syscall(struct trapframe *tf)
         break;
     }
     case SYS_GFX_FLUSH: {                     // x0=x, x1=y, x2=w, x3=h
+        // Only the ACTIVE seat's flushes reach the device; an inactive VM
+        // keeps rendering into its own framebuffer and is simply not shown
+        // (its full content reappears via gfx_show on switch-in).
+        if ((int)sched_current_id() != seat_active_pid()) { ret = 0; break; }
         uint64_t x = tf->x[0], y = tf->x[1], w = tf->x[2], h = tf->x[3];
         if (x >= GFX_W || y >= GFX_H) { ret = -1; break; }
         if (x + w > GFX_W) { w = GFX_W - x; }   // clamp: a bad rect must not

@@ -474,7 +474,8 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
 - ✅ **25.4 — Lisp integration**: `lm_gfx.c` + `frame.l`; `lisp -frame` boots
   the graphical REPL; in-OS `(screenshot)`; glyph-level screendump check
   (`tools/frame_check.py`); see `docs/images/phase-25-graphical-lisp-machine.png`.
-- ☐ **25.5 — the seat**: multi-VM + Ctrl-Alt-Fn / `(switch-seat n)` switching.
+- ✅ **25.5 — the seat**: per-seat gpu resources, input routing, Ctrl-Alt-Fn
+  + `(switch-seat n)`, `(spawn-vm)`; screendump-verified (`tools/seat_check.py`).
 - ☐ **25.6 — surface buffers**: shm pixel canvases + `(run-in-buffer ...)`.
 
 ---

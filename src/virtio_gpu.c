@@ -21,6 +21,7 @@
 #include "gfx.h"
 #include "virtio.h"
 #include "pmm.h"
+#include "seat.h"
 
 #define VIRTIO_ID_GPU 16
 
@@ -75,8 +76,7 @@ struct cmd_flush {
 static uint64_t     gpu_base;
 static struct virtq ctlq;                 // queue 0: the control queue
 static int          gpu_ok;
-static uint32_t     fb_w, fb_h;           // what the scanout currently shows
-static uint64_t     fb_pa;                // the kernel framebuffer (gfx_fb_alloc)
+static int          shown_id;             // the resource on the scanout (0 = none)
 
 // Submit one command + its response buffer and wait (polled). 0 = device said
 // OK. Static response buffer: commands are serialized by our single caller.
@@ -94,14 +94,14 @@ static int gpu_cmd(void *cmd, int cmd_len)
 
 void gfx_init(void)
 {
-    // Full reset, including the cached framebuffer: kmain runs the self-tests
-    // at every boot and then re-inits the allocators, so any pmm-era pointer
-    // cached across a gfx_init() would dangle into reused memory (found live:
-    // the first gfxtest run painted red pixels over the real boot's page
-    // tables). gfx_init() is called after the reset and must forget the past.
+    // Full reset, including every cached pmm-era value: kmain runs the
+    // self-tests at every boot and then re-inits the allocators, so a static
+    // surviving gfx_init() would dangle into reused memory (found live in
+    // 25.2: the first gfxtest painted red pixels over page tables). The seat
+    // table resets here too -- same hazard, same cure.
     gpu_ok = 0;
-    fb_pa = 0;
-    fb_w = 0; fb_h = 0;
+    shown_id = 0;
+    seat_reset();
     gpu_base = virtio_find(VIRTIO_ID_GPU);
     if (!gpu_base) { return; }
     if (virtio_init(gpu_base) != 0) { return; }
@@ -114,37 +114,47 @@ int gfx_present(void)  { return gpu_ok; }
 uint32_t gfx_width(void)  { return GFX_W; }
 uint32_t gfx_height(void) { return GFX_H; }
 
-int gfx_setup(uint64_t fb_phys, uint32_t w, uint32_t h)
+// Create resource `id` (GFX_W x GFX_H) and attach its backing pages. Each
+// SEAT gets its own resource + framebuffer, so switching VMs is just a
+// SET_SCANOUT to another resource -- no pixel copying between clients.
+int gfx_resource_setup(int id, uint64_t fb_phys)
 {
     if (!gpu_ok) { return -1; }
 
     static struct cmd_create_2d c;
     c.hdr.type = CMD_RESOURCE_CREATE_2D; c.hdr.flags = 0; c.hdr.fence_id = 0;
     c.hdr.ctx_id = 0; c.hdr.ring_idx = 0;
-    c.resource_id = 1; c.format = FORMAT_B8G8R8X8; c.width = w; c.height = h;
+    c.resource_id = (uint32_t)id; c.format = FORMAT_B8G8R8X8;
+    c.width = GFX_W; c.height = GFX_H;
     if (gpu_cmd(&c, sizeof(c)) != 0) { return -1; }
 
     static struct cmd_attach_backing a;
     a.hdr.type = CMD_ATTACH_BACKING; a.hdr.flags = 0; a.hdr.fence_id = 0;
     a.hdr.ctx_id = 0; a.hdr.ring_idx = 0;
-    a.resource_id = 1; a.nr_entries = 1;
-    a.addr = fb_phys; a.length = w * h * 4; a.padding = 0;
-    if (gpu_cmd(&a, sizeof(a)) != 0) { return -1; }
+    a.resource_id = (uint32_t)id; a.nr_entries = 1;
+    a.addr = fb_phys; a.length = (uint32_t)GFX_W * GFX_H * 4; a.padding = 0;
+    return gpu_cmd(&a, sizeof(a));
+}
+
+// Point the scanout at resource `id` and repaint it whole -- what a seat
+// switch (or the first client) does.
+int gfx_show(int id)
+{
+    if (!gpu_ok) { return -1; }
 
     static struct cmd_set_scanout s;
     s.hdr.type = CMD_SET_SCANOUT; s.hdr.flags = 0; s.hdr.fence_id = 0;
     s.hdr.ctx_id = 0; s.hdr.ring_idx = 0;
-    s.r.x = 0; s.r.y = 0; s.r.w = w; s.r.h = h;
-    s.scanout_id = 0; s.resource_id = 1;
+    s.r.x = 0; s.r.y = 0; s.r.w = GFX_W; s.r.h = GFX_H;
+    s.scanout_id = 0; s.resource_id = (uint32_t)id;
     if (gpu_cmd(&s, sizeof(s)) != 0) { return -1; }
-
-    fb_w = w; fb_h = h;
-    return 0;
+    shown_id = id;
+    return gfx_flush_rect(0, 0, GFX_W, GFX_H);
 }
 
 int gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 {
-    if (!gpu_ok || fb_w == 0) { return -1; }
+    if (!gpu_ok || shown_id == 0) { return -1; }
 
     static struct cmd_transfer t;
     t.hdr.type = CMD_TRANSFER_TO_HOST; t.hdr.flags = 0; t.hdr.fence_id = 0;
@@ -152,31 +162,27 @@ int gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
     t.r.x = x; t.r.y = y; t.r.w = w; t.r.h = h;
     // The transfer source offset must point at the rect's first pixel within
     // the resource, or the device would copy from the frame's origin.
-    t.offset = ((uint64_t)y * fb_w + x) * 4;
-    t.resource_id = 1; t.padding = 0;
+    t.offset = ((uint64_t)y * GFX_W + x) * 4;
+    t.resource_id = (uint32_t)shown_id; t.padding = 0;
     if (gpu_cmd(&t, sizeof(t)) != 0) { return -1; }
 
     static struct cmd_flush f;
     f.hdr.type = CMD_RESOURCE_FLUSH; f.hdr.flags = 0; f.hdr.fence_id = 0;
     f.hdr.ctx_id = 0; f.hdr.ring_idx = 0;
     f.r.x = x; f.r.y = y; f.r.w = w; f.r.h = h;
-    f.resource_id = 1; f.padding = 0;
+    f.resource_id = (uint32_t)shown_id; f.padding = 0;
     return gpu_cmd(&f, sizeof(f));
 }
 
-// The kernel-owned framebuffer behind the gfx_acquire syscall. Allocated once
-// per gfx_init era (contiguous, so ATTACH_BACKING needs a single entry) and
-// then shared: a second caller gets the same buffer -- there is one screen.
-uint64_t gfx_fb_alloc(void)
+// A fresh client framebuffer: contiguous (one ATTACH_BACKING entry), zeroed.
+// Every seat gets its own -- 3.7 MB each, four seats fit easily in 256 MB.
+uint64_t gfx_fb_new(void)
 {
     if (!gpu_ok) { return 0; }
-    if (fb_pa) { return fb_pa; }
     uint64_t npages = ((uint64_t)GFX_W * GFX_H * 4 + 4095) / 4096;
     void *p = pmm_alloc_pages(npages);
     if (!p) { return 0; }
     uint64_t *words = p;
     for (uint64_t i = 0; i < (uint64_t)GFX_W * GFX_H * 4 / 8; i++) { words[i] = 0; }
-    if (gfx_setup((uint64_t)(uintptr_t)p, GFX_W, GFX_H) != 0) { return 0; }
-    fb_pa = (uint64_t)(uintptr_t)p;
-    return fb_pa;
+    return (uint64_t)(uintptr_t)p;
 }

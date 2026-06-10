@@ -31,6 +31,7 @@
 #include "virtio.h"
 #include "input.h"
 #include "gfx.h"
+#include "seat.h"
 #include "rd.h"
 #include "net.h"
 #include "console.h"
@@ -1437,49 +1438,50 @@ static void test_gpu_scanout(void)
 {
     pmm_init(); kheap_init();
     gfx_init();
-    // Drive the full bring-up against the REAL device: resource + backing +
-    // scanout, then one transfer+flush. Every command must come back
-    // RESP_OK_NODATA from QEMU or the calls report failure. 64x64, not
-    // something tinier: QEMU enforces a minimum scanout size (16x16).
-    static uint32_t pix[64 * 64];
-    KASSERT(gfx_setup((uint64_t)(uintptr_t)pix, 64, 64) == 0);
+    // Drive the full bring-up against the REAL device: per-seat resource +
+    // backing + scanout + one flush. Every command must come back
+    // RESP_OK_NODATA from QEMU or the calls report failure.
+    uint64_t fb = gfx_fb_new();
+    KASSERT(fb != 0 && (fb & 0xFFF) == 0);
+    KASSERT(gfx_resource_setup(1, fb) == 0);
+    KASSERT(gfx_show(1) == 0);
     KASSERT(gfx_flush_rect(0, 0, 64, 64) == 0);
 }
 
-static void test_gfx_fb_alloc(void)
+static void test_gpu_two_seats(void)
 {
     pmm_init(); kheap_init();
     gfx_init();
-    // The kernel framebuffer behind gfx_acquire: contiguous, page-aligned,
-    // scanout-attached, and flushable. Idempotent -- there is one screen.
-    uint64_t pa = gfx_fb_alloc();
-    KASSERT(pa != 0);
-    KASSERT((pa & 0xFFF) == 0);
-    KASSERT(gfx_fb_alloc() == pa);
-    volatile uint32_t *fb = (volatile uint32_t *)(uintptr_t)pa;
-    fb[0] = 0x00FF0000;                       // a red pixel, top-left
-    KASSERT(gfx_flush_rect(0, 0, 1, 1) == 0);
+    // Two clients, two framebuffers, two resources; the scanout can show
+    // either, and flushes target whichever is shown.
+    uint64_t fb1 = gfx_fb_new(), fb2 = gfx_fb_new();
+    KASSERT(fb1 != 0 && fb2 != 0 && fb1 != fb2);
+    KASSERT(gfx_resource_setup(1, fb1) == 0);
+    KASSERT(gfx_resource_setup(2, fb2) == 0);
+    KASSERT(gfx_show(1) == 0);
+    KASSERT(gfx_flush_rect(0, 0, 8, 8) == 0);
+    KASSERT(gfx_show(2) == 0);
+    KASSERT(gfx_flush_rect(0, 0, 8, 8) == 0);
 }
 
-static void test_gfx_init_forgets_fb(void)
+static void test_seat_logic(void)
 {
-    // kmain runs these tests at EVERY boot and then resets the allocators
-    // (pmm_init) before the real boot. Any driver static that caches a
-    // pmm-era pointer across that reset is a time bomb: gfx_fb_alloc's cached
-    // framebuffer pointed into memory the real boot reused for page tables
-    // and stacks, and the first (run "gfxtest") painted red pixels over them.
-    // Contract: gfx_init() forgets the cached framebuffer.
-    pmm_init(); kheap_init();
-    gfx_init();
-    uint64_t pa1 = gfx_fb_alloc();
-    KASSERT(pa1 != 0);
-    pmm_init();                                // the post-test boot reset
-    void *occupy = pmm_alloc_pages(4);         // the old fb address is reused...
-    KASSERT(occupy != 0);
-    gfx_init();                                // ...so a correct re-init
-    uint64_t pa2 = gfx_fb_alloc();             // must allocate a FRESH buffer
-    KASSERT(pa2 != 0);
-    KASSERT(pa2 != pa1);
+    // The multiplexer's bookkeeping, as pure logic: registration is
+    // idempotent per pid, the first client gets the screen, switching is
+    // explicit, and releasing the active seat hands off to a survivor.
+    seat_reset();
+    KASSERT(seat_active() == 0 && seat_active_pid() == -1);
+    KASSERT(seat_register(7, 0x1000) == 1);
+    KASSERT(seat_register(7, 0x1000) == 1);        // same pid, same seat
+    KASSERT(seat_register(8, 0x2000) == 2);
+    KASSERT(seat_active() == 1 && seat_active_pid() == 7);
+    KASSERT(seat_fb(2) == 0x2000);
+    KASSERT(seat_switch(2) == 0);
+    KASSERT(seat_active_pid() == 8);
+    KASSERT(seat_switch(3) == -1);                 // no such client
+    KASSERT(seat_release_pid(8) == 1);             // survivor takes over
+    KASSERT(seat_active_pid() == 7);
+    seat_reset();
 }
 
 // The blocking input_read syscall: a worker injects an event device-side and
@@ -2554,8 +2556,8 @@ static const struct ktest tests[] = {
     { "rd: glyphs hit the framebuffer",   test_rd_glyphs_hit_framebuffer },
     { "gpu: device present",              test_gpu_present },
     { "gpu: scanout configured",          test_gpu_scanout },
-    { "gpu: kernel fb alloc + flush",     test_gfx_fb_alloc },
-    { "gpu: gfx_init forgets cached fb",  test_gfx_init_forgets_fb },
+    { "gpu: two seats, two resources",    test_gpu_two_seats },
+    { "seat: register/switch/release",    test_seat_logic },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },

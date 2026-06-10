@@ -111,3 +111,20 @@ QMP keyboard** (`(+ 1 2)` RET, then the screenshot form), screendumps, and
 **decodes the glyphs cell-by-cell against the same font the guest renders
 with** — the check literally reads the screen. The captured frame lives at
 `docs/images/phase-25-graphical-lisp-machine.png`.
+
+## 25.5 — seats: multiple Lisp machines, swappable on the fly
+
+The VT model: `src/seat.c` is pure bookkeeping (who owns the screen), KTESTed
+as plain logic; the gpu driver grew per-seat resources (`gfx_resource_setup` /
+`gfx_show`), so each VM renders into its OWN framebuffer and a switch is a
+SET_SCANOUT — never a pixel copy. The active seat's `gfx_flush` reaches the
+device; inactive VMs' flushes are silently dropped and their full frame is
+replayed on switch-in. Input routes only to the active seat (inactive readers
+sleep); **Ctrl-Alt-F1..F4** is consumed kernel-side in the input drain, and
+`(switch-seat n)` does the same from Lisp. A dying VM's seat is released in
+`thread_exit` and a survivor's frame takes the scanout. `(spawn-vm)` in
+frame.l forks a fresh `lisp -frame` — a complete second machine.
+
+Verification: `tools/seat_check.py` spawns VM2 from VM1, hotkey-switches, and
+proves by glyph-decoded screendumps that VM2 evals `(* 6 7) → 42` on its own
+virgin frame while VM1's history survives untouched on seat 1.
