@@ -135,6 +135,12 @@ $(TARGET): $(OBJ) linker.ld
 run: $(TARGET) $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_NET_RUN)
 
+# Run WITH a display window (the graphical Lisp machine, Phase 25): the same
+# flags minus -display none. Serial stays in the terminal; the QEMU window
+# shows the scanout and grabs keyboard+tablet input when focused.
+run-gui: $(TARGET) $(BUILD)/disk.img
+	$(QEMU) $(filter-out -display none,$(QEMU_FLAGS)) $(QEMU_NET_RUN)
+
 # Run the self-tests and return a shell exit code (0 = all passed). Builds a
 # test kernel with -DTEST_EXIT (which exits QEMU via semihosting), runs it under
 # -semihosting, then cleans so the flag never leaks into a normal `make run`.
