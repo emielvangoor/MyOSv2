@@ -7,8 +7,13 @@ and — since Phase 25 — an Emacs-style **graphical machine**: tiled windows,
 buffers, anti-aliased text, a vertico-style `M-x`, and external programs
 rendering into buffers.
 
-![the graphical Lisp machine](docs/images/phase-25-graphical-lisp-machine.png)
-![M-x, vertico-style](docs/images/phase-25-mx-vertico.png)
+![the graphical Lisp machine: a Lisp-drawn plot in a surface buffer, the
+living source of the event loop in another window, and M-x narrowing over
+the image's own symbols](docs/images/phase-25-hero.png)
+
+*One frame, all of it live: a bar chart drawn from the REPL into a surface
+buffer, `frame-loop`'s actual lambda displayed from the running image, and a
+vertico-style `M-x` filtering the machine's own symbol table.*
 
 This is a **vibe-coded OS, built just for fun** — to learn how computers and
 operating systems actually work, and to see how far we can get. No grand plan,
