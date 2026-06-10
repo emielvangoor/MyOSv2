@@ -131,3 +131,37 @@ errors) appear in the `*myos-lisp*` REPL buffer, which is also interactive.
 serial console (paced, see above), then from the host: evals `(+ 1 2)` → `3`,
 checks an error comes back over the socket, defines a function, disconnects,
 reconnects, and calls it — proving the image survived the reconnect.
+
+## 24.2 — system primitives (DEFUNs over syscalls)
+
+`user/lm_sys.c` exposes the kernel to Lisp: every primitive is a DEFUN wrapping
+one ulib syscall, registered into the image by `lm_sys_register()` right after
+`lm_boot()`. This file is **user-build-only** — the core (`src/lm_core.c`) is
+also compiled into the kernel for KTEST, and a kernel has no syscalls to wrap —
+so the `lm.elf` Makefile rule links it and the kernel never sees it.
+
+The vocabulary (fds/pids/statuses are fixnums, paths/data are strings, -1
+means failure, exactly like C):
+
+| Area      | Primitives |
+|-----------|------------|
+| processes | `(getpid)` `(fork)` `(exec path argv)` `(wait)`→`(pid . status)` `(exit [code])` `(kill pid sig)` `(sleep ms)` |
+| files     | `(open path)` `(close fd)` `(fd-read fd n)` `(fd-write fd str)` |
+| plumbing  | `(pipe)`→`(rfd . wfd)` `(dup2 old new)` |
+| sockets   | `(socket 'stream\|'dgram)` `(bind fd port)` `(listen fd)` `(accept fd)` `(connect fd host port)` |
+| machine   | `(shutdown)` |
+
+Naming note: the byte-moving calls are `fd-read`/`fd-write` because the core
+already owns `read` — in Lisp, `read` parses a *form* from the current input,
+and shadowing it would break the REPL itself.
+
+`(fork)` deserves a pause: it copies the whole process — the entire Lisp image
+— through the kernel's copy-on-write machinery, and both sides resume mid-eval
+of the same form. `(if (= (fork) 0) (exec ...) (wait))` is therefore the whole
+Unix process model in one S-expression, and it is what `system.l` (24.3) builds
+the shell from.
+
+Verification: `python3 tools/lisp_sys_check.py` (boot-and-observe over the TCP
+REPL — these primitives cannot run in the KTEST build by construction):
+open/read/close on `/motd`, a pipe write→read roundtrip, fork/exit/wait,
+fork/exec(`/bin/true`)/wait, exec-failure status, socket open/close.

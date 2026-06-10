@@ -406,15 +406,16 @@ their errors. Emacs glue in `user/lisp/lm-mode.el` (`lm-connect`, `C-c C-e`,
 `python3 tools/lisp_serve_check.py` (boot → serve → eval → error-over-socket →
 reconnect persistence).
 
-### ☐ 24.2 — system primitives (DEFUN over syscalls)
+### ✅ 24.2 — system primitives (DEFUN over syscalls)  (DONE)
 
-In the **user** build only (kernel doesn't have these syscalls), expose Lisp
-primitives wrapping ulib: `(fork)` `(exec path argv)` `(wait)` `(open)` `(close)`
-`(read fd n)` `(write fd str)` `(pipe)` `(dup2)` `(kill)` `(getpid)` `(exit)`
-plus the socket calls. Put them in a new `user/lm_sys.c` (compiled into the
-`lm.elf` rule) that registers extra DEFUNs — OR add a registration hook the core
-calls. Each teaching-level documented. Note: these can't live in `src/lm_core.c`
-because that's shared with the kernel; keep them user-only.
+`user/lm_sys.c` (user-only, linked into the `lm.elf` rule): `(getpid)` `(fork)`
+`(exec path argv)` `(wait)`→`(pid . status)` `(exit [code])` `(kill pid sig)`
+`(sleep ms)` `(open)` `(close)` `(fd-read fd n)` `(fd-write fd str)` (named
+`fd-*` because the core owns `read` = parse a form) `(pipe)`→`(rfd . wfd)`
+`(dup2)` `(socket 'stream|'dgram)` `(bind)` `(listen)` `(accept)` `(connect fd
+host port)` `(shutdown)`. Registered via `lm_sys_register()` after `lm_boot()`.
+Verified by `python3 tools/lisp_sys_check.py` (boot-and-observe over the TCP
+REPL: files, pipe roundtrip, fork/exit/wait, fork/exec/wait, sockets).
 
 ### ☐ 24.3 — the shell in Lisp (`user/lisp/system.l`)
 

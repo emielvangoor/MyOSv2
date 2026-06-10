@@ -24,6 +24,7 @@
 
 #include "lm.h"
 #include "ulib.h"
+#include "lm_sys.h"
 
 /* ---- Platform layer: the hooks src/lm_core.c calls. ---- */
 
@@ -159,6 +160,7 @@ int umain(int argc, char **argv)
     signal(SIGINT, on_sigint);
 
     lm_boot();
+    lm_sys_register();   /* add the syscall primitives (user build only) */
 
     static Writer out;
     writer_to_fd(&out, 1);

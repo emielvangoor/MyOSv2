@@ -87,6 +87,10 @@ deadlines; just building it one piece at a time and enjoying the ride.
   and your defuns are still there. `user/lisp/lm-mode.el` wires it into (Doom)
   Emacs: `M-x lm-connect`, then `C-c C-e` evals the form before point into the
   running OS. Errors come back over the socket too.
+- **Lisp ↔ kernel** — the syscalls are Lisp primitives (`user/lm_sys.c`):
+  `(fork)`, `(exec path argv)`, `(wait)`, pipes, `dup2`, files and sockets.
+  `(if (= (fork) 0) (exec "/bin/hello" ...) (wait))` is the whole Unix process
+  model in one S-expression, typed into a live REPL.
 
 Where it goes next — TCP congestion control and fuller teardown,
 and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a

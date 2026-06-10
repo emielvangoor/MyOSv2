@@ -92,12 +92,13 @@ $(BUILD)/user/%.elf: user/%.c $(USER_COMMON) user/user.ld user/ulib.h user/sysca
 
 # /bin/lisp is special: it links the shared Lisp core (the SAME src/lm_core.c the
 # kernel compiles for its tests) plus the freestanding setjmp, so it needs extra
-# sources and -Isrc to find lm.h. This explicit rule overrides the generic one
-# above for lm.elf.
+# sources and -Isrc to find lm.h. lm_sys.c (the syscall primitives) is USER-ONLY:
+# the kernel build of the core must never see it. This explicit rule overrides
+# the generic one above for lm.elf.
 LM_CORE := src/lm_core.c src/lm_jmp.S
-$(BUILD)/user/lm.elf: user/lm.c $(LM_CORE) src/lm.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
+$(BUILD)/user/lm.elf: user/lm.c user/lm_sys.c user/lm_sys.h $(LM_CORE) src/lm.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
 	mkdir -p $(BUILD)/user
-	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c
+	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c
 
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
 $(BUILD)/user_blob.c: $(USER_ELFS)
