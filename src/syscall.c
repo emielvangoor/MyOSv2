@@ -142,8 +142,13 @@ long do_syscall(struct trapframe *tf)
         struct pipe *p = pipe_alloc();
         struct file *rf = kmalloc(sizeof(struct file));
         struct file *wf = kmalloc(sizeof(struct file));
-        rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->writable = 0; rf->ref = 1;
-        wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->writable = 1; wf->ref = 1;
+        // EVERY field must be initialized: kmalloc doesn't zero, and the read/
+        // write/close paths dispatch on ->sock before ->pipe -- a recycled
+        // block that used to be a socket file would otherwise hand this pipe
+        // a stale socket pointer (found live: pipelines returned 0 bytes after
+        // any socket-using program had exited).
+        rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->sock = 0; rf->writable = 0; rf->ref = 1;
+        wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->sock = 0; wf->writable = 1; wf->ref = 1;
         // Allocate from fd 3 up: fds 0/1/2 stay reserved for stdin/stdout/stderr
         // (NULL there means "the console"), so a pipe never clobbers them.
         int r = -1, w = -1;

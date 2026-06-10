@@ -29,8 +29,12 @@ QEMU_CMD = [
     "-chardev", "stdio,id=ch0,signal=off", "-serial", "chardev:ch0",
     "-kernel", "build/kernel.elf",
     "-global", "virtio-mmio.force-legacy=false",
-    "-drive", "file=build/disk.img,if=none,format=raw,id=hd0",
+    # locking=off + -snapshot: a test boot must coexist with an interactive
+    # `make run` that holds the image's write lock -- snapshot mode sends all
+    # writes to a throwaway overlay, so skipping the lock is safe.
+    "-drive", "file=build/disk.img,file.locking=off,if=none,format=raw,id=hd0",
     "-device", "virtio-blk-device,drive=hd0",
+    "-snapshot",
     # The same user-mode net as `make run`, with the REPL forward on a
     # test-private host port.
     "-netdev", f"user,id=net0,hostfwd=tcp::{HOST_PORT}-:{GUEST_PORT}",

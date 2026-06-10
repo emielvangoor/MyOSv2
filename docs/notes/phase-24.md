@@ -246,6 +246,31 @@ Trade-offs, accepted: programs started from a TCP session no longer echo on
 the guest console, and a child that reads stdin reads the socket (telnet-ish —
 also a feature). Covered by the updated `tools/lisp_shell_check.py` TCP phase.
 
+## Post-24.4 — a kernel bug the Lisp machine found: stale `->sock` on pipes
+
+Second real-use find: `(| (run "http" ...) (run "wc"))` returned **0 bytes**
+whenever any socket-using program had previously run and exited. Bisected live
+over the network REPL (`tools/` harness): fork/exec/wait all fine, but after a
+socket-using *child* died, even a plain same-process `(pipe)` → `fd-write` →
+`fd-read` returned nil.
+
+Root cause in the kernel, not the Lisp: `SYS_PIPE` kmalloc'd its two `struct
+file`s and initialized every field **except `->sock`** (`vfs_open` and
+`SYS_SOCKET` initialize all of them). `kmalloc` doesn't zero. When the heap
+recycled a file struct freed by the exited socket-user, the new pipe end
+carried that stale socket pointer — and `SYS_READ`/`SYS_WRITE` dispatch on
+`->sock` *before* `->pipe`, so pipe I/O was silently redirected to a dead
+socket. A one-line class of bug with a wonderfully indirect symptom.
+
+Fix: initialize `rf->sock = wf->sock = 0` in `SYS_PIPE`. Covered twice:
+
+- KTEST `pipe: fds get a clean ->sock` — poisons two file-sized heap blocks
+  (as a dead socket-user leaves them), frees them, calls `SYS_PIPE`, asserts
+  both ends come out clean. (The test repairs the structs before its worker
+  exits — `thread_exit`'s `vfs_close` trusts `->sock` just as much.)
+- `tools/lisp_shell_check.py` — forks a child that opens a socket and dies,
+  then proves `(| (run "hello") (run "wc"))` still carries 22 bytes.
+
 ## Phase 24: done
 
 The OS boots into a live, redefinable Lisp image that is also its init, its

@@ -1230,6 +1230,54 @@ static void test_pipe_write_then_read(void)
     KASSERT(p->count == 0);
 }
 
+// Regression (found live, Phase 24): SYS_READ/SYS_WRITE dispatch on ->sock
+// BEFORE ->pipe, and SYS_PIPE kmalloc's its two file structs without
+// initializing ->sock. kmalloc doesn't zero, so when the heap recycles a file
+// struct freed by an exited socket-using process, the new pipe end carries a
+// stale socket pointer and pipe I/O is silently sent to a dead socket --
+// (| (run "http" ...) (run "wc")) returned 0 bytes. Poison the heap the same
+// way and assert both pipe ends come out with a clean ->sock.
+static volatile int pipesock_res;
+static void pipe_stale_sock_worker(void *a)
+{
+    (void)a;
+    pipesock_res = 9;                        // stage: running
+    // Two file-sized blocks, filled wholesale with garbage (as a freed socket
+    // file leaves behind), then freed so SYS_PIPE's kmallocs get them back.
+    struct file *d1 = kmalloc(sizeof(struct file));
+    struct file *d2 = kmalloc(sizeof(struct file));
+    char *p1 = (char *)d1, *p2 = (char *)d2;
+    for (unsigned i = 0; i < sizeof(struct file); i++) { p1[i] = (char)0xAA; p2[i] = (char)0xAA; }
+    kfree(d1); kfree(d2);
+    pipesock_res = 8;                        // stage: heap poisoned
+
+    int ufd[2] = { -1, -1 };
+    struct trapframe tf;
+    tf.x[8] = SYS_PIPE; tf.x[0] = (uint64_t)(uintptr_t)ufd;
+    do_syscall(&tf);
+    if ((long)tf.x[0] != 0) { pipesock_res = 1; return; }
+
+    struct file **fds = sched_current_fds();
+    int stale = (fds[ufd[0]]->sock != 0 || fds[ufd[1]]->sock != 0);
+    // Repair before exiting either way: thread_exit() vfs_close()s our fds,
+    // and a poisoned ->sock would send the CLOSE path into garbage too (the
+    // same trust in ->sock that makes the read path bug bite). The verdict
+    // was already taken above.
+    fds[ufd[0]]->sock = 0;
+    fds[ufd[1]]->sock = 0;
+    pipesock_res = stale ? 2 : 3;
+}
+
+static void test_pipe_file_sock_cleared(void)
+{
+    pmm_init(); kheap_init();
+    sched_init();
+    pipesock_res = 0;
+    thread_create(pipe_stale_sock_worker, 0, 1);
+    for (long i = 0; i < 2000000 && !(pipesock_res >= 1 && pipesock_res <= 3); i++) { yield(); }
+    KASSERT(pipesock_res == 3);              // 0=never ran 9/8=hung mid-stage
+}
+
 static void test_pipe_eof(void)
 {
     pmm_init(); kheap_init();
@@ -2175,6 +2223,7 @@ static const struct ktest tests[] = {
     { "shm: maps shared across spaces",   test_shm_shared_pages },
     { "shm: survives a mapper exiting",   test_shm_survives_unmap },
     { "pipe: write then read",            test_pipe_write_then_read },
+    { "pipe: fds get a clean ->sock",     test_pipe_file_sock_cleared },
     { "pipe: read EOF when no writers",   test_pipe_eof },
     { "pipe: write -1 when no readers",   test_pipe_broken },
     { "pipe: ring buffer wraps",          test_pipe_wraps },

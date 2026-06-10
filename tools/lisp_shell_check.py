@@ -108,6 +108,17 @@ def main() -> int:
         else:
             print("ok: (| (princ ...) (run wc)) -> 5 over TCP")
 
+        # Regression: a freed socket-file's heap block must not poison a later
+        # pipe (stale ->sock in SYS_PIPE made pipelines return 0 bytes after
+        # any socket-using program had exited). Fork a child that opens a
+        # socket and dies, then prove pipes still carry data.
+        repl_roundtrip(s, "(if (= (fork) 0) (progn (socket 'stream) (exit 0)) (wait))")
+        out = repl_roundtrip(s, '(| (run "hello") (run "wc"))')
+        if "22" not in out:
+            print(f"FAIL: pipe after a socket-using child died, got: {out!r}"); ok = False
+        else:
+            print("ok: pipes survive a dead socket-user (stale ->sock regression)")
+
         s.close()
     finally:
         q.kill()
