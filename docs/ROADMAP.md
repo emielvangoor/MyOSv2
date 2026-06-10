@@ -347,6 +347,123 @@ program juggle multiple sockets.
 
 ---
 
+## Phase 24 — The Lisp machine  ⟵ IN PROGRESS (handoff state below)
+
+**Goal:** make a Lisp the **primary userland** of MyOSv2 (Emacs / Symbolics
+spirit, "Emacs-on-Unix" model). The C kernel is untouched; a Lisp image runs at
+EL0 as an ordinary MMU-protected process talking to the kernel through existing
+syscalls. It fork/execs external ELF programs *and* runs in-image Lisp functions
+(Eshell model), eventually becomes `init`, and accepts live connections from
+Doom Emacs over TCP.
+
+- **Design spec:** `docs/superpowers/specs/2026-06-09-lisp-machine-design.md`
+- **Phase notes:** `docs/notes/phase-24.md`
+- **Ported from:** the standalone host interpreter at `~/Code/Sides/lm-lisp`
+- **Decisions locked by the user:** conservative GC stack scanning; connect
+  Emacs right after 24.1; do 24.1 → 24.5 (graphics deferred to a later phase).
+
+### Architecture (already in place — read before continuing)
+
+The reader/evaluator/printer/GC/primitives are ONE platform-neutral file,
+**`src/lm_core.c`** (+ `src/lm.h`), with no libc and no kernel headers. It is
+compiled into **two** binaries via a small platform layer:
+
+| Build  | Platform file       | alloc     | I/O      | Role                 |
+|--------|---------------------|-----------|----------|----------------------|
+| kernel | `src/lm_platform.c` | `kmalloc` | UART     | drives KTEST cases   |
+| user   | `user/lm.c`         | `malloc`  | syscalls | `/bin/lisp` + REPL   |
+
+Platform hooks: `lm_alloc`/`lm_free`, `lm_sys_read`/`lm_sys_write`/`lm_open`/
+`lm_close`, `lm_setjmp`/`lm_longjmp` (`src/lm_jmp.S`), `lm_abort`. The current
+I/O streams are globals `lm_cur_in` (Reader*) / `lm_cur_out` (Writer*); point
+them at a tty, a socket, or a capture buffer. GC is conservative: `lm_stack_base`
++ register spill via `lm_setjmp`, scanned against the live-object list (bounded by
+`gc.lo/hi`). Auto-collect in `gc_alloc` is gated on `lm_stack_base != 0` (so the
+KTEST build, which leaves it 0, only collects with explicit roots).
+
+Build wiring (Makefile): `lm` is in `PROGS`; `/bin/lisp` has a **dedicated rule**
+linking `user/crt0.S user/ulib.c src/lm_core.c src/lm_jmp.S user/lm.c` with
+`-Isrc`. `.l` files in `user/lisp/` (`LISP_FILES`) are xxd'd into
+`build/lisp_blob.c` and unpacked by the initrd to `/lib/<name>.l`.
+
+### ✅ 24.1 — core port + serial REPL  (DONE, committed `11be899`)
+
+`src/lm.h`, `src/lm_core.c`, `src/lm_jmp.S`, `src/lm_platform.c`, `user/lm.c`
+(`/bin/lisp`), `user/lisp/bootstrap.l` (→ `/lib/bootstrap.l`). 11 KTEST cases in
+`src/tests.c` (`test_lm_*`), full suite green (128 tests). Verified live under
+QEMU: `(fact 6)`→720, `(mapcar … (range 5))`→`(0 1 4 9 16)`, error recovery works.
+Console caveat: pasting long lines overflows the 16-byte PL011 RX FIFO (drops the
+newline → reader stalls); human-speed typing is fine; the TCP path is immune.
+
+### ☐ 24.1b — Emacs ↔ TCP REPL  (NEXT — do this first)
+
+Make `/bin/lisp` serve a network REPL so Doom Emacs evals into the **live guest
+image**. Concrete steps:
+
+1. **`user/lm.c`**: change `umain(void)` → `umain(int argc, char **argv)` (crt0
+   already passes x0=argc, x1=argv). Add `serve_repl(int port)`:
+   `socket(SOCK_STREAM)` → `bind(port)` → `listen` → loop `accept` (blocking
+   sleep/wake — no polling); on a connection, `reader_from_fd(&in, conn, 0)`
+   (no tty echo) + `writer_to_fd(&out, conn)`, set `lm_cur_in/out`, print a
+   `lisp> ` prompt + `lm_repl_step()` until it returns 0 (EOF), then `sys_close`
+   and loop back to `accept`. The global image (symtab/global_env) **persists**
+   across connections — that's the point. Dispatch: `lisp -serve [port]` →
+   `serve_repl` (default port 7000); plain `lisp` → existing serial REPL.
+2. **Makefile**: add `hostfwd=tcp::7000-:7000` to `QEMU_NET_RUN` so the host can
+   reach the guest server.
+3. **Emacs glue**: add `user/lisp/lm-mode.el` (or `docs/`) with `lm-connect`
+   (a comint buffer over `make-network-process` to `localhost:7000`) and
+   `C-c C-e` (send form before point) / `C-c C-r` (send region). Document the
+   flow in `docs/notes/phase-24.md` + README.
+4. **Verify**: boot with the forward, run `lisp -serve` in the guest (paced
+   input — see below), then from the host connect with a python socket (or nc),
+   send `(+ 1 2)\n`, assert `3` comes back; define a fn, call it, confirm the
+   image persisted.
+
+### ☐ 24.2 — system primitives (DEFUN over syscalls)
+
+In the **user** build only (kernel doesn't have these syscalls), expose Lisp
+primitives wrapping ulib: `(fork)` `(exec path argv)` `(wait)` `(open)` `(close)`
+`(read fd n)` `(write fd str)` `(pipe)` `(dup2)` `(kill)` `(getpid)` `(exit)`
+plus the socket calls. Put them in a new `user/lm_sys.c` (compiled into the
+`lm.elf` rule) that registers extra DEFUNs — OR add a registration hook the core
+calls. Each teaching-level documented. Note: these can't live in `src/lm_core.c`
+because that's shared with the kernel; keep them user-only.
+
+### ☐ 24.3 — the shell in Lisp (`user/lisp/system.l`)
+
+Eshell-hybrid, pure S-expressions. `(run "hello" "arg")` → fork→exec
+`/bin/hello`→wait, return status. `(| (run "a") (run "b"))` → `pipe`+`dup2`
+between two forked children (mirror `user/sh.c`'s `run_pipeline`, now in Lisp).
+In-image `(defun)`s callable the same way. A `repl` built from the primitives.
+Ship via initrd (add `system` to `LISP_FILES`), `load` it after `bootstrap.l`.
+
+### ☐ 24.4 — flip `init` to Lisp
+
+`src/initrd.c`: change `add_prog("/bin/init", …)` from `sh_elf` to `lm_elf`
+(keep `/bin/sh` as the C fallback). The serial REPL loop in `user/lm.c` must then
+**never exit** (loop on EOF instead of `break`, since exiting PID 1 is bad).
+Update README. Final verification boot.
+
+### Testing / workflow reminders (user's standing rules — memory)
+
+- **TDD, test-first**, gated by `make test` + the pre-commit hook. Portable-core
+  behavior is unit-tested in `src/tests.c` (`test_lm_*` via `lm_is(...)`); the
+  Lisp tests must call `lm_fresh()` (pmm+kheap init + `lm_boot`) first, because
+  they run before the heap tests in the registry.
+- Integration (primitives, shell, TCP, init flip) is verified by **booting under
+  QEMU and observing** — drive the serial console **char-by-char with ~12 ms
+  gaps** (see the python snippet in the session / `phase-24.md`) to avoid the RX
+  FIFO overflow; the TCP path can be driven directly from the host.
+- **Heavily document** (teaching-level "why" comments). **Keep README current**
+  each phase. **Prefer interrupts/blocking over polling** (the TCP server uses
+  blocking `accept`, not poll-spin).
+
+**Depends on:** 14 (ELF/exec), 17 (pipes), 18 (signals), 22 (sockets).
+**Size:** large — each sub-phase is its own commit.
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
