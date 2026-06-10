@@ -206,16 +206,19 @@ Switch with Ctrl-Alt-F1..F4 or (switch-seat n). Returns the child's pid."
 ;; (Interactive stdin still comes from the serial console -- a full in-buffer
 ;; comint is a later refinement.)
 
-(defun run-prog (path argv)
-  "Frame edition: stream the child's output into the current buffer; C-c
-sends it SIGINT. Returns the exit status, like the original."
+(defun stream-thunk (thunk)
+  "Run THUNK in a forked child with fd 1 -> a pipe, and stream everything it
+writes into the current buffer, redisplaying per chunk; C-c sends the child
+SIGINT. The general mechanism behind EVERY command in the frame: single
+programs and whole pipelines alike."
   (let ((p (pipe)))
     (let ((pid (fork)))
       (if (= pid 0)
-          (progn (dup2 (cdr p) 1)
+          (progn (setq in-pipeline t)        ; descendants run raw
+                 (dup2 (cdr p) 1)
                  (close (car p)) (close (cdr p))
-                 (exec path argv)
-                 (exit 127))
+                 (let ((v (funcall thunk)))
+                   (exit (if (numberp v) v 0))))
         (progn
           (close (cdr p))
           (let ((running t))
@@ -235,6 +238,19 @@ sends it SIGINT. Returns the exit status, like the original."
                   (t nil)))))
           (close (car p))
           (cdr (wait)))))))
+
+(defun run-prog (path argv)
+  "Frame edition: stream output into the buffer -- unless we ARE a pipeline
+stage, where fds were already plumbed and raw inheritance is the contract."
+  (if in-pipeline
+      (run-prog-raw path argv)
+    (stream-thunk (lambda () (run-prog-raw path argv)))))
+
+(defun pipe-stages (left right)
+  "Frame edition: the whole pipeline's output streams into the buffer."
+  (if in-pipeline
+      (pipe-stages-raw left right)
+    (stream-thunk (lambda () (pipe-stages-raw left right)))))
 
 (defun frame-loop ()
   "read-event -> dispatch -> redisplay, forever. The machine's heartbeat.

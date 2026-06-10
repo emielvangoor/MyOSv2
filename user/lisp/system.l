@@ -16,14 +16,25 @@
   "Turn a command name into its /bin path: \"wc\" -> \"/bin/wc\"."
   (string-concat "/bin/" name))
 
-(defun run-prog (path argv)
+;; Set while a forked pipeline/stream child runs its stage: tells run-prog
+;; to use the raw fd-inheriting path (the frame overrides run-prog to stream
+;; output into a buffer, which must NOT recurse inside stages).
+(setq in-pipeline nil)
+
+(defun run-prog-raw (path argv)
   "fork, exec PATH with ARGV in the child, wait; evaluate to the exit status.
-The three syscalls of process creation, in one function. If exec fails the
-child must NOT fall back into being a second Lisp REPL fighting over the
-terminal -- it exits 127, the shell convention for command-not-found."
+The three syscalls of process creation, in one function. The child inherits
+the parent's fds -- pipelines depend on that. If exec fails the child must
+NOT fall back into being a second Lisp REPL fighting over the terminal --
+it exits 127, the shell convention for command-not-found."
   (if (= (fork) 0)
       (progn (exec path argv) (exit 127))
     (cdr (wait))))
+
+(defun run-prog (path argv)
+  "The pluggable runner: the frame REDEFINES this to stream output into the
+current buffer. The serial machine keeps the raw fd-inheriting behavior."
+  (run-prog-raw path argv))
 
 (defun run cmdargs
   "(run \"hello\" \"arg\"...) -> run /bin/hello with arguments, wait.
@@ -42,7 +53,7 @@ init keeps the serial REPL alive."
 
 ;; ---- pipelines -------------------------------------------------------
 
-(defun pipe-stages (left right)
+(defun pipe-stages-raw (left right)
   "Run thunks LEFT and RIGHT as two forked children joined by a pipe:
 LEFT's fd 1 is the pipe's write end, RIGHT's fd 0 is its read end.
 Evaluates to RIGHT's exit status (like $? after `a | b` in sh).
@@ -55,14 +66,16 @@ waiting, or RIGHT would never see EOF (the parent's open write end would
 keep the pipe 'alive')."
   (let ((p (pipe)))
     (if (= (fork) 0)
-        (progn (dup2 (cdr p) 1)            ; left child: stdout -> pipe
+        (progn (setq in-pipeline t)        ; stages run raw (see run-prog)
+               (dup2 (cdr p) 1)            ; left child: stdout -> pipe
                (close (car p)) (close (cdr p))
                (let ((v (funcall left)))
                  (exit (if (numberp v) v 0))))
       nil)
     (let ((rpid (fork)))
       (if (= rpid 0)
-          (progn (dup2 (car p) 0)          ; right child: stdin <- pipe
+          (progn (setq in-pipeline t)
+                 (dup2 (car p) 0)          ; right child: stdin <- pipe
                  (close (car p)) (close (cdr p))
                  (let ((v (funcall right)))
                    (exit (if (numberp v) v 0))))
@@ -73,6 +86,11 @@ keep the pipe 'alive')."
           ;; the status that belongs to the right-hand stage.
           (let ((r1 (wait)) (r2 (wait)))
             (if (= (car r1) rpid) (cdr r1) (cdr r2))))))))
+
+(defun pipe-stages (left right)
+  "The pluggable pipeline driver: the frame redefines it to stream the
+pipeline's overall output into the current buffer."
+  (pipe-stages-raw left right))
 
 (defmacro | (a b)
   "(| left right) -- the pipeline, in its traditional spelling.
