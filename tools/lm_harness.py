@@ -159,7 +159,7 @@ _QCODE = {  # ascii -> (qcode, needs_shift)
 }
 
 
-def qmp_type(text: str, delay: float = 0.05):
+def qmp_type(text: str, delay: float = 0.12):
     """Type a whole string on the virtio keyboard, shift and all."""
     for ch in text:
         qcode, shifted = _QCODE[ch]
