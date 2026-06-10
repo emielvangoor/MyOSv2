@@ -19,7 +19,10 @@
 #include "gfx.h"
 
 #define VIRTIO_ID_INPUT 18
-#define EVN 16
+// 64 pre-posted event buffers per device: a key press+release is two events,
+// and a busy tick (minibuffer filtering, a streaming command) can let several
+// keystrokes queue up -- 16 buffers dropped keys under fast typing.
+#define EVN 64
 
 struct idev {
     uint64_t base;                  // MMIO base (0 = absent)
