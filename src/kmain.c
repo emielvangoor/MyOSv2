@@ -26,6 +26,7 @@
 #include "block.h"
 #include "sfs.h"
 #include "net.h"
+#include "input.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -132,6 +133,10 @@ void kmain(void)
         kprintf("net: none\n");
     }
 
+    // --- Input devices (keyboard + tablet, for the graphical machine) ---
+    input_init();
+    kprintf(input_present() ? "input: keyboard + tablet ready\n" : "input: none\n");
+
     // --- 5. Interrupts, then the scheduler ---
     exc_init();
     gic_init();
@@ -139,6 +144,10 @@ void kmain(void)
     gic_enable_irq(33);          // UART0 receive interrupt (interrupt-driven input)
     uart_rx_irq_enable();        // now that the GIC + handler are ready, arm RX
     if (net_present()) { gic_enable_irq(net_irq_id()); }   // NIC receive interrupt
+    if (input_present()) {                                  // keyboard + tablet events
+        gic_enable_irq(input_irq_id(0));
+        gic_enable_irq(input_irq_id(1));
+    }
 
     vm_init();
     shm_init();                                           // shared-memory object table

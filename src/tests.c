@@ -29,6 +29,7 @@
 #include "block.h"
 #include "sfs.h"
 #include "virtio.h"
+#include "input.h"
 #include "net.h"
 #include "console.h"
 #include "socket.h"
@@ -1243,6 +1244,28 @@ static void test_input_devices_present(void)
     KASSERT(virtio_find_nth(18, 2) == 0);   // there is no third one
 }
 
+static void test_input_present(void)
+{
+    pmm_init(); kheap_init();
+    input_init();
+    KASSERT(input_present());
+}
+
+static void test_input_poll_drain(void)
+{
+    // Fake a completed event in device 0's used ring, exactly as the device
+    // would leave it, and check input_poll_event() hands it to us and that the
+    // buffer is recycled (the queue never starves).
+    pmm_init(); kheap_init();
+    input_init();
+    struct input_event ev = { 0xFFFF, 0xFFFF, 0xFFFFFFFF };
+    KASSERT(input_poll_event(&ev) == 0);            // nothing pending
+    input_test_inject(0, EV_KEY, 30 /*KEY_A*/, 1);
+    KASSERT(input_poll_event(&ev) == 1);
+    KASSERT(ev.type == EV_KEY && ev.code == 30 && ev.value == 1);
+    KASSERT(input_poll_event(&ev) == 0);            // consumed
+}
+
 // Regression (found live, Phase 24): SYS_READ/SYS_WRITE dispatch on ->sock
 // BEFORE ->pipe, and SYS_PIPE kmalloc's its two file structs without
 // initializing ->sock. kmalloc doesn't zero, so when the heap recycles a file
@@ -2262,6 +2285,8 @@ static const struct ktest tests[] = {
     { "sfs: multi-block file",            test_sfs_multiblock },
     { "vfs: mount at /disk",              test_vfs_mount_at },
     { "input: two devices present",       test_input_devices_present },
+    { "input: driver present",            test_input_present },
+    { "input: poll drains injected event", test_input_poll_drain },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },
