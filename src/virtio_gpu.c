@@ -195,20 +195,46 @@ int gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 #define CURSOR_RES 100                    // resource id reserved for the sprite
 static uint32_t cursor_px[64 * 64];       // B8G8R8A8 sprite (DMA)
 
-// Draw the classic pointer: a white triangle with a black outline, alpha
-// elsewhere. Procedural, so no asset to embed.
+// The classic arrow pointer -- the canonical notched-tail polygon, white
+// fill with a black outline, transparent elsewhere. Drawn from an ASCII
+// bitmap ('X' outline, '.' fill) at 2x scale so it carries presence at
+// 1280x720. An ASCII sprite is an asset and source code at the same time.
+static const char *cursor_art[] = {
+    "X           ",
+    "XX          ",
+    "X.X         ",
+    "X..X        ",
+    "X...X       ",
+    "X....X      ",
+    "X.....X     ",
+    "X......X    ",
+    "X.......X   ",
+    "X........X  ",
+    "X.....XXXXX ",
+    "X..X..X     ",
+    "X.X X..X    ",
+    "XX  X..X    ",
+    "X    X..X   ",
+    "     X..X   ",
+    "      X..X  ",
+    "       XX   ",
+};
+
 static void cursor_sprite(void)
 {
-    for (int y = 0; y < 64; y++) {
-        for (int x = 0; x < 64; x++) {
-            uint32_t c = 0;                              // transparent
-            if (y < 20 && x <= y) {
-                c = 0xFF000000;                          // black outline
-                if (x > 0 && x < y - 1 && y > 2 && y < 18) {
-                    c = 0xFFFFFFFF;                      // white fill
+    for (int i = 0; i < 64 * 64; i++) { cursor_px[i] = 0; }   // transparent
+    int rows = (int)(sizeof(cursor_art) / sizeof(cursor_art[0]));
+    for (int y = 0; y < rows; y++) {
+        for (int x = 0; cursor_art[y][x]; x++) {
+            uint32_t c = 0;
+            if (cursor_art[y][x] == 'X') { c = 0xFF000000; }       // outline
+            if (cursor_art[y][x] == '.') { c = 0xFFFFFFFF; }       // fill
+            if (!c) { continue; }
+            for (int dy = 0; dy < 2; dy++) {                       // 2x scale
+                for (int dx = 0; dx < 2; dx++) {
+                    cursor_px[(y * 2 + dy) * 64 + (x * 2 + dx)] = c;
                 }
             }
-            cursor_px[y * 64 + x] = c;
         }
     }
 }
