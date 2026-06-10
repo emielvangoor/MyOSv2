@@ -72,5 +72,62 @@ Verified under QEMU: `(fact 6)` → `720`, `(mapcar (lambda (x) (* x x)) (range 
 Pasting a long line into the serial console can overflow the 16-byte PL011 RX
 FIFO faster than the line-reader drains it, dropping characters (including the
 terminating newline, which then stalls the read). This is a pre-existing console
-limitation, not a Lisp one — human-speed typing is fine, and the upcoming
-Emacs-over-TCP path (24.1b) bypasses the tty entirely.
+limitation, not a Lisp one — human-speed typing is fine, and the Emacs-over-TCP
+path (24.1b) bypasses the tty entirely. When *scripting* the console (the
+integration checks in `tools/` do), send input char-by-char with ~12 ms gaps:
+
+```python
+for ch in "lisp -serve\r":
+    qemu_stdin.write(ch.encode()); qemu_stdin.flush()
+    time.sleep(0.012)
+```
+
+## 24.1b — the network REPL (Doom Emacs ↔ the live image)
+
+`lisp -serve [port]` (default 7777) turns `/bin/lisp` into a TCP REPL server:
+`socket(SOCK_STREAM)` → `bind` → `listen` → blocking `accept`. On each
+connection the core's current streams (`lm_cur_in`/`lm_cur_out`) are pointed at
+the socket (`tty=0`: no echo or line editing — the editor at the far end does
+that) and the same `lm_repl_step()` loop runs until the peer disconnects. Then
+the server loops back into `accept`. **The image persists across connections**
+— symbol table and global bindings live in the server process and are untouched
+between visits — which is the whole Lisp-machine point: you accrete a living
+system, you don't restart it.
+
+Design decisions, and why:
+
+- **A dedicated blocking server, not a tty+socket multiplexer.** The kernel's
+  `poll()` treats the console as always-ready, so a poll loop over both would
+  busy-spin. Blocking `accept`/`read` sleep in the kernel and are woken by
+  interrupts (the house rule: interrupts over polling). Ctrl-C on the console
+  interrupts a blocked `accept` (the kernel returns the EINTR convention, <0),
+  which is how the server is stopped.
+- **Errors travel over the socket.** `lm_error` now reports through
+  `lm_cur_out` (falling back to raw fd 2 only when no stream is set up, e.g.
+  while loading the bootstrap). A remote user must see their typo in their
+  buffer; a message on the guest serial console would be invisible to them.
+  This is KTEST-covered (`lm: errors go to lm_cur_out`).
+- **Port 7777, not the classic 7000.** macOS's AirPlay Receiver (ControlCenter)
+  listens on 7000, so a `hostfwd` on 7000 makes QEMU fail to start on a Mac.
+  `make run` forwards host:7777 → guest:7777.
+
+### Emacs glue (`user/lisp/lm-mode.el`)
+
+The host half: a comint buffer over `make-network-process`. In Doom Emacs:
+
+```elisp
+;; config.el
+(load! "~/Code/Sides/os/user/lisp/lm-mode.el")
+(add-hook 'lisp-mode-hook #'lm-minor-mode)
+```
+
+Then `make run` → type `lisp -serve` at the guest shell → `M-x lm-connect`.
+`C-c C-e` sends the sexp before point, `C-c C-r` the region; results (and
+errors) appear in the `*myos-lisp*` REPL buffer, which is also interactive.
+
+### Verification
+
+`python3 tools/lisp_serve_check.py` boots QEMU, types `lisp -serve` on the
+serial console (paced, see above), then from the host: evals `(+ 1 2)` → `3`,
+checks an error comes back over the socket, defines a function, disconnects,
+reconnects, and calls it — proving the image survived the reconnect.

@@ -731,10 +731,17 @@ tail_call:
 
 void lm_error(const char *msg, Lobj obj)
 {
-    Writer w; writer_to_fd(&w, 2);
-    w_str(&w, "ERROR: "); w_str(&w, msg);
-    if (obj != Qnil) { w_str(&w, " -- "); lm_print(obj, &w); }
-    w_putc(&w, '\n');
+    /* Report on the CURRENT output stream, not blindly on fd 2: when the REPL
+     * is a TCP socket (24.1b), the person who typed the bad form is on the
+     * other end of that socket, and a message on the guest's serial console
+     * would be invisible to them. Fall back to the raw stderr fd only when no
+     * stream is set up yet (e.g. an error while loading the bootstrap). */
+    Writer fallback;
+    Writer *w = lm_cur_out;
+    if (!w) { writer_to_fd(&fallback, 2); w = &fallback; }
+    w_str(w, "ERROR: "); w_str(w, msg);
+    if (obj != Qnil) { w_str(w, " -- "); lm_print(obj, w); }
+    w_putc(w, '\n');
     if (error_jmp_set) { lm_longjmp(error_jmp, 1); }
     lm_abort();
 }

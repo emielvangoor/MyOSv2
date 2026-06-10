@@ -2033,6 +2033,34 @@ static void test_lm_error_recovery(void)
     KASSERT(lm_is("(+ 40 2)", "42"));
 }
 
+// Does `hay` contain `needle`? (No strstr in a freestanding kernel.)
+static int lm_strhas_(const char *hay, const char *needle)
+{
+    for (; *hay; hay++) {
+        const char *a = hay, *b = needle;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (!*b) { return 1; }
+    }
+    return !*needle;
+}
+
+static void test_lm_error_goes_to_cur_out(void)
+{
+    lm_fresh();
+    // The REPL may be a TCP socket (24.1b): a remote Emacs user must see error
+    // messages in their buffer, not on the guest's serial console. So lm_error
+    // must write through lm_cur_out when it is set (and only fall back to the
+    // raw fd 2 when it isn't, e.g. during load before the REPL starts).
+    char buf[128];
+    Writer w;
+    writer_to_buffer(&w, buf, sizeof(buf));
+    lm_cur_out = &w;
+    lm_eval_cstr("nosuchvariable");      // raises + recovers
+    lm_cur_out = 0;
+    KASSERT(lm_strhas_(buf, "ERROR"));
+    KASSERT(lm_strhas_(buf, "nosuchvariable"));
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "lm: arithmetic",                  test_lm_arithmetic },
@@ -2046,6 +2074,7 @@ static const struct ktest tests[] = {
     { "lm: strings + type-of",           test_lm_strings },
     { "lm: GC keeps roots, frees rest",  test_lm_gc_keeps_roots },
     { "lm: error recovery",              test_lm_error_recovery },
+    { "lm: errors go to lm_cur_out",     test_lm_error_goes_to_cur_out },
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
     { "pmm: freed page reused",          test_pmm_free_reuse },
     { "pmm: alloc_pages contiguous run", test_pmm_alloc_pages_contiguous },

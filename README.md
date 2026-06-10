@@ -81,6 +81,12 @@ deadlines; just building it one piece at a time and enjoying the ride.
   boots its standard library from `/lib/bootstrap.l` and gives you an interactive
   REPL with error recovery (a typo doesn't kill the session). The plan is for Lisp
   to become the primary userland — see **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+- **Network REPL (Emacs ↔ the live image)** — `lisp -serve` serves the REPL over
+  TCP (blocking `accept`, one connection at a time); QEMU forwards host:7777 →
+  guest:7777. The image **persists across connections** — disconnect, reconnect,
+  and your defuns are still there. `user/lisp/lm-mode.el` wires it into (Doom)
+  Emacs: `M-x lm-connect`, then `C-c C-e` evals the form before point into the
+  running OS. Errors come back over the socket too.
 
 Where it goes next — TCP congestion control and fuller teardown,
 and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a

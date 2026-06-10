@@ -55,11 +55,14 @@ QEMU_DISK  := -global virtio-mmio.force-legacy=false \
 # QEMU user-mode networking: a virtual LAN (gateway 10.0.2.2, guest 10.0.2.15)
 # with a built-in ARP/ICMP/DHCP responder -- no host setup needed.
 QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
-# Interactive runs additionally forward host port 8080 to guest 8080 so the
-# in-guest /bin/httpd is reachable: run `httpd`, then `curl http://localhost:8080/`.
-# This is NOT used by `make test` -- binding a host port would make the test suite
-# fail whenever 8080 is busy (e.g. a server already running, or overlapping runs).
-QEMU_NET_RUN := -netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+# Interactive runs additionally forward host ports into the guest:
+#   8080 -> 8080  /bin/httpd        (`httpd`, then `curl http://localhost:8080/`)
+#   7777 -> 7777  Lisp network REPL (`lisp -serve`, then connect from Emacs --
+#                 see user/lisp/lm-mode.el). 7777 instead of the classic 7000
+#                 because macOS's AirPlay Receiver listens on 7000.
+# These are NOT used by `make test` -- binding a host port would make the test
+# suite fail whenever it is busy (a server already running, overlapping runs).
+QEMU_NET_RUN := -netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=tcp::7777-:7777 \
                 -device virtio-net-device,netdev=net0
 QEMU_SERIAL := -chardev stdio,id=ch0,signal=off -serial chardev:ch0
 # Base flags WITHOUT networking; run/test/debug each add the net variant they want.

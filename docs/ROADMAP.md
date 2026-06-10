@@ -395,30 +395,16 @@ QEMU: `(fact 6)`→720, `(mapcar … (range 5))`→`(0 1 4 9 16)`, error recover
 Console caveat: pasting long lines overflows the 16-byte PL011 RX FIFO (drops the
 newline → reader stalls); human-speed typing is fine; the TCP path is immune.
 
-### ☐ 24.1b — Emacs ↔ TCP REPL  (NEXT — do this first)
+### ✅ 24.1b — Emacs ↔ TCP REPL  (DONE)
 
-Make `/bin/lisp` serve a network REPL so Doom Emacs evals into the **live guest
-image**. Concrete steps:
-
-1. **`user/lm.c`**: change `umain(void)` → `umain(int argc, char **argv)` (crt0
-   already passes x0=argc, x1=argv). Add `serve_repl(int port)`:
-   `socket(SOCK_STREAM)` → `bind(port)` → `listen` → loop `accept` (blocking
-   sleep/wake — no polling); on a connection, `reader_from_fd(&in, conn, 0)`
-   (no tty echo) + `writer_to_fd(&out, conn)`, set `lm_cur_in/out`, print a
-   `lisp> ` prompt + `lm_repl_step()` until it returns 0 (EOF), then `sys_close`
-   and loop back to `accept`. The global image (symtab/global_env) **persists**
-   across connections — that's the point. Dispatch: `lisp -serve [port]` →
-   `serve_repl` (default port 7000); plain `lisp` → existing serial REPL.
-2. **Makefile**: add `hostfwd=tcp::7000-:7000` to `QEMU_NET_RUN` so the host can
-   reach the guest server.
-3. **Emacs glue**: add `user/lisp/lm-mode.el` (or `docs/`) with `lm-connect`
-   (a comint buffer over `make-network-process` to `localhost:7000`) and
-   `C-c C-e` (send form before point) / `C-c C-r` (send region). Document the
-   flow in `docs/notes/phase-24.md` + README.
-4. **Verify**: boot with the forward, run `lisp -serve` in the guest (paced
-   input — see below), then from the host connect with a python socket (or nc),
-   send `(+ 1 2)\n`, assert `3` comes back; define a fn, call it, confirm the
-   image persisted.
+`lisp -serve [port]` (default **7777**, not 7000 — macOS AirPlay squats on
+7000 and a dead `hostfwd` kills QEMU) serves the REPL over a blocking
+`accept` loop; the image persists across connections. `lm_error` now reports
+through `lm_cur_out` (KTEST `lm: errors go to lm_cur_out`) so remote users see
+their errors. Emacs glue in `user/lisp/lm-mode.el` (`lm-connect`, `C-c C-e`,
+`C-c C-r`). `make run` forwards host:7777 → guest:7777. End-to-end check:
+`python3 tools/lisp_serve_check.py` (boot → serve → eval → error-over-socket →
+reconnect persistence).
 
 ### ☐ 24.2 — system primitives (DEFUN over syscalls)
 
