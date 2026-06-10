@@ -218,12 +218,18 @@ programs and whole pipelines alike."
   (let ((p (pipe)))
     (let ((pid (fork)))
       (if (= pid 0)
-          (progn (setq in-pipeline t)        ; descendants run raw
+          (progn (setpgid 0 0)               ; become a JOB leader: programs we
+                                             ; fork inherit the group, so one
+                                             ; group-kill interrupts them all
+                 (setq in-pipeline t)        ; descendants run raw
                  (dup2 (cdr p) 1)
                  (close (car p)) (close (cdr p))
                  (let ((v (funcall thunk)))
                    (exit (if (numberp v) v 0))))
         (progn
+          (setpgid pid pid)                  ; parent sets it TOO (the classic
+                                             ; shell double-set: no race if C-c
+                                             ; lands before the child runs)
           (close (cdr p))
           (let ((running t))
             (while running
@@ -232,12 +238,20 @@ programs and whole pipelines alike."
                     (if chunk
                         (progn (insert chunk) (redisplay))
                       (setq running nil)))
-                nil)
+                ;; Quiet 50ms: nothing arrived, but if a live surface is
+                ;; animating (the teapot) we must STILL repaint -- redisplay
+                ;; is what blits surface canvases, and a slow-printing child
+                ;; (ping: one line a second) must not become the frame rate.
+                (if animate (redisplay) nil))
               (let ((ev (read-event-nowait)))
                 (cond
                   ((null ev) nil)
                   ((and (eq (car ev) 'ctrl) (= (cadr ev) 99))   ; C-c
-                   (kill pid 2)
+                   ;; Signal the GROUP (-pid), not the pid: our child is only
+                   ;; a Lisp wrapper -- the program doing the work (ping) is
+                   ;; its child, and killing the wrapper alone would orphan
+                   ;; it, still streaming. SIGINT to -pid reaches them all.
+                   (kill (- 0 pid) 2)
                    (echo "C-c: interrupted"))
                   (t nil)))))
           (close (car p))

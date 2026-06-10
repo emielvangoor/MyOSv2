@@ -258,3 +258,24 @@ exp·ln). `/bin/teapot` tessellates the classic Newell Bézier patches
 triangles per frame into a surface buffer at ~25fps. `(teapot)` in frame.l
 splits a window and runs it; an `animate` heartbeat polls input at 25Hz so
 live canvases repaint (the blocking read stays the idle default).
+
+Live use found three bugs worth their lessons. (1) The GLUT tables hold one
+QUADRANT of the symmetric parts (half a handle/spout) -- the renderer must
+mirror them out, reversing control-point columns on single mirrors so the
+cross-product normals keep pointing outward. (2) Newell's parameterization
+winds so u-by-v points INTO the pot (why glutSolidTeapot sets
+`glFrontFace(GL_CW)`): cross(tv, tu), not cross(tu, tv). (3) `stream-thunk`
+only redisplayed when a chunk arrived, so a child printing one line a second
+(ping) dragged the teapot to 1fps -- now the quiet 50ms poll ticks repaint
+too when `animate` is on.
+
+And C-c could not stop ping at all: stream-thunk kills its child, but that
+child is just the Lisp wrapper -- /bin/ping is a GRANDchild, orphaned and
+still streaming. The Unix answer, now in the kernel: **process groups**.
+Every thread is born leading its own group, fork inherits the parent's,
+`setpgid(0,0)` starts a job, and `kill(-pgid, sig)` signals every member.
+stream-thunk's child makes itself a leader (parent double-sets to close the
+race) and C-c group-kills wrapper + ping together. KTEST-covered
+(`sig: process groups`), end-to-end verified by `tools/teapot_check.py`:
+full pot lit, spins idle, spins at 20fps DURING a ping stream, and dies to
+one C-c.

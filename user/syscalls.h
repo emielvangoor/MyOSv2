@@ -39,3 +39,4 @@
 #define SYS_GFX_ACQUIRE 41
 #define SYS_GFX_FLUSH   42
 #define SYS_SEAT_SWITCH 43
+#define SYS_SETPGID     44

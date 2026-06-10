@@ -33,6 +33,12 @@ struct thread {
     uint8_t *stack;        // kmalloc'd stack base (NULL for the idle thread)
     enum thread_state state;
     int id;
+    int pgid;              // process group: fresh threads lead their own
+                           // group of one; fork INHERITS the parent's, so a
+                           // job (shell wrapper + the programs it execs) can
+                           // be signalled as a unit -- kill(-pgid, SIGINT)
+                           // is how the frame's C-c reaches ping, not just
+                           // the Lisp wrapper that forked it.
     int priority;          // higher number = more important
     uint64_t wake_tick;    // jiffy to wake at (when SLEEPING)
     void *wait_chan;       // wait-channel this thread is BLOCKED on (0 if none)
@@ -69,7 +75,8 @@ void thread_exit(int status);                                    // end current 
 int  sched_wait(int *status);                                    // reap a zombie child; -1 if none
 void sched_set_current_as(struct addrspace *as);                 // rebind current's address space (exec)
 struct thread *sched_current(void);                              // the running thread
-int  sched_kill(int pid, int sig);                               // post a signal to pid; -1 if no such pid
+int  sched_kill(int pid, int sig);     // signal pid -- or, pid < 0, every member of group -pid
+int  sched_setpgid(int pid, int pgid); // re-file pid (0 = self) into group pgid (0 = pid's own id)
 void sched_set_foreground(struct thread *t);                     // the thread Ctrl-C targets
 struct thread *sched_foreground(void);
 int  sched_started(void);

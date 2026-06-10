@@ -176,7 +176,10 @@ photograph itself: `(screenshot "/shot.ppm")`.
   user programs compile with floats/NEON, and a vendored **TinyGL** (software
   OpenGL 1.x) renders the **Utah teapot** — Newell's 1975 Bézier patches,
   tessellated and lit — spinning at 25fps inside an Emacs-style buffer:
-  type `(teapot)` at the REPL.
+  type `(teapot)` at the REPL. It keeps spinning while other commands
+  stream output, and C-c interrupts a whole job -- the kernel grew Unix
+  **process groups** (`setpgid`, `kill -pgid`) so the frame's Ctrl-C
+  reaches the program doing the work, not just the wrapper that forked it.
   ![the Utah teapot in a buffer](docs/images/phase-26-teapot.png)
 - **M-x + describe-function, vertico-style** — the echo area grows into a
   live-narrowing command palette over the image's own symbol table; `C-h f`

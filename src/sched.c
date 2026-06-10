@@ -30,10 +30,46 @@ struct thread *sched_foreground(void) { return foreground; }
 int sched_kill(int pid, int sig)
 {
     extern void signal_send(struct thread *t, int sig);
+    // pid < 0 is the shell convention: signal EVERY member of process group
+    // -pid. This is what makes Ctrl-C kill a whole job (wrapper + grandchild
+    // ping) instead of just the one process the shell happens to know about.
+    if (pid < 0) {
+        int hit = 0;
+        uint64_t flags = irq_save();
+        struct thread *t = current;
+        do {
+            if (t->pgid == -pid && t->state != THREAD_EXITED
+                                && t->state != THREAD_ZOMBIE) {
+                signal_send(t, sig);
+                hit = 1;
+            }
+            t = t->next;
+        } while (t != current);
+        irq_restore(flags);
+        return hit ? 0 : -1;
+    }
     uint64_t flags = irq_save();
     struct thread *t = current;
     do {
         if (t->id == pid) { irq_restore(flags); signal_send(t, sig); return 0; }
+        t = t->next;
+    } while (t != current);
+    irq_restore(flags);
+    return -1;
+}
+
+int sched_setpgid(int pid, int pgid)
+{
+    // POSIX shorthands: pid 0 = the calling process, pgid 0 = "a group named
+    // after pid itself" (how a job leader is born: setpgid(0, 0)).
+    uint64_t flags = irq_save();
+    struct thread *t = current;
+    do {
+        if ((pid == 0 && t == current) || (pid != 0 && t->id == pid)) {
+            t->pgid = (pgid == 0) ? t->id : pgid;
+            irq_restore(flags);
+            return 0;
+        }
         t = t->next;
     } while (t != current);
     irq_restore(flags);
@@ -54,6 +90,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     t->stack     = stack;
     t->state     = THREAD_RUNNABLE;
     t->id        = next_id++;
+    t->pgid      = t->id;        // a fresh thread leads its own group of one
     t->priority  = priority;
     t->wake_tick = 0;
     t->wait_chan = 0;
@@ -117,6 +154,9 @@ int sched_fork(struct trapframe *parent_tf)
     t->stack     = kstack;
     t->state     = THREAD_RUNNABLE;
     t->id        = next_id++;
+    t->pgid      = current->pgid;  // fork stays IN the parent's job: this is
+                                   // the line that lets one kill(-pgid) catch
+                                   // a wrapper and everything it forked
     t->priority  = current->priority;
     t->wake_tick = 0;
     t->wait_chan = 0;
@@ -170,6 +210,7 @@ struct thread *thread_create_image(const void *img, uint64_t len, int priority)
     t->stack     = kstack;
     t->state     = THREAD_RUNNABLE;
     t->id        = next_id++;
+    t->pgid      = t->id;        // a fresh thread leads its own group of one
     t->priority  = priority;
     t->wake_tick = 0;
     t->wait_chan = 0;
@@ -225,6 +266,7 @@ void sched_init(void)
     boot_thread.stack     = 0;            // it already has the kernel boot stack
     boot_thread.state     = THREAD_RUNNING;
     boot_thread.id        = 0;
+    boot_thread.pgid      = 0;            // its own (one-thread) group, like any other
     boot_thread.priority  = -1;           // below any created thread
     boot_thread.wake_tick = 0;
     boot_thread.wait_chan = 0;

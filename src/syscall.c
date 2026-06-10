@@ -344,6 +344,9 @@ long do_syscall(struct trapframe *tf)
         }
         break;
     }
+    case SYS_SETPGID:                        // x0 = pid (0=self), x1 = pgid (0=own)
+        ret = sched_setpgid((int)tf->x[0], (int)tf->x[1]);
+        break;
     case SYS_SEAT_SWITCH: {                   // x0 = seat number (1-based)
         int n = (int)tf->x[0];
         if (seat_switch(n) != 0) { ret = -1; break; }

@@ -1,6 +1,9 @@
 // teapot_data.h -- the Utah teapot's Bezier control data, from SGI GLUT's
-// glut_teapot.c (Mark Kilgard; data by Martin Newell, 1975). 32 bicubic
-// patches indexing 306 control points. The most famous 3KB in graphics.
+// glut_teapot.c (Mark Kilgard; data by Martin Newell, 1975). 10 unique
+// bicubic patches (0-BASED indices into 127 control points) describing one
+// quadrant of the symmetric parts and one half of the handle/spout; the
+// renderer mirrors them into the full 32-patch teapot at draw time.
+// The most famous 3KB in graphics.
 #pragma once
 static const int patchdata[][16] =
 {

@@ -1716,6 +1716,29 @@ static void test_kill_by_pid(void)
     KASSERT(sched_kill(9999, SIGTERM) == -1);   // no such pid
 }
 
+static void test_process_groups(void)
+{
+    // Process groups exist for ONE reason here: Ctrl-C must reach a whole
+    // job. The frame's stream-thunk forks a Lisp wrapper which forks the
+    // real program (ping) -- killing just the wrapper leaves the grandchild
+    // streaming forever. So: every fresh thread is its own group, setpgid
+    // re-files it, and kill of a NEGATIVE pid signals every member.
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *a = thread_create(sig_noop, 0, 1);
+    struct thread *b = thread_create(sig_noop, 0, 1);
+    struct thread *c = thread_create(sig_noop, 0, 1);
+    KASSERT(a->pgid == a->id);                       // born a group of one
+    KASSERT(sched_setpgid(b->id, a->id) == 0);       // b joins a's group
+    KASSERT(sched_kill(-a->id, SIGINT) == 0);        // -pid = the whole group
+    KASSERT(a->sig_pending & (1ull << SIGINT));
+    KASSERT(b->sig_pending & (1ull << SIGINT));
+    KASSERT(!(c->sig_pending & (1ull << SIGINT)));   // bystander untouched
+    KASSERT(sched_kill(-9999, SIGINT) == -1);        // no such group
+    KASSERT(sched_setpgid(c->id, 0) == 0);           // pgid 0 = "own id" (POSIX)
+    KASSERT(c->pgid == c->id);
+    KASSERT(sched_setpgid(9999, 0) == -1);           // no such pid
+}
+
 static void test_sig_default_vs_handler(void)
 {
     pmm_init(); kheap_init(); vm_init(); sched_init();
@@ -2623,6 +2646,7 @@ static const struct ktest tests[] = {
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },
     { "sig: default vs handler action",   test_sig_default_vs_handler },
+    { "sig: process groups (kill -pgid)", test_process_groups },
     { "block: disk present",              test_block_present },
     { "block: write then read sector",    test_block_write_read },
     { "block: two sectors independent",   test_block_two_sectors },

@@ -125,6 +125,16 @@ DEFSYS("kill", Skill, 2, 2) {
     return FIXNUM(kill(pid, sig));
 }
 
+/* (setpgid pid pgid) -> 0 or -1. (setpgid 0 0) makes the caller a process-
+ * group leader; children it forks inherit the group, so (kill (- 0 pid) 2)
+ * later interrupts the WHOLE job -- the frame's C-c story. */
+DEFSYS("setpgid", Ssetpgid, 2, 2) {
+    (void)env;
+    int pid  = (int)req_fixnum(nth_arg(args, 0), "setpgid: pid must be a fixnum");
+    int pgid = (int)req_fixnum(nth_arg(args, 1), "setpgid: pgid must be a fixnum");
+    return FIXNUM(setpgid(pid, pgid));
+}
+
 /* (sleep ms) -> nil, after blocking (the scheduler sleeps us; no spinning). */
 DEFSYS("sleep", Ssleep, 1, 1) {
     (void)env;
@@ -292,7 +302,7 @@ DEFSYS("shutdown", Sshutdown, 0, 0) {
 void lm_sys_register(void)
 {
     register_Sgetpid(); register_Sfork(); register_Sexec(); register_Swait();
-    register_Sexit(); register_Skill(); register_Ssleep();
+    register_Sexit(); register_Skill(); register_Ssetpgid(); register_Ssleep();
     register_Sopen(); register_Screat(); register_Sclose(); register_Sfdread(); register_Sfdwrite();
     register_Spipe(); register_Sdup2(); register_Sreaddir();
     register_Ssocket(); register_Sbind(); register_Slisten(); register_Saccept();

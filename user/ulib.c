@@ -45,6 +45,7 @@ void *shm_map(int handle)                     { return (void *)syscall3(SYS_SHM_
 int   pipe(int fd[2])                         { return (int)syscall3(SYS_PIPE, (long)fd, 0, 0); }
 int   dup2(int o, int n)                      { return (int)syscall3(SYS_DUP2, o, n, 0); }
 int   kill(int pid, int sig)                  { return (int)syscall3(SYS_KILL, pid, sig, 0); }
+int   setpgid(int pid, int pgid)              { return (int)syscall3(SYS_SETPGID, pid, pgid, 0); }
 
 // A signal handler returns into this stub, which asks the kernel to restore the
 // pre-signal context.

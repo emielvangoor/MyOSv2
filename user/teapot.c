@@ -35,39 +35,70 @@ static void bez_point(const float cp[4][4][3], float u, float v,
             }
         }
     }
-    nrm[0] = tu[1]*tv[2] - tu[2]*tv[1];
-    nrm[1] = tu[2]*tv[0] - tu[0]*tv[2];
-    nrm[2] = tu[0]*tv[1] - tu[1]*tv[0];
+    // cross(tv, tu), NOT cross(tu, tv): Newell's parameterization winds so
+    // that the u-by-v cross points INTO the pot (the same quirk that makes
+    // glutSolidTeapot set glFrontFace(GL_CW)). Swap the order and the
+    // normals face the light instead of the tea.
+    nrm[0] = tv[1]*tu[2] - tv[2]*tu[1];
+    nrm[1] = tv[2]*tu[0] - tv[0]*tu[2];
+    nrm[2] = tv[0]*tu[1] - tv[1]*tu[0];
     // Normalize: GL's lighting assumes unit normals, and unnormalized Bezier
     // partials vary wildly in magnitude (hence blown-out highlights).
     float len = __builtin_sqrtf(nrm[0]*nrm[0] + nrm[1]*nrm[1] + nrm[2]*nrm[2]);
     if (len > 1e-6f) { nrm[0] /= len; nrm[1] /= len; nrm[2] /= len; }
 }
 
+// Tessellate ONE patch into TESS*TESS quads (two triangles each).
+static void emit_patch(const float cp[4][4][3])
+{
+    for (int a = 0; a < TESS; a++) {
+        for (int b = 0; b < TESS; b++) {
+            float pt[4][3], nm[4][3];
+            float u0 = (float)a/TESS, u1 = (float)(a+1)/TESS;
+            float v0 = (float)b/TESS, v1 = (float)(b+1)/TESS;
+            bez_point(cp, u0, v0, pt[0], nm[0]);
+            bez_point(cp, u1, v0, pt[1], nm[1]);
+            bez_point(cp, u1, v1, pt[2], nm[2]);
+            bez_point(cp, u0, v1, pt[3], nm[3]);
+            int idx[6] = { 0, 1, 2, 0, 2, 3 };
+            for (int t = 0; t < 6; t++) {
+                glNormal3f(nm[idx[t]][0], nm[idx[t]][1], nm[idx[t]][2]);
+                glVertex3f(pt[idx[t]][0], pt[idx[t]][1], pt[idx[t]][2]);
+            }
+        }
+    }
+}
+
 static void draw_teapot(void)
 {
+    // The data tables describe only ONE QUADRANT of the (4-way symmetric)
+    // rim/body/lid/bottom and ONE HALF of the (2-way symmetric) handle and
+    // spout -- GLUT's trick, reproduced here: mirror the control points to
+    // make the other copies. A mirror REVERSES the surface's orientation,
+    // so each single-mirror copy also reverses its control-point columns
+    // (j -> 3-j); the two flips cancel and the cross-product normal keeps
+    // pointing OUT of the pot. (The double mirror x AND y is orientation-
+    // preserving and needs no reversal.) Skipping this is how you get a
+    // teapot with alternating pitch-black quadrants.
     glBegin(GL_TRIANGLES);
     for (unsigned p = 0; p < sizeof(patchdata)/sizeof(patchdata[0]); p++) {
-        float cp[4][4][3];
-        for (int i = 0; i < 4; i++)
-            for (int j = 0; j < 4; j++)
-                for (int k = 0; k < 3; k++)
-                    cp[i][j][k] = cpdata[patchdata[p][i*4+j] - 1][k];
-        for (int a = 0; a < TESS; a++) {
-            for (int b = 0; b < TESS; b++) {
-                float pt[4][3], nm[4][3];
-                float u0 = (float)a/TESS, u1 = (float)(a+1)/TESS;
-                float v0 = (float)b/TESS, v1 = (float)(b+1)/TESS;
-                bez_point(cp, u0, v0, pt[0], nm[0]);
-                bez_point(cp, u1, v0, pt[1], nm[1]);
-                bez_point(cp, u1, v1, pt[2], nm[2]);
-                bez_point(cp, u0, v1, pt[3], nm[3]);
-                int idx[6] = { 0, 1, 2, 0, 2, 3 };
-                for (int t = 0; t < 6; t++) {
-                    glNormal3f(nm[idx[t]][0], nm[idx[t]][1], nm[idx[t]][2]);
-                    glVertex3f(pt[idx[t]][0], pt[idx[t]][1], pt[idx[t]][2]);
+        float orig[4][4][3], my[4][4][3], mx[4][4][3], mxy[4][4][3];
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                for (int k = 0; k < 3; k++) {
+                    float v = cpdata[patchdata[p][i*4 + j]][k];
+                    orig[i][j][k]    = v;
+                    my [i][3-j][k]   = (k == 1) ? -v : v;   // mirror y
+                    mx [i][3-j][k]   = (k == 0) ? -v : v;   // mirror x
+                    mxy[i][j][k]     = (k == 2) ?  v : -v;  // mirror both
                 }
             }
+        }
+        emit_patch(orig);
+        emit_patch(my);
+        if (p < 6) {                  // handle/spout: only 2-way symmetric
+            emit_patch(mx);
+            emit_patch(mxy);
         }
     }
     glEnd();

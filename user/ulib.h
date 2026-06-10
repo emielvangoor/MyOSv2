@@ -22,7 +22,8 @@ int   shm_create(unsigned long len);
 void *shm_map(int handle);
 int   pipe(int fd[2]);
 int   dup2(int oldfd, int newfd);
-int   kill(int pid, int sig);
+int   kill(int pid, int sig);    // pid < 0: signal all of process group -pid
+int   setpgid(int pid, int pgid);// 0,0 = make myself a job leader (see frame.l)
 int   signal(int sig, void (*handler)(int));
 void  __sigreturn(void);
 int   ping(unsigned int ip, int *ms);   // ip in host order; 0 + round-trip, -1 on timeout
