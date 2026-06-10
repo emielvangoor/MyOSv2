@@ -69,9 +69,12 @@ QEMU_SERIAL := -chardev stdio,id=ch0,signal=off -serial chardev:ch0
 # tablet reports absolute coordinates, so QEMU never grabs the host mouse.
 # Part of the base flags so `make test` sees the devices too (KTEST drives them).
 QEMU_INPUT := -device virtio-keyboard-device -device virtio-tablet-device
+# The display device (Phase 25.2). With -display none QEMU still renders the
+# scanout offscreen, so KTEST can drive the device and QMP can screendump it.
+QEMU_GPU   := -device virtio-gpu-device
 # Base flags WITHOUT networking; run/test/debug each add the net variant they want.
 QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none $(QEMU_SERIAL) \
-              $(QEMU_INPUT) -kernel $(TARGET) $(QEMU_DISK)
+              $(QEMU_INPUT) $(QEMU_GPU) -kernel $(TARGET) $(QEMU_DISK)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
 all: $(TARGET)

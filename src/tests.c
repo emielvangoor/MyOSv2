@@ -30,6 +30,7 @@
 #include "sfs.h"
 #include "virtio.h"
 #include "input.h"
+#include "gfx.h"
 #include "net.h"
 #include "console.h"
 #include "socket.h"
@@ -1266,6 +1267,29 @@ static void test_input_poll_drain(void)
     KASSERT(input_poll_event(&ev) == 0);            // consumed
 }
 
+// --- virtio-gpu (Phase 25.2) ---
+
+static void test_gpu_present(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    KASSERT(gfx_present());
+    KASSERT(gfx_width() == 1280 && gfx_height() == 720);
+}
+
+static void test_gpu_scanout(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    // Drive the full bring-up against the REAL device: resource + backing +
+    // scanout, then one transfer+flush. Every command must come back
+    // RESP_OK_NODATA from QEMU or the calls report failure. 64x64, not
+    // something tinier: QEMU enforces a minimum scanout size (16x16).
+    static uint32_t pix[64 * 64];
+    KASSERT(gfx_setup((uint64_t)(uintptr_t)pix, 64, 64) == 0);
+    KASSERT(gfx_flush_rect(0, 0, 64, 64) == 0);
+}
+
 // The blocking input_read syscall: a worker injects an event device-side and
 // then reads it back through the full syscall path.
 static volatile long inputread_res;
@@ -2314,6 +2338,8 @@ static const struct ktest tests[] = {
     { "input: driver present",            test_input_present },
     { "input: poll drains injected event", test_input_poll_drain },
     { "syscall: input_read drains event", test_syscall_input_read },
+    { "gpu: device present",              test_gpu_present },
+    { "gpu: scanout configured",          test_gpu_scanout },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },

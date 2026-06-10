@@ -27,6 +27,7 @@
 #include "sfs.h"
 #include "net.h"
 #include "input.h"
+#include "gfx.h"
 
 // Read our exception level (privilege ring) from CurrentEL bits [3:2].
 static uint64_t current_el(void)
@@ -136,6 +137,10 @@ void kmain(void)
     // --- Input devices (keyboard + tablet, for the graphical machine) ---
     input_init();
     kprintf(input_present() ? "input: keyboard + tablet ready\n" : "input: none\n");
+
+    // --- Display (virtio-gpu scanout) ---
+    gfx_init();
+    kprintf(gfx_present() ? "gfx: virtio-gpu ready\n" : "gfx: none\n");
 
     // --- 5. Interrupts, then the scheduler ---
     exc_init();
