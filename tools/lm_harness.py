@@ -17,7 +17,11 @@ import socket
 import subprocess
 import time
 
-PORT = 7777   # not 7000: macOS's AirPlay Receiver squats on 7000
+# The guest serves on 7777 (not 7000: macOS's AirPlay Receiver squats on
+# 7000). The HOST side of the test forward is 17777, so these checks can run
+# while an interactive `make run` (which forwards host 7777) is also up.
+GUEST_PORT = 7777
+HOST_PORT = 17777
 
 QEMU_CMD = [
     "qemu-system-aarch64",
@@ -27,8 +31,9 @@ QEMU_CMD = [
     "-global", "virtio-mmio.force-legacy=false",
     "-drive", "file=build/disk.img,if=none,format=raw,id=hd0",
     "-device", "virtio-blk-device,drive=hd0",
-    # The same user-mode net as `make run`, including the REPL forward.
-    "-netdev", f"user,id=net0,hostfwd=tcp::{PORT}-:{PORT}",
+    # The same user-mode net as `make run`, with the REPL forward on a
+    # test-private host port.
+    "-netdev", f"user,id=net0,hostfwd=tcp::{HOST_PORT}-:{GUEST_PORT}",
     "-device", "virtio-net-device,netdev=net0",
 ]
 
@@ -80,7 +85,7 @@ def boot_to_serve() -> Qemu:
         q.kill()
         raise RuntimeError("never saw the shell prompt")
     q.send_line("lisp -serve")
-    if not q.expect(b"serving on port %d" % PORT, 15):
+    if not q.expect(b"serving on port %d" % GUEST_PORT, 15):
         q.kill()
         raise RuntimeError("lisp -serve did not report it is listening")
     time.sleep(0.5)   # let the guest actually sit in accept()
@@ -102,7 +107,7 @@ def read_until_prompt(sock: socket.socket, timeout: float = 10.0) -> str:
 def connect_repl() -> socket.socket:
     """Connect and consume the banner + first prompt, so each subsequent
     roundtrip's output is delimited by exactly one prompt."""
-    s = socket.create_connection(("127.0.0.1", PORT), timeout=5)
+    s = socket.create_connection(("127.0.0.1", HOST_PORT), timeout=5)
     read_until_prompt(s)
     return s
 

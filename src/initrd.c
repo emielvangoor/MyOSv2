@@ -39,6 +39,7 @@ extern unsigned char lm_elf[];      extern unsigned int lm_elf_len;
 
 // The embedded Lisp source (from user/lisp/*.l, via build/lisp_blob.c).
 extern unsigned char bootstrap_l[]; extern unsigned int bootstrap_l_len;
+extern unsigned char system_l[];    extern unsigned int system_l_len;
 
 // Write an embedded program into the filesystem at `path`.
 static void add_prog(const char *path, const void *data, uint64_t len)
@@ -79,7 +80,9 @@ void initrd_unpack(void)
     add_prog("/bin/polldemo", polldemo_elf, (uint64_t)polldemo_elf_len);
     add_prog("/bin/lisp", lm_elf, (uint64_t)lm_elf_len);
 
-    // The Lisp standard library, loaded by /bin/lisp at startup.
+    // The Lisp standard library (bootstrap.l = the language, system.l = the
+    // shell), loaded by /bin/lisp at startup.
     vfs_create("/lib", VN_DIR);
     add_prog("/lib/bootstrap.l", bootstrap_l, (uint64_t)bootstrap_l_len);
+    add_prog("/lib/system.l",    system_l,    (uint64_t)system_l_len);
 }

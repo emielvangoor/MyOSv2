@@ -196,6 +196,23 @@ DEFSYS("dup2", Sdup2, 2, 2) {
     return FIXNUM(dup2(oldfd, newfd));
 }
 
+/* (readdir path) -> list of entry-name strings, nil for empty/missing.
+ * What (ls) in system.l is made of. Built in reverse and flipped, so the
+ * list comes back in the directory's own order. */
+DEFSYS("readdir", Sreaddir, 1, 1) {
+    (void)env;
+    const char *path = req_string(CAR(args), "readdir: path must be a string");
+    Lobj names = Qnil;
+    char name[32];
+    for (int i = 0; sys_readdir(path, i, name) == 0; i++) {
+        names = make_cons(make_string(name), names);
+    }
+    /* reverse in place is overkill here; rebuild forward */
+    Lobj out = Qnil;
+    for (Lobj p = names; !IS_NIL(p); p = CDR(p)) { out = make_cons(CAR(p), out); }
+    return out;
+}
+
 /* ---- sockets ------------------------------------------------------------- */
 
 /* (socket 'stream) / (socket 'dgram) -> fd. A symbol, not a magic number:
@@ -263,7 +280,7 @@ void lm_sys_register(void)
     register_Sgetpid(); register_Sfork(); register_Sexec(); register_Swait();
     register_Sexit(); register_Skill(); register_Ssleep();
     register_Sopen(); register_Sclose(); register_Sfdread(); register_Sfdwrite();
-    register_Spipe(); register_Sdup2();
+    register_Spipe(); register_Sdup2(); register_Sreaddir();
     register_Ssocket(); register_Sbind(); register_Slisten(); register_Saccept();
     register_Sconnect();
     register_Sshutdown();

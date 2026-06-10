@@ -166,8 +166,11 @@ int umain(int argc, char **argv)
     writer_to_fd(&out, 1);
     lm_cur_out = &out;
 
-    /* Load the standard library (placed at /lib/bootstrap.l by the initrd). */
+    /* Load the standard library: bootstrap.l builds the language library,
+     * system.l builds the shell on the syscall primitives registered above.
+     * (Both placed under /lib by the initrd.) */
     lm_eval_all_str("(load \"/lib/bootstrap.l\")");
+    lm_eval_all_str("(load \"/lib/system.l\")");
 
     if (argc >= 2 && streq(argv[1], "-serve")) {
         int port = 7777;       /* NOT 7000: macOS AirPlay squats on 7000 */

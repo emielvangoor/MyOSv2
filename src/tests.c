@@ -2044,6 +2044,30 @@ static int lm_strhas_(const char *hay, const char *needle)
     return !*needle;
 }
 
+static void test_lm_rest_params(void)
+{
+    lm_fresh();
+    // A bare symbol in place of the parameter list binds ALL arguments to it
+    // (the classic &rest). The Lisp shell's (run "cmd" "arg" ...) needs this:
+    // a command takes any number of arguments.
+    KASSERT(lm_is("(defun f args args) (f 1 2 3)", "(1 2 3)"));
+    KASSERT(lm_is("(funcall (lambda args (car args)) 7 8)", "7"));
+    // No arguments -> the rest parameter is nil, not unbound.
+    KASSERT(lm_is("(defun g args args) (g)", "nil"));
+    // `|` must read as an ordinary symbol so the pipeline macro can bear the
+    // shell's traditional name.
+    KASSERT(lm_is("(setq | 5) |", "5"));
+}
+
+static void test_lm_eval_primitive(void)
+{
+    lm_fresh();
+    // (eval form) -- the missing third of read/eval/print, so a REPL can be
+    // written IN Lisp (system.l builds the shell's repl from these).
+    KASSERT(lm_is("(eval (list '+ 1 2))", "3"));
+    KASSERT(lm_is("(eval ''x)", "x"));
+}
+
 static void test_lm_error_goes_to_cur_out(void)
 {
     lm_fresh();
@@ -2075,6 +2099,8 @@ static const struct ktest tests[] = {
     { "lm: GC keeps roots, frees rest",  test_lm_gc_keeps_roots },
     { "lm: error recovery",              test_lm_error_recovery },
     { "lm: errors go to lm_cur_out",     test_lm_error_goes_to_cur_out },
+    { "lm: rest params + | symbol",      test_lm_rest_params },
+    { "lm: eval primitive",              test_lm_eval_primitive },
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
     { "pmm: freed page reused",          test_pmm_free_reuse },
     { "pmm: alloc_pages contiguous run", test_pmm_alloc_pages_contiguous },

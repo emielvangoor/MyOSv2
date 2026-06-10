@@ -30,7 +30,7 @@ DEP  := $(OBJ:.o=.d)
 # segments at load/exec time.
 PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm
 # The .l files embedded into the kernel and unpacked to /lib by the initrd.
-LISP_FILES  := bootstrap
+LISP_FILES  := bootstrap system
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the

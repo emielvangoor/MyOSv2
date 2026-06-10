@@ -389,9 +389,19 @@ Lobj env_set(Lobj sym, Lobj val, Lobj env)
 
 Lobj env_extend(Lobj params, Lobj args, Lobj env)
 {
-    while (!IS_NIL(params) && !IS_NIL(args)) {
+    /* Bind the (proper-list) parameters to the arguments pairwise... */
+    while (IS_CONS(params) && !IS_NIL(args)) {
         env = make_cons(make_cons(CAR(params), CAR(args)), env);
         params = CDR(params); args = CDR(args);
+    }
+    /* ...and if the parameter "list" is a bare SYMBOL instead -- (lambda args
+     * ...) / (defun run args ...) -- bind that symbol to ALL the (remaining)
+     * arguments as a list: the classic &rest, in its simplest spelling. The
+     * Lisp shell needs this so (run "cmd" "a" "b" ...) can take any number of
+     * arguments. nil is itself a symbol, so exclude it (an empty parameter
+     * list must not bind anything). */
+    if (IS_SYMBOL(params) && !IS_NIL(params)) {
+        env = make_cons(make_cons(params, args), env);
     }
     return env;
 }
@@ -870,6 +880,13 @@ DEFUN("load", Fload, 1, 1) {
     return Qt;
 }
 
+/* (eval form) -- the missing third of read/eval/print. With this, a REPL can
+ * be written IN Lisp: (print (eval (read))). The form is evaluated in the
+ * caller's environment, so locals are visible to constructed code. */
+DEFUN("eval", Feval, 1, 1) {
+    return lm_eval(CAR(args), env);
+}
+
 DEFUN("apply", Fapply, 2, 2) {
     Lobj func = CAR(args), fargs = CAR(CDR(args));
     if (IS_PRIM(func)) { return ((Prim *)PTR(func))->fn(fargs, env); }
@@ -943,7 +960,7 @@ static void register_primitives(void)
     register_Fsymbolp(); register_Fstringp();
     register_Fstrlen(); register_Fstrcat(); register_Fsymname();
     register_Fprint(); register_Fprinc(); register_Fterpri(); register_Fread(); register_Fload();
-    register_Fapply(); register_Ffuncall(); register_Fmapcar();
+    register_Feval(); register_Fapply(); register_Ffuncall(); register_Fmapcar();
     register_Fgc(); register_Ftypeof(); register_Ferror(); register_Fnot();
 }
 

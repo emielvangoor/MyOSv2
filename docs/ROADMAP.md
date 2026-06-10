@@ -417,13 +417,16 @@ host port)` `(shutdown)`. Registered via `lm_sys_register()` after `lm_boot()`.
 Verified by `python3 tools/lisp_sys_check.py` (boot-and-observe over the TCP
 REPL: files, pipe roundtrip, fork/exit/wait, fork/exec/wait, sockets).
 
-### ☐ 24.3 — the shell in Lisp (`user/lisp/system.l`)
+### ✅ 24.3 — the shell in Lisp (`user/lisp/system.l`)  (DONE)
 
-Eshell-hybrid, pure S-expressions. `(run "hello" "arg")` → fork→exec
-`/bin/hello`→wait, return status. `(| (run "a") (run "b"))` → `pipe`+`dup2`
-between two forked children (mirror `user/sh.c`'s `run_pipeline`, now in Lisp).
-In-image `(defun)`s callable the same way. A `repl` built from the primitives.
-Ship via initrd (add `system` to `LISP_FILES`), `load` it after `bootstrap.l`.
+`(run "hello" "arg")` → fork→exec→wait→status (variadic via new core **rest
+params**: bare-symbol parameter binds all args). `(| a b)` pipeline macro —
+stages run as forked children joined by `pipe`+`dup2`; in-image stages compose
+(`(| (princ "abcde") (run "wc"))` → 5 on the serial console / under init).
+`(ls)`/`(cat)` coreutils over a new `(readdir)` primitive; `(repl)` via a new
+core `eval` primitive. Shipped as `/lib/system.l`, loaded after `bootstrap.l`.
+KTESTs: `lm: rest params + | symbol`, `lm: eval primitive`. Verified by
+`python3 tools/lisp_shell_check.py` (serial + TCP phases).
 
 ### ☐ 24.4 — flip `init` to Lisp
 

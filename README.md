@@ -91,6 +91,11 @@ deadlines; just building it one piece at a time and enjoying the ride.
   `(fork)`, `(exec path argv)`, `(wait)`, pipes, `dup2`, files and sockets.
   `(if (= (fork) 0) (exec "/bin/hello" ...) (wait))` is the whole Unix process
   model in one S-expression, typed into a live REPL.
+- **The shell is Lisp** — `system.l` builds an Eshell-style shell from those
+  primitives: `(run "hello" "arg")` fork/execs an ELF and waits;
+  `(| (run "hello") (run "wc"))` is a real pipe between forked children — and
+  stages can be plain Lisp: `(| (princ "abcde") (run "wc"))` → `5`. `(ls)` and
+  `(cat ...)` are coreutils written in Lisp.
 
 Where it goes next — TCP congestion control and fuller teardown,
 and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a

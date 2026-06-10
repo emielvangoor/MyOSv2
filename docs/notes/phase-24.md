@@ -165,3 +165,37 @@ Verification: `python3 tools/lisp_sys_check.py` (boot-and-observe over the TCP
 REPL — these primitives cannot run in the KTEST build by construction):
 open/read/close on `/motd`, a pipe write→read roundtrip, fork/exit/wait,
 fork/exec(`/bin/true`)/wait, exec-failure status, socket open/close.
+
+## 24.3 — the shell, in Lisp (`user/lisp/system.l`)
+
+Where `bootstrap.l` builds the *language* library out of the C primitives,
+`system.l` builds the *operating-system* library out of the syscall primitives.
+It is the Eshell model: the shell is not a separate program with its own little
+language — it **is** the Lisp image, and commands are functions.
+
+- `(run "hello" "arg" ...)` — fork → exec `/bin/hello` → wait → exit status.
+  Variadic, which needed **rest parameters** in the core: a bare symbol in
+  place of the parameter list binds all arguments (`(defun run cmdargs ...)`);
+  `env_extend` now implements this (KTEST `lm: rest params + | symbol`).
+- `(| left right)` — the pipeline, in its traditional spelling (`|` reads as an
+  ordinary symbol). A macro: each stage is wrapped in a lambda and run in its
+  own forked child, joined by `(pipe)` + `(dup2 … 0/1)`, mirroring `sh.c`'s
+  `run_pipeline`. Because a stage only redirects **fd 1**, external programs
+  and in-image Lisp compose freely: `(| (princ "abcde") (run "wc"))` → `5`.
+  The parent closes both pipe ends before waiting (or the right stage would
+  never see EOF) and returns the right stage's status, like `$?` in sh.
+  Caveat: over the *network* REPL, `print`/`princ` write to the socket, not
+  fd 1, so in-image pipeline stages are a serial-console (and init) feature.
+- Coreutils in Lisp: `(ls [path])` over a new `(readdir path)` primitive,
+  `(cat path)` over `open`/`fd-read`/`princ`.
+- `(repl)` — read→eval→print in one Lisp function, via the new `eval`
+  primitive (KTEST `lm: eval primitive`).
+
+Shipped via the initrd (`LISP_FILES += system` → `/lib/system.l`), loaded by
+`/bin/lisp` right after `bootstrap.l`.
+
+Verification: `python3 tools/lisp_shell_check.py` — serial phase: `(run
+"hello")`, `(| (run "hello") (run "wc"))` → 22, `(| (princ "abcde") (run
+"wc"))` → 5, `(cat "/motd")`, `(ls "/bin")`, `(exit 0)` back to the C shell;
+TCP phase: `(cat)`, `(ls)`, `(run "hello")` → status over the socket, output
+on the console.
