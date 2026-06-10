@@ -99,6 +99,10 @@ deadlines; just building it one piece at a time and enjoying the ride.
   `(| (run "hello") (run "wc"))` is a real pipe between forked children — and
   stages can be plain Lisp: `(| (princ "abcde") (run "wc"))` → `5`. `(ls)` and
   `(cat ...)` are coreutils written in Lisp.
+- **Input devices** — IRQ-driven **virtio-input** keyboard + absolute-pointer
+  tablet; events reach userland as evdev triples through a blocking
+  `input_read` syscall (`/bin/evtest` to watch them). First brick of the
+  graphical Lisp machine (Phase 25).
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to

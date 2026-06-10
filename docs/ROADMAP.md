@@ -456,6 +456,25 @@ checks against the flipped boot (the harness starts the network REPL with
 
 ---
 
+## Phase 25 — The graphical Lisp machine  ⟵ IN PROGRESS
+
+The Emacs architecture, end to end: redisplay in C inside each /bin/lisp,
+Lisp owns buffers/windows/faces, the kernel grows only drivers + a seat
+multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine-design.md`
+· **Notes:** `docs/notes/phase-25.md` · Plans per sub-phase in `docs/superpowers/plans/`.
+
+- ✅ **25.1 — virtio-input**: keyboard + tablet drivers (evdev triples,
+  IRQ top-half/bottom-half), blocking `input_read` syscall, `/bin/evtest`,
+  QMP-driven check (`tools/input_check.py`).
+- ☐ **25.2 — virtio-gpu**: driver + `gfx_acquire`/`gfx_flush`; userland test pattern.
+- ☐ **25.3 — rd_core**: the redisplay engine (model structs, layout, font,
+  damage), dual-built like lm_core, KTEST-first.
+- ☐ **25.4 — Lisp integration**: `lm_gfx.c` + `frame.l`; `lisp -frame`; REPL-as-buffer.
+- ☐ **25.5 — the seat**: multi-VM + Ctrl-Alt-Fn / `(switch-seat n)` switching.
+- ☐ **25.6 — surface buffers**: shm pixel canvases + `(run-in-buffer ...)`.
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,

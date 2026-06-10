@@ -12,6 +12,8 @@ RX FIFO and pasting a whole line at once overflows it, dropping characters --
 including, fatally, the newline. The TCP path has no such limit.
 """
 
+import json
+import os
 import select
 import socket
 import subprocess
@@ -22,6 +24,7 @@ import time
 # while an interactive `make run` (which forwards host 7777) is also up.
 GUEST_PORT = 7777
 HOST_PORT = 17777
+QMP_SOCK = f"/tmp/myosv2-qmp-{os.getpid()}.sock"
 
 QEMU_CMD = [
     "qemu-system-aarch64",
@@ -39,6 +42,10 @@ QEMU_CMD = [
     # test-private host port.
     "-netdev", f"user,id=net0,hostfwd=tcp::{HOST_PORT}-:{GUEST_PORT}",
     "-device", "virtio-net-device,netdev=net0",
+    # Keyboard + tablet (same as make run since Phase 25) and a QMP socket so
+    # checks can inject input events and take screendumps.
+    "-device", "virtio-keyboard-device", "-device", "virtio-tablet-device",
+    "-qmp", f"unix:{QMP_SOCK},server=on,wait=off",
 ]
 
 
@@ -102,6 +109,35 @@ def boot_to_serve() -> Qemu:
         raise RuntimeError("lisp -serve did not report it is listening")
     time.sleep(0.5)   # let the guest actually sit in accept()
     return q
+
+
+def qmp(cmd: str, args: dict | None = None) -> dict:
+    """One QMP command over the UNIX socket. A fresh handshake per call --
+    simple beats stateful for a test harness."""
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(QMP_SOCK)
+    f = s.makefile("rw")
+    f.readline()                                  # greeting
+    f.write(json.dumps({"execute": "qmp_capabilities"}) + "\n"); f.flush()
+    f.readline()
+    f.write(json.dumps({"execute": cmd, "arguments": args or {}}) + "\n"); f.flush()
+    resp = json.loads(f.readline())
+    s.close()
+    return resp
+
+
+def qmp_key(qcode: str):
+    """Press and release one key on the virtio keyboard."""
+    for down in (True, False):
+        qmp("input-send-event", {"events": [{"type": "key",
+            "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}]})
+
+
+def qmp_tablet(x: int, y: int):
+    """Move the absolute pointer (0..32767 in each axis)."""
+    qmp("input-send-event", {"events": [
+        {"type": "abs", "data": {"axis": "x", "value": x}},
+        {"type": "abs", "data": {"axis": "y", "value": y}}]})
 
 
 def read_until_prompt(sock: socket.socket, timeout: float = 10.0) -> str:
