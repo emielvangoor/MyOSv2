@@ -31,6 +31,7 @@
 #include "virtio.h"
 #include "input.h"
 #include "gfx.h"
+#include "rd.h"
 #include "net.h"
 #include "console.h"
 #include "socket.h"
@@ -1267,6 +1268,161 @@ static void test_input_poll_drain(void)
     KASSERT(input_poll_event(&ev) == 0);            // consumed
 }
 
+// --- rd_core: the redisplay engine (Phase 25.3) ---
+//
+// Like the Lisp core, rd_core is portable C dual-built into the kernel
+// exactly so these tests can red-green layout, damage and painting on target.
+
+static char rdbuf_store[512];
+static struct rd_cell rd_front[160 * 45], rd_back[160 * 45];
+
+static void test_rd_gap_buffer(void)
+{
+    struct rd_buffer b;
+    rd_buf_init(&b, "*scratch*", rdbuf_store, sizeof(rdbuf_store));
+    KASSERT(rd_buf_len(&b) == 0);
+    rd_buf_insert(&b, "hello");
+    KASSERT(rd_buf_len(&b) == 5);
+    KASSERT(rd_buf_char_at(&b, 0) == 'h' && rd_buf_char_at(&b, 4) == 'o');
+    // Move the point into the middle (forces a gap move) and edit there.
+    rd_buf_set_point(&b, 2);
+    rd_buf_insert(&b, "XY");
+    KASSERT(rd_buf_len(&b) == 7);
+    KASSERT(rd_buf_char_at(&b, 1) == 'e' && rd_buf_char_at(&b, 2) == 'X');
+    KASSERT(rd_buf_char_at(&b, 3) == 'Y' && rd_buf_char_at(&b, 4) == 'l');
+    rd_buf_delete(&b, 2);                          // delete "XY" again
+    KASSERT(rd_buf_len(&b) == 5);
+    KASSERT(rd_buf_char_at(&b, 2) == 'l');
+    KASSERT(rd_buf_char_at(&b, 99) == -1);
+}
+
+// A 640x320 frame = 80x20 cells: rows 0..18 the (single) window, of which row
+// 18 is its modeline; row 19 the echo area.
+static struct rd_frame rdf;
+static struct rd_buffer rdb, rdb2;
+static char rdb_store[512], rdb2_store[512];
+
+static void rd_fresh(void)
+{
+    rd_buf_init(&rdb, "*scratch*", rdb_store, sizeof(rdb_store));
+    rd_buf_init(&rdb2, "*other*", rdb2_store, sizeof(rdb2_store));
+    rd_frame_init(&rdf, 640, 320, rd_front, rd_back, &rdb);
+}
+
+static void test_rd_single_window_layout(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "hi");
+    rd_echo(&rdf, "ok");
+    rd_layout(&rdf);
+    KASSERT(rdf.cols == 80 && rdf.rows == 20);
+    KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'h');
+    KASSERT(rd_cell_at(&rdf, 1, 0)->ch == 'i');
+    KASSERT(rd_cell_at(&rdf, 2, 0)->ch == ' ');
+    // The modeline (row 18) carries the buffer name in face 1.
+    int found = 0;
+    for (int c = 0; c < 80 - 9; c++) {
+        if (rd_cell_at(&rdf, c, 18)->ch == '*' &&
+            rd_cell_at(&rdf, c + 1, 18)->ch == 's') { found = 1; }
+    }
+    KASSERT(found);
+    KASSERT(rd_cell_at(&rdf, 0, 18)->face == 1);
+    // Echo area on the frame's last row, default face.
+    KASSERT(rd_cell_at(&rdf, 0, 19)->ch == 'o' && rd_cell_at(&rdf, 1, 19)->ch == 'k');
+    // A long line truncates at the window edge (no wrap in v1).
+    rd_buf_set_point(&rdb, rd_buf_len(&rdb));
+    for (int i = 0; i < 30; i++) { rd_buf_insert(&rdb, "0123456789"); }
+    rd_layout(&rdf);
+    KASSERT(rd_cell_at(&rdf, 79, 0)->ch != ' ');   // filled to the edge...
+    KASSERT(rd_cell_at(&rdf, 0, 1)->ch == ' ');    // ...but never wrapped
+}
+
+static void test_rd_split_below(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "top");
+    struct rd_win *nw = rd_split(&rdf, 0);         // split below
+    KASSERT(nw != 0);
+    rd_layout(&rdf);
+    // Both halves show *scratch* initially; switch the NEW window (selected
+    // stays the original) -- select other, give it the other buffer.
+    rd_other_window(&rdf);
+    rd_set_buffer(&rdf, &rdb2);
+    rd_buf_insert(&rdb2, "bottom");
+    rd_layout(&rdf);
+    KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 't');    // top window at row 0
+    // Bottom window starts at row 9 ((20-1)/2 = 9 rows for a, b gets the rest)
+    int brow = rdf.selected->y;
+    KASSERT(brow > 0);
+    KASSERT(rd_cell_at(&rdf, 0, brow)->ch == 'b');
+    // Two modelines: last row of each window.
+    KASSERT(rd_cell_at(&rdf, 0, rdf.selected->y - 1)->face == 1);   // a's modeline
+    KASSERT(rd_cell_at(&rdf, 0, 18)->face == 1);                    // b's modeline
+}
+
+static void test_rd_split_right(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "L");
+    rd_split(&rdf, 1);                             // side by side
+    rd_other_window(&rdf);
+    rd_set_buffer(&rdf, &rdb2);
+    rd_buf_insert(&rdb2, "R");
+    rd_layout(&rdf);
+    KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'L');
+    int bcol = rdf.selected->x;
+    KASSERT(bcol >= 39 && bcol <= 41);
+    KASSERT(rd_cell_at(&rdf, bcol, 0)->ch == 'R');
+}
+
+static void test_rd_damage_minimal(void)
+{
+    rd_fresh();
+    rd_split(&rdf, 0);
+    rd_other_window(&rdf);
+    rd_set_buffer(&rdf, &rdb2);
+    struct rd_rect rects[RD_MAX_RECTS];
+    rd_redisplay(&rdf, 0, 0, rects, RD_MAX_RECTS); // first paint: everything
+    // No change -> no damage.
+    KASSERT(rd_redisplay(&rdf, 0, 0, rects, RD_MAX_RECTS) == 0);
+    // Edit only the bottom buffer: damage stays inside the bottom window's
+    // pixel rect (its rows start at selected->y cells).
+    rd_buf_insert(&rdb2, "edit");
+    int n = rd_redisplay(&rdf, 0, 0, rects, RD_MAX_RECTS);
+    KASSERT(n > 0);
+    int bottom_top_px = rdf.selected->y * RD_CELL_H;
+    for (int i = 0; i < n; i++) {
+        KASSERT(rects[i].y >= bottom_top_px);
+    }
+}
+
+static void test_rd_glyphs_hit_framebuffer(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "A");
+    static uint32_t fb[640 * 320];
+    struct rd_rect rects[RD_MAX_RECTS];
+    rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
+    // The 'A' glyph: some default-face fg pixels in cell (0,0)'s 8x16 block,
+    // and its corners are background.
+    uint32_t fg = rdf.faces[0].fg, bg = rdf.faces[0].bg;
+    int fg_seen = 0;
+    for (int y = 0; y < RD_CELL_H; y++) {
+        for (int x = 0; x < RD_CELL_W; x++) {
+            if (fb[y * 640 + x] == fg) { fg_seen++; }
+        }
+    }
+    KASSERT(fg_seen > 8);                          // a real glyph, not noise
+    KASSERT(fb[0] == bg || fb[0] == fg);
+    // Modeline row painted with face 1's background.
+    int ml_y = 18 * RD_CELL_H + 4;
+    KASSERT(fb[ml_y * 640 + 4 * 8] == rdf.faces[1].bg ||
+            fb[ml_y * 640 + 4 * 8] == rdf.faces[1].fg);
+    // The cursor cell (point at end of "A": cell (1,0)) is painted inverted:
+    // its background is the DEFAULT FOREGROUND color.
+    KASSERT(fb[8 + 1] == fg);
+}
+
 // --- virtio-gpu (Phase 25.2) ---
 
 static void test_gpu_present(void)
@@ -2374,6 +2530,12 @@ static const struct ktest tests[] = {
     { "input: driver present",            test_input_present },
     { "input: poll drains injected event", test_input_poll_drain },
     { "syscall: input_read drains event", test_syscall_input_read },
+    { "rd: gap buffer insert/delete/read", test_rd_gap_buffer },
+    { "rd: single window layout",         test_rd_single_window_layout },
+    { "rd: split below + other window",   test_rd_split_below },
+    { "rd: split right",                  test_rd_split_right },
+    { "rd: damage confined to edit",      test_rd_damage_minimal },
+    { "rd: glyphs hit the framebuffer",   test_rd_glyphs_hit_framebuffer },
     { "gpu: device present",              test_gpu_present },
     { "gpu: scanout configured",          test_gpu_scanout },
     { "gpu: kernel fb alloc + flush",     test_gfx_fb_alloc },

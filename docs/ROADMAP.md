@@ -469,8 +469,8 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
 - ✅ **25.2 — virtio-gpu**: 2D driver (create/backing/scanout + per-rect
   transfer/flush), `gfx_acquire` maps the fb into userland, `/bin/gfxtest`,
   screendump-verified (`tools/gfx_check.py`).
-- ☐ **25.3 — rd_core**: the redisplay engine (model structs, layout, font,
-  damage), dual-built like lm_core, KTEST-first.
+- ✅ **25.3 — rd_core**: gap buffers, window tree, faces, glyph-matrix
+  layout + cell-diff damage, font painting — dual-built, 6 KTESTs red→green.
 - ☐ **25.4 — Lisp integration**: `lm_gfx.c` + `frame.l`; `lisp -frame`; REPL-as-buffer.
 - ☐ **25.5 — the seat**: multi-VM + Ctrl-Alt-Fn / `(switch-seat n)` switching.
 - ☐ **25.6 — surface buffers**: shm pixel canvases + `(run-in-buffer ...)`.

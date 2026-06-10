@@ -60,3 +60,24 @@ prints FAR_EL1 alongside ELR/ESR — the pair named the culprit outright.
 Verification: KTESTs drive the real device (incl. the learned-the-hard-way
 minimum scanout size), and `tools/gfx_check.py` boots, runs gfxtest, takes a
 **QMP screendump** and asserts exact pixel values at the pattern's corners.
+
+## 25.3 — rd_core, the redisplay engine
+
+The view half of the Emacs split, as portable dual-built C (`src/rd_core.c`,
+the `lm_core` trick again): buffers are **gap buffers**, windows are a split
+tree with a fixed node pool, faces are a small color table — and redisplay is
+**glyph matrices** (what curses calls double buffering): layout the model into
+a back grid of `{char, face}` cells, diff against the front grid, paint only
+changed cells (recovered Phase-12 8×8 font, rows doubled → 8×16 cells, 160×45
+at 1280×720), and emit the changed runs as damage rects for `gfx_flush`.
+Damage minimality isn't an optimization pass — it falls out of the diff.
+
+The cursor is the diff's one subtlety: a cell is also "changed" when the
+cursor arrived or left it (painted inverted), and the cursor's last position
+lives **in the frame struct**, not a static — the 25.2 cross-init lesson,
+applied before it bit a second time.
+
+KTESTs (all red→green): gap-buffer ops across the gap, single-window layout
+(text, truncation, modeline face, echo row), split-below/right geometry,
+damage confined to the edited window (and zero on a no-op redisplay), and
+glyph pixels landing in a real framebuffer with face colors + inverted cursor.
