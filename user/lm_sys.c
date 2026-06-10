@@ -140,6 +140,13 @@ DEFSYS("open", Sopen, 1, 1) {
     return FIXNUM(sys_open(req_string(CAR(args), "open: path must be a string")));
 }
 
+/* (creat path) -> fd: open, creating the file if missing. How the machine
+ * writes its own configuration: (let ((fd (creat "/disk/init.l"))) ...). */
+DEFSYS("creat", Screat, 1, 1) {
+    (void)env;
+    return FIXNUM(sys_creat(req_string(CAR(args), "creat: path must be a string")));
+}
+
 /* (close fd) -> nil. */
 DEFSYS("close", Sclose, 1, 1) {
     (void)env;
@@ -286,7 +293,7 @@ void lm_sys_register(void)
 {
     register_Sgetpid(); register_Sfork(); register_Sexec(); register_Swait();
     register_Sexit(); register_Skill(); register_Ssleep();
-    register_Sopen(); register_Sclose(); register_Sfdread(); register_Sfdwrite();
+    register_Sopen(); register_Screat(); register_Sclose(); register_Sfdread(); register_Sfdwrite();
     register_Spipe(); register_Sdup2(); register_Sreaddir();
     register_Ssocket(); register_Sbind(); register_Slisten(); register_Saccept();
     register_Sconnect();

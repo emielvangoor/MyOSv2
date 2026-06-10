@@ -31,6 +31,15 @@ A rest-parameter function: the whole call is the argv, Unix-style, with
 argv[0] = the command name."
   (run-prog (bin-path (car cmdargs)) cmdargs))
 
+(defun run-bg cmdargs
+  "(run-bg \"lisp\" \"-frame\") -> start a program WITHOUT waiting; returns
+the child's pid. What /disk/init.l uses to boot the graphical machine while
+init keeps the serial REPL alive."
+  (let ((pid (fork)))
+    (if (= pid 0)
+        (progn (exec (bin-path (car cmdargs)) cmdargs) (exit 127))
+      pid)))
+
 ;; ---- pipelines -------------------------------------------------------
 
 (defun pipe-stages (left right)

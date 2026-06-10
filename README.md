@@ -192,6 +192,15 @@ make run     # boot it in QEMU -- you land in the Lisp REPL (PID 1)
 make test    # run the in-kernel self-test suite
 ```
 
+Make it boot your way: the machine loads **`/disk/init.l`** (its ~/.emacs) at
+boot if present — write it from the REPL itself:
+
+```lisp
+(let ((fd (creat "/disk/init.l")))
+  (fd-write fd "(run-bg \"lisp\" \"-frame\")")
+  (close fd))
+```
+
 At the `lisp> ` prompt: `(run "sh")` for the classic shell, `(ls "/bin")`,
 `(| (run "hello") (run "wc"))`, or `(run "lisp" "-serve")` and connect from
 Emacs (`user/lisp/lm-mode.el`, port 7777).

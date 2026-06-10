@@ -336,6 +336,7 @@ long do_syscall(struct trapframe *tf)
                 }
                 ret = 0; break;
             }
+            if (tf->x[1] == 1) { ret = -1; break; }         // non-blocking probe
             struct thread *t = sched_current();
             if (t && t->sig_pending) { ret = -1; break; }   // EINTR
             if (!sched_irqs_live()) { ret = -1; break; }    // KTEST: don't sleep forever

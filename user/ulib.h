@@ -64,6 +64,7 @@ struct input_event { unsigned short type, code; unsigned int value; };
 #define ABS_X  0
 #define ABS_Y  1
 int input_read(struct input_event *ev);   // blocks; 0 on event, -1 on signal
+int input_poll(struct input_event *ev);   // non-blocking; -1 when no event
 
 // The framebuffer (virtio-gpu scanout): gfx_acquire maps the 1280x720 BGRX
 // framebuffer into this process; write 0x00RRGGBB words, then gfx_flush the

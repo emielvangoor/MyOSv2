@@ -218,3 +218,25 @@ window — for a defun that's the actual lambda the machine runs, printed from
 the image, ready to be redefined. Verified by `tools/mx_check.py` (narrowing,
 execution, and the *Help* source read off screendumps); captured at
 `docs/images/phase-25-mx-vertico.png`.
+
+## Post-25: /disk/init.l, output-to-buffer, C-c, and a better cursor
+
+**`/disk/init.l`** — the OS's own init file: PID 1 quietly loads it at boot
+when it exists (probed without error spam), and it lives on the persistent
+SFS disk, so it is written and edited FROM the machine:
+`(let ((fd (creat "/disk/init.l"))) (fd-write fd "(run-bg \"lisp\" \"-frame\")") (close fd))`
+— ~/.emacs for an operating system. `(run-bg ...)` (system.l) starts a
+program without waiting so init keeps the serial REPL.
+
+**Output belongs in the buffer** — frame.l REDEFINES `run-prog` (it loads
+after system.l: specializing by redefinition, the Lisp-machine way): a child's
+stdout now streams through a pipe into the current buffer with a redisplay
+per chunk, and the pump loop alternates `(poll-fd ...)` with
+`(read-event-nowait)` so **C-c on the graphical keyboard sends the child
+SIGINT**. `(run "ping" ...)` scrolls its replies in the frame and dies to C-c.
+(Interactive stdin still comes from serial; full in-buffer comint is future
+work.) New primitives: `(poll-fd fd ms)`, `(read-event-nowait)`, `(creat
+path)`, plus a non-blocking flag on the input syscall.
+
+The cursor became the classic notched arrow (ASCII-art sprite, 2x), then a
+slimmer one after user review.

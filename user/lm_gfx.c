@@ -302,27 +302,28 @@ static const char keymap_lo[] =
 static const char keymap_hi[] =
     "\0\033" "!@#$%^&*()_+\b\tQWERTYUIOP{}\n\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
 
-DEFGFX("read-event", Gread_event, 0, 0) {
-    (void)args; (void)env;
-    static int shift, ctrl, alt;
-    static int mx, my;              /* last absolute pointer position, pixels */
-    struct input_event ev;
-    for (;;) {
-        if (input_read(&ev) != 0) { return Qnil; }      /* EINTR */
+static int ck_shift, ck_ctrl, ck_alt;
+static int ck_mx, ck_my;            /* last absolute pointer position, pixels */
+
+/* Cook one raw event; returns the Lisp event, or 0 for "nothing yet". */
+static Lobj cook_event(struct input_event *evp)
+{
+    struct input_event ev = *evp;
+    {
         if (ev.type == EV_ABS) {
-            if (ev.code == ABS_X) { mx = (int)((uint64_t)ev.value * gi.w / 32768); }
-            if (ev.code == ABS_Y) { my = (int)((uint64_t)ev.value * gi.h / 32768); }
-            continue;
+            if (ev.code == ABS_X) { ck_mx = (int)((uint64_t)ev.value * gi.w / 32768); }
+            if (ev.code == ABS_Y) { ck_my = (int)((uint64_t)ev.value * gi.h / 32768); }
+            return 0;
         }
-        if (ev.type != EV_KEY) { continue; }
+        if (ev.type != EV_KEY) { return 0; }
         if (ev.code == 42 || ev.code == 54) {            /* shift down/up */
-            shift = (ev.value != 0); continue;
+            ck_shift = (ev.value != 0); return 0;
         }
         if (ev.code == 29 || ev.code == 97) {            /* ctrl down/up */
-            ctrl = (ev.value != 0); continue;
+            ck_ctrl = (ev.value != 0); return 0;
         }
         if (ev.code == 56 || ev.code == 100) {           /* alt (Meta) down/up */
-            alt = (ev.value != 0); continue;
+            ck_alt = (ev.value != 0); return 0;
         }
         if (ev.value == 1 && (ev.code == 103 || ev.code == 108)) {
             /* arrows: cook Up/Down into C-p / C-n -- vertico's navigation. */
@@ -332,20 +333,53 @@ DEFGFX("read-event", Gread_event, 0, 0) {
         if (ev.code == 272) {                            /* BTN_LEFT */
             if (ev.value == 1) {
                 return make_cons(intern("mouse"),
-                       make_cons(FIXNUM(mx), make_cons(FIXNUM(my), Qnil)));
+                       make_cons(FIXNUM(ck_mx), make_cons(FIXNUM(ck_my), Qnil)));
             }
-            continue;
+            return 0;
         }
-        if (ev.value != 1) { continue; }                 /* key releases */
+        if (ev.value != 1) { return 0; }                 /* key releases */
         if (ev.code < sizeof(keymap_lo)) {
-            char c = (shift ? keymap_hi : keymap_lo)[ev.code];
+            char c = (ck_shift ? keymap_hi : keymap_lo)[ev.code];
             if (c) {
-                const char *tag = ctrl ? "ctrl" : (alt ? "meta" : "char");
-                int ch = (ctrl || alt) ? (c | 0x20) : c; /* modifiers: lowercase */
+                const char *tag = ck_ctrl ? "ctrl" : (ck_alt ? "meta" : "char");
+                int ch = (ck_ctrl || ck_alt) ? (c | 0x20) : c; /* modifiers: lowercase */
                 return make_cons(intern(tag), make_cons(FIXNUM(ch), Qnil));
             }
         }
+        return 0;
     }
+}
+
+DEFGFX("read-event", Gread_event, 0, 0) {
+    (void)args; (void)env;
+    struct input_event ev;
+    for (;;) {
+        if (input_read(&ev) != 0) { return Qnil; }      /* EINTR */
+        Lobj cooked = cook_event(&ev);
+        if (cooked) { return cooked; }
+    }
+}
+
+/* (read-event-nowait) -> a cooked event, or nil when nothing is pending.
+ * What lets a streaming loop (run's output pump) stay responsive to C-c. */
+DEFGFX("read-event-nowait", Gread_event_nb, 0, 0) {
+    (void)args; (void)env;
+    struct input_event ev;
+    while (input_poll(&ev) == 0) {
+        Lobj cooked = cook_event(&ev);
+        if (cooked) { return cooked; }
+    }
+    return Qnil;
+}
+
+/* (poll-fd fd ms) -> t when fd is readable within ms, else nil. */
+DEFGFX("poll-fd", Gpoll_fd, 2, 2) {
+    (void)env;
+    struct pollfd p;
+    p.fd = (int)req_fixnum(nth_arg(args, 0), "poll-fd: fd");
+    p.events = POLLIN; p.revents = 0;
+    int n = poll(&p, 1, (int)req_fixnum(nth_arg(args, 1), "poll-fd: ms"));
+    return (n > 0 && (p.revents & POLLIN)) ? Qt : Qnil;
 }
 
 /* ---- introspection: the image examining itself (M-x, describe) ------------ */
@@ -506,6 +540,7 @@ void lm_gfx_register(void)
     register_Gother_window(); register_Gdelete_window();
     register_Gset_face(); register_Gecho(); register_Gselect_at();
     register_Gredisplay(); register_Gread_event();
+    register_Gread_event_nb(); register_Gpoll_fd();
     register_Gread_string(); register_Gprin1str(); register_Gstr_from_char();
     register_Gmake_surface(); register_Gsurf_fill(); register_Grun_in_buffer();
     register_Gfunction_info(); register_Gall_symbols(); register_Gstring_search();

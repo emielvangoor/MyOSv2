@@ -226,6 +226,17 @@ int umain(int argc, char **argv)
         return serve_repl(port);
     }
 
+    /* The machine's init file: /disk/init.l on the persistent disk, loaded
+     * by PID 1 only -- the OS's ~/.emacs. Probed quietly (no error spam on
+     * machines that haven't written one) and editable from the machine
+     * itself: (let ((fd (creat "/disk/init.l"))) (fd-write fd ...)). */
+    if (sys_getpid() == 1) {
+        lm_eval_all_str("(let ((fd (open \"/disk/init.l\")))"
+                        "  (if (< fd 0) nil"
+                        "    (progn (close fd) (load \"/disk/init.l\")"
+                        "           (princ \"init.l loaded.\") (terpri))))");
+    }
+
     w_str(&out, BANNER);
     return serial_repl(&out);
 }

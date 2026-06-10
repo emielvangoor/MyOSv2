@@ -196,6 +196,46 @@ Switch with Ctrl-Alt-F1..F4 or (switch-seat n). Returns the child's pid."
         (progn (exec "/bin/lisp" (list "lisp" "-frame")) (exit 127))
       pid)))
 
+;; ---- running programs INSIDE the frame ----------------------------------
+;;
+;; system.l's run-prog lets a child inherit fd 1 (the serial console). In the
+;; frame, output belongs in the BUFFER -- so we redefine run-prog (loading
+;; after system.l: the Lisp-machine way to specialize) to pipe the child's
+;; stdout into the current buffer, streaming with a redisplay per chunk, and
+;; to map C-c on the graphical keyboard to SIGINT for the child.
+;; (Interactive stdin still comes from the serial console -- a full in-buffer
+;; comint is a later refinement.)
+
+(defun run-prog (path argv)
+  "Frame edition: stream the child's output into the current buffer; C-c
+sends it SIGINT. Returns the exit status, like the original."
+  (let ((p (pipe)))
+    (let ((pid (fork)))
+      (if (= pid 0)
+          (progn (dup2 (cdr p) 1)
+                 (close (car p)) (close (cdr p))
+                 (exec path argv)
+                 (exit 127))
+        (progn
+          (close (cdr p))
+          (let ((running t))
+            (while running
+              (if (poll-fd (car p) 50)
+                  (let ((chunk (fd-read (car p) 1024)))
+                    (if chunk
+                        (progn (insert chunk) (redisplay))
+                      (setq running nil)))
+                nil)
+              (let ((ev (read-event-nowait)))
+                (cond
+                  ((null ev) nil)
+                  ((and (eq (car ev) 'ctrl) (= (cadr ev) 99))   ; C-c
+                   (kill pid 2)
+                   (echo "C-c: interrupted"))
+                  (t nil)))))
+          (close (car p))
+          (cdr (wait)))))))
+
 (defun frame-loop ()
   "read-event -> dispatch -> redisplay, forever. The machine's heartbeat.
 read-event BLOCKS in the kernel (no polling); redisplay paints only what
