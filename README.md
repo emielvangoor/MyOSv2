@@ -112,7 +112,9 @@ deadlines; just building it one piece at a time and enjoying the ride.
   redisplay engine (`src/rd_core.c`, glyph matrices + damage diff) is C; the
   event loop, keymaps (`C-x 2/3/0/o`), mouse handling and the REPL itself are
   **live Lisp** (`frame.l`) you can redefine from that very REPL. The machine
-  can photograph itself: `(screenshot "/shot.ppm")`. **Multiple Lisp VMs**
+  can photograph itself: `(screenshot "/shot.ppm")`. Text is **anti-aliased**
+  (prerendered TTF glyphs, integer alpha blending — no FPU needed).
+  **Multiple Lisp VMs**
   share the screen VT-style — `(spawn-vm)`, then Ctrl-Alt-F1..F4 — and a
   buffer can be a **pixel surface** that an external program renders into via
   shared memory (`(run-in-buffer buf "surftest")`) — EXWM, native.

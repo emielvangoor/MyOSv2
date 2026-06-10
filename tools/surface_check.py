@@ -19,9 +19,9 @@ sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp_type, qmp_screendump
 from frame_check import read_ppm
 
-# 1280x720 frame: 45 cell rows, 44 for windows. split-below -> bottom window
-# starts at cell row 22 -> pixel y 352. Its canvas is blitted top-left there.
-SURF_Y = 22 * 16
+# 1280x720 frame at 12x24 cells: 30 rows, 29 for windows. split-below ->
+# a gets 14 rows, the bottom window starts at cell row 14 -> pixel y 336.
+SURF_Y = 14 * 24
 
 
 def px(data, w, x, y):

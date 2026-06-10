@@ -19,18 +19,28 @@ import time
 sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp_type, qmp_screendump
 
-CELL_W, CELL_H = 8, 16
+CELL_W, CELL_H = 12, 24
 FG = (0xD5, 0xC4, 0xA1)          # rd_core default face
 BG = (0x1D, 0x20, 0x21)
 
 
 def load_font():
-    """Parse font8x8_basic out of src/font8x8.h -- the exact glyphs on screen."""
-    src = open("src/font8x8.h").read()
-    rows = re.findall(r"\{((?:0x[0-9A-Fa-f]{2},?\s*){8})\}", src)
-    font = []
-    for r in rows[:128]:
-        font.append([int(b, 16) for b in re.findall(r"0x[0-9A-Fa-f]{2}", r)])
+    """Parse the anti-aliased font out of src/font_aa.h into thresholded
+    bitmaps (12 bits per row, 24 rows) -- the exact glyphs on screen."""
+    src = open("src/font_aa.h").read()
+    body = src[src.index("font_aa[95]"):]
+    glyphs = re.findall(r"\{ //[^\n]*\n((?:[^}]|\n)*?)\},", body)
+    font = {}
+    for i, g in enumerate(glyphs[:95]):
+        vals = [int(v) for v in re.findall(r"\d+", g)]
+        rows = []
+        for y in range(CELL_H):
+            bits = 0
+            for x in range(CELL_W):
+                if vals[y * CELL_W + x] > 127:
+                    bits |= 1 << x
+            rows.append(bits)
+        font[chr(32 + i)] = rows
     return font
 
 
@@ -47,28 +57,28 @@ def read_ppm(path):
 
 
 def cell_char(font, w, data, col, row):
-    """Decode the character in cell (col,row) by matching fg/bg pixels against
-    every glyph; return the best match (or '?' if nothing fits)."""
-    best, best_score = "?", -1
-    # Extract the cell's 8x8 'is foreground' bitmap (sampling even rows).
+    """Decode the character in cell (col,row): threshold each pixel to
+    'closer to fg than bg', then find the glyph bitmap with the fewest
+    mismatching pixels."""
     bits = []
-    for gy in range(8):
-        y = row * CELL_H + gy * 2
+    for gy in range(CELL_H):
+        y = row * CELL_H + gy
         rowbits = 0
-        for gx in range(8):
+        for gx in range(CELL_W):
             x = col * CELL_W + gx
             off = 3 * (y * w + x)
             px = data[off:off + 3]
-            # fg if closer to FG than BG (any face: just 'not background').
             d_bg = sum(abs(px[i] - BG[i]) for i in range(3))
             d_fg = sum(abs(px[i] - FG[i]) for i in range(3))
             if d_fg < d_bg:
                 rowbits |= 1 << gx
         bits.append(rowbits)
-    for ch in range(32, 127):
-        score = sum(bin(~(bits[i] ^ font[ch][i]) & 0xFF).count("1") for i in range(8))
+    best, best_score = "?", -1
+    mask = (1 << CELL_W) - 1
+    for ch, rows in font.items():
+        score = sum(bin(~(bits[i] ^ rows[i]) & mask).count("1") for i in range(CELL_H))
         if score > best_score:
-            best, best_score = chr(ch), score
+            best, best_score = ch, score
     return best
 
 

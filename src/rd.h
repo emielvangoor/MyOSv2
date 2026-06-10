@@ -17,8 +17,8 @@
 #pragma once
 #include <stdint.h>
 
-#define RD_CELL_W 8
-#define RD_CELL_H 16                // the 8x8 font with each row painted twice
+#define RD_CELL_W 12
+#define RD_CELL_H 24                // the prerendered anti-aliased font's cell
 #define RD_MAX_WIN 16               // window-tree node pool (per frame)
 #define RD_NFACES 8
 #define RD_MAX_RECTS 32

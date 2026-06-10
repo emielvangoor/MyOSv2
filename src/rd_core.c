@@ -8,7 +8,7 @@
 // drive it as a pure function of its inputs.
 
 #include "rd.h"
-#include "font8x8.h"
+#include "font_aa.h"
 
 // ---- tiny freestanding helpers ------------------------------------------
 
@@ -322,23 +322,36 @@ const struct rd_cell *rd_cell_at(const struct rd_frame *f, int col, int row)
 
 // ---- paint + diff -----------------------------------------------------------
 
-// Paint one cell's 8x16 pixel block from the 8x8 font (each row twice).
-// `invert` swaps fg/bg -- that's the cursor.
+// Paint one cell from the prerendered anti-aliased font: each glyph pixel is
+// an 8-bit COVERAGE value, blended between the face's bg and fg with integer
+// math -- out = bg + (fg-bg)*a/255, per channel. That single line is all of
+// grayscale font anti-aliasing; the expensive part (rasterizing curves) was
+// done once, on the host, by tools/gen_font.py. `invert` swaps fg/bg -- the
+// cursor.
+static inline uint32_t blend(uint32_t bg, uint32_t fg, uint32_t a)
+{
+    if (a == 0)   { return bg; }
+    if (a == 255) { return fg; }
+    int32_t ia = (int32_t)a;
+    int32_t r = (int32_t)((bg >> 16) & 0xFF); r += (((int32_t)((fg >> 16) & 0xFF) - r) * ia) / 255;
+    int32_t g = (int32_t)((bg >> 8)  & 0xFF); g += (((int32_t)((fg >> 8)  & 0xFF) - g) * ia) / 255;
+    int32_t b = (int32_t)( bg        & 0xFF); b += (((int32_t)( fg        & 0xFF) - b) * ia) / 255;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
 static void paint_cell(const struct rd_frame *f, uint32_t *fb, int stride,
                        int col, int row, const struct rd_cell *cell, int invert)
 {
     const struct rd_face *face = &f->faces[cell->face < RD_NFACES ? cell->face : 0];
     uint32_t fg = invert ? face->bg : face->fg;
     uint32_t bg = invert ? face->fg : face->bg;
-    const uint8_t *glyph = font8x8_basic[cell->ch < 128 ? cell->ch : '?'];
-    for (int gy = 0; gy < 8; gy++) {
-        uint8_t bits = glyph[gy];
-        for (int dy = 0; dy < 2; dy++) {          // each font row painted twice
-            uint32_t *out = fb + (row * RD_CELL_H + gy * 2 + dy) * stride
-                               + col * RD_CELL_W;
-            for (int gx = 0; gx < RD_CELL_W; gx++) {
-                out[gx] = (bits & (1u << gx)) ? fg : bg;
-            }
+    int ch = (cell->ch >= FONT_AA_FIRST && cell->ch <= FONT_AA_LAST) ? cell->ch : '?';
+    const uint8_t *glyph = font_aa[ch - FONT_AA_FIRST];
+    for (int gy = 0; gy < RD_CELL_H; gy++) {
+        uint32_t *out = fb + (row * RD_CELL_H + gy) * stride + col * RD_CELL_W;
+        const uint8_t *arow = glyph + gy * RD_CELL_W;
+        for (int gx = 0; gx < RD_CELL_W; gx++) {
+            out[gx] = blend(bg, fg, arow[gx]);
         }
     }
 }

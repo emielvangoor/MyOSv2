@@ -160,3 +160,19 @@ as tiles, buffers as content — text or pixels, in-image Lisp or external
 programs — multiple complete Lisp machines a Ctrl-Alt-Fn apart, every layer
 verified by tests that literally read the glyphs off a screendump, and an OS
 that can photograph itself.
+
+## Post-25: beautiful text — the anti-aliased font renderer
+
+The doubled 8×8 font gave way to **prerendered anti-aliased glyphs**:
+`tools/gen_font.py` rasterizes a TTF on the host (currently **EmielPro**, the
+machine owner's own Emacs font) into 12×24 cells of 8-bit coverage values,
+committed as `src/font_aa.h` so builds never need the tool, the font file or
+Python. At runtime `paint_cell` blends each pixel with integer math —
+`out = bg + (fg−bg)·α/255` per channel — which is all grayscale font
+anti-aliasing is; the expensive part (rasterizing curves) happened once, on
+the host. No floating point anywhere (the FPU is still never enabled).
+
+Grid changed from 160×45 to 106×30 cells. The KTESTs moved to AA-tolerant
+assertions (pixels *closer to fg than bg*), and the boot-and-observe glyph
+decoders in `tools/` now threshold against `font_aa.h` — the checks literally
+read EmielPro off the screendump.

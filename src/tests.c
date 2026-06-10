@@ -1297,8 +1297,8 @@ static void test_rd_gap_buffer(void)
     KASSERT(rd_buf_char_at(&b, 99) == -1);
 }
 
-// A 640x320 frame = 80x20 cells: rows 0..18 the (single) window, of which row
-// 18 is its modeline; row 19 the echo area.
+// A 640x320 frame = 53x13 cells (12x24 AA font): rows 0..11 the (single)
+// window, of which row 11 is its modeline; row 12 the echo area.
 static struct rd_frame rdf;
 static struct rd_buffer rdb, rdb2;
 static char rdb_store[512], rdb2_store[512];
@@ -1316,25 +1316,25 @@ static void test_rd_single_window_layout(void)
     rd_buf_insert(&rdb, "hi");
     rd_echo(&rdf, "ok");
     rd_layout(&rdf);
-    KASSERT(rdf.cols == 80 && rdf.rows == 20);
+    KASSERT(rdf.cols == 53 && rdf.rows == 13);
     KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'h');
     KASSERT(rd_cell_at(&rdf, 1, 0)->ch == 'i');
     KASSERT(rd_cell_at(&rdf, 2, 0)->ch == ' ');
-    // The modeline (row 18) carries the buffer name in face 1.
+    // The modeline (row 11) carries the buffer name in face 1.
     int found = 0;
-    for (int c = 0; c < 80 - 9; c++) {
-        if (rd_cell_at(&rdf, c, 18)->ch == '*' &&
-            rd_cell_at(&rdf, c + 1, 18)->ch == 's') { found = 1; }
+    for (int c = 0; c < 53 - 9; c++) {
+        if (rd_cell_at(&rdf, c, 11)->ch == '*' &&
+            rd_cell_at(&rdf, c + 1, 11)->ch == 's') { found = 1; }
     }
     KASSERT(found);
-    KASSERT(rd_cell_at(&rdf, 0, 18)->face == 1);
+    KASSERT(rd_cell_at(&rdf, 0, 11)->face == 1);
     // Echo area on the frame's last row, default face.
-    KASSERT(rd_cell_at(&rdf, 0, 19)->ch == 'o' && rd_cell_at(&rdf, 1, 19)->ch == 'k');
+    KASSERT(rd_cell_at(&rdf, 0, 12)->ch == 'o' && rd_cell_at(&rdf, 1, 12)->ch == 'k');
     // A long line truncates at the window edge (no wrap in v1).
     rd_buf_set_point(&rdb, rd_buf_len(&rdb));
     for (int i = 0; i < 30; i++) { rd_buf_insert(&rdb, "0123456789"); }
     rd_layout(&rdf);
-    KASSERT(rd_cell_at(&rdf, 79, 0)->ch != ' ');   // filled to the edge...
+    KASSERT(rd_cell_at(&rdf, 52, 0)->ch != ' ');   // filled to the edge...
     KASSERT(rd_cell_at(&rdf, 0, 1)->ch == ' ');    // ...but never wrapped
 }
 
@@ -1358,7 +1358,7 @@ static void test_rd_split_below(void)
     KASSERT(rd_cell_at(&rdf, 0, brow)->ch == 'b');
     // Two modelines: last row of each window.
     KASSERT(rd_cell_at(&rdf, 0, rdf.selected->y - 1)->face == 1);   // a's modeline
-    KASSERT(rd_cell_at(&rdf, 0, 18)->face == 1);                    // b's modeline
+    KASSERT(rd_cell_at(&rdf, 0, rdf.rows - 2)->face == 1);          // b's modeline
 }
 
 static void test_rd_split_right(void)
@@ -1372,7 +1372,7 @@ static void test_rd_split_right(void)
     rd_layout(&rdf);
     KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'L');
     int bcol = rdf.selected->x;
-    KASSERT(bcol >= 39 && bcol <= 41);
+    KASSERT(bcol >= 25 && bcol <= 28);
     KASSERT(rd_cell_at(&rdf, bcol, 0)->ch == 'R');
 }
 
@@ -1404,24 +1404,27 @@ static void test_rd_glyphs_hit_framebuffer(void)
     static uint32_t fb[640 * 320];
     struct rd_rect rects[RD_MAX_RECTS];
     rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
-    // The 'A' glyph: some default-face fg pixels in cell (0,0)'s 8x16 block,
-    // and its corners are background.
+    // The 'A' glyph, anti-aliased: count pixels CLOSER to fg than bg (stems
+    // saturate to full fg; edges blend between). Corners stay background.
     uint32_t fg = rdf.faces[0].fg, bg = rdf.faces[0].bg;
     int fg_seen = 0;
     for (int y = 0; y < RD_CELL_H; y++) {
         for (int x = 0; x < RD_CELL_W; x++) {
-            if (fb[y * 640 + x] == fg) { fg_seen++; }
+            uint32_t px = fb[y * 640 + x];
+            long df = ((long)((px >> 16) & 0xFF) - (long)((fg >> 16) & 0xFF));
+            long db = ((long)((px >> 16) & 0xFF) - (long)((bg >> 16) & 0xFF));
+            if (df * df < db * db) { fg_seen++; }
         }
     }
-    KASSERT(fg_seen > 8);                          // a real glyph, not noise
-    KASSERT(fb[0] == bg || fb[0] == fg);
-    // Modeline row painted with face 1's background.
-    int ml_y = 18 * RD_CELL_H + 4;
-    KASSERT(fb[ml_y * 640 + 4 * 8] == rdf.faces[1].bg ||
-            fb[ml_y * 640 + 4 * 8] == rdf.faces[1].fg);
+    KASSERT(fg_seen > 12);                         // a real glyph, not noise
+    KASSERT(fb[0] == bg);                          // corner: pure background
+    // Modeline row painted in face 1 (blends sit between its fg and bg, so
+    // just check it is no longer the default background).
+    int ml_y = (rdf.rows - 2) * RD_CELL_H + 4;
+    KASSERT(fb[ml_y * 640 + 4 * RD_CELL_W] != bg);
     // The cursor cell (point at end of "A": cell (1,0)) is painted inverted:
-    // its background is the DEFAULT FOREGROUND color.
-    KASSERT(fb[8 + 1] == fg);
+    // its empty pixels are the DEFAULT FOREGROUND color.
+    KASSERT(fb[RD_CELL_W + 1] == fg);
 }
 
 static void test_shared_mapping_survives_fork(void)
@@ -1462,7 +1465,7 @@ static void test_rd_surface_blit(void)
     KASSERT(fb[0] == 0x00ABCDEF && fb[7 * 640 + 15] == 0x00ABCDEF);
     KASSERT(fb[8 * 640 + 0] != 0x00ABCDEF);        // cropped at the canvas edge
     // The modeline below still renders as text cells (face 1).
-    KASSERT(rd_cell_at(&rdf, 0, 18)->face == 1);
+    KASSERT(rd_cell_at(&rdf, 0, rdf.rows - 2)->face == 1);
     // A second redisplay with no text change still damages the surface rect.
     int n2 = rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
     KASSERT(n2 >= 1);
