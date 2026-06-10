@@ -3,6 +3,7 @@
 long sys_write(int fd, const void *buf, long len);
 long sys_read(int fd, void *buf, long len);
 long sys_open(const char *path);
+long sys_creat(const char *path);  // open, creating the file if missing
 long sys_close(int fd);
 void sys_exit(int code);
 long sys_getpid(void);
@@ -51,6 +52,26 @@ int sock_shutdown(int fd, int how);                          // TCP half-close (
 #define POLLHUP 0x010
 struct pollfd { int fd; short events; short revents; };
 int poll(struct pollfd *fds, int nfds, int timeout_ms);
+
+// Input events (virtio keyboard + tablet): the Linux-evdev triple, end to end.
+// type: 1=EV_KEY (code=KEY_*/BTN_*, value 1=down 0=up), 3=EV_ABS (code 0=X 1=Y,
+// value 0..32767), 0=EV_SYN (event-batch separator).
+struct input_event { unsigned short type, code; unsigned int value; };
+#define EV_SYN 0
+#define EV_KEY 1
+#define EV_REL 2
+#define EV_ABS 3
+#define ABS_X  0
+#define ABS_Y  1
+int input_read(struct input_event *ev);   // blocks; 0 on event, -1 on signal
+
+// The framebuffer (virtio-gpu scanout): gfx_acquire maps the 1280x720 BGRX
+// framebuffer into this process; write 0x00RRGGBB words, then gfx_flush the
+// changed rect to make it visible.
+struct gfx_info { void *fb; unsigned int w, h, pitch; };
+int gfx_acquire(struct gfx_info *gi);
+int gfx_flush(int x, int y, int w, int h);
+int seat_switch(int n);   // VT switch to seat n (also: Ctrl-Alt-Fn)
 
 #define SIGINT  2
 #define SIGKILL 9

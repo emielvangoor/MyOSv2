@@ -29,6 +29,7 @@ static long syscall5(long n, long a0, long a1, long a2, long a3, long a4)
 long sys_write(int fd, const void *b, long n) { return syscall3(SYS_WRITE, fd, (long)b, n); }
 long sys_read(int fd, void *b, long n)        { return syscall3(SYS_READ, fd, (long)b, n); }
 long sys_open(const char *p)                  { return syscall3(SYS_OPEN, (long)p, 0, 0); }
+long sys_creat(const char *p)                 { return syscall3(SYS_OPEN, (long)p, 1, 0); }
 long sys_close(int fd)                        { return syscall3(SYS_CLOSE, fd, 0, 0); }
 void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }
@@ -101,4 +102,8 @@ void free(void *p)
     mfree = b;
 }
 long sys_readdir(const char *p, int i, char *name) { return syscall3(SYS_READDIR, (long)p, i, (long)name); }
+int  input_read(struct input_event *ev) { return (int)syscall3(SYS_INPUT_READ, (long)ev, 0, 0); }
+int  gfx_acquire(struct gfx_info *gi) { return (int)syscall3(SYS_GFX_ACQUIRE, (long)gi, 0, 0); }
+int  gfx_flush(int x, int y, int w, int h) { return (int)syscall5(SYS_GFX_FLUSH, x, y, w, h, 0); }
+int  seat_switch(int n) { return (int)syscall3(SYS_SEAT_SWITCH, n, 0, 0); }
 int  sys_getc(void) { char c; long n = syscall3(SYS_READ, 0, (long)&c, 1); return n == 1 ? (int)(unsigned char)c : -1; }

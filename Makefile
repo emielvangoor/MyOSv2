@@ -17,16 +17,20 @@ LDFLAGS := -nostdlib -nostartfiles -T linker.ld -Wl,--gc-sections
 
 CSRC := $(wildcard src/*.c)
 ASRC := $(wildcard src/*.S)
+# user_blob.o = embedded user-program ELFs; lisp_blob.o = embedded .l source.
 OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
         $(patsubst src/%.S,$(BUILD)/%.o,$(ASRC)) \
-        $(BUILD)/user_blob.o          # the embedded user program
+        $(BUILD)/user_blob.o \
+        $(BUILD)/lisp_blob.o
 DEP  := $(OBJ:.o=.d)
 
 # User programs are separate ELF64 executables linked at USER_CODE_VA, each
 # embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
 # and unpacked into /bin by the initrd. The kernel's ELF loader maps their
 # segments at load/exec time.
-PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo
+PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest
+# The .l files embedded into the kernel and unpacked to /lib by the initrd.
+LISP_FILES  := bootstrap system frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
@@ -51,16 +55,26 @@ QEMU_DISK  := -global virtio-mmio.force-legacy=false \
 # QEMU user-mode networking: a virtual LAN (gateway 10.0.2.2, guest 10.0.2.15)
 # with a built-in ARP/ICMP/DHCP responder -- no host setup needed.
 QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
-# Interactive runs additionally forward host port 8080 to guest 8080 so the
-# in-guest /bin/httpd is reachable: run `httpd`, then `curl http://localhost:8080/`.
-# This is NOT used by `make test` -- binding a host port would make the test suite
-# fail whenever 8080 is busy (e.g. a server already running, or overlapping runs).
-QEMU_NET_RUN := -netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+# Interactive runs additionally forward host ports into the guest:
+#   8080 -> 8080  /bin/httpd        (`httpd`, then `curl http://localhost:8080/`)
+#   7777 -> 7777  Lisp network REPL (`lisp -serve`, then connect from Emacs --
+#                 see user/lisp/lm-mode.el). 7777 instead of the classic 7000
+#                 because macOS's AirPlay Receiver listens on 7000.
+# These are NOT used by `make test` -- binding a host port would make the test
+# suite fail whenever it is busy (a server already running, overlapping runs).
+QEMU_NET_RUN := -netdev user,id=net0,hostfwd=tcp::8080-:8080,hostfwd=tcp::7777-:7777 \
                 -device virtio-net-device,netdev=net0
 QEMU_SERIAL := -chardev stdio,id=ch0,signal=off -serial chardev:ch0
+# Keyboard + absolute-pointer tablet for the graphical machine (Phase 25). The
+# tablet reports absolute coordinates, so QEMU never grabs the host mouse.
+# Part of the base flags so `make test` sees the devices too (KTEST drives them).
+QEMU_INPUT := -device virtio-keyboard-device -device virtio-tablet-device
+# The display device (Phase 25.2). With -display none QEMU still renders the
+# scanout offscreen, so KTEST can drive the device and QMP can screendump it.
+QEMU_GPU   := -device virtio-gpu-device
 # Base flags WITHOUT networking; run/test/debug each add the net variant they want.
 QEMU_FLAGS := -machine virt -cpu cortex-a72 -m 256M -display none $(QEMU_SERIAL) \
-              -kernel $(TARGET) $(QEMU_DISK)
+              $(QEMU_INPUT) $(QEMU_GPU) -kernel $(TARGET) $(QEMU_DISK)
 
 .PHONY: all run debug gdb clean objdump compile_commands test
 all: $(TARGET)
@@ -83,12 +97,34 @@ $(BUILD)/user/%.elf: user/%.c $(USER_COMMON) user/user.ld user/ulib.h user/sysca
 	mkdir -p $(BUILD)/user
 	$(CC) $(USER_CFLAGS) -T user/user.ld -o $@ $(USER_COMMON) user/$*.c
 
+# /bin/lisp is special: it links the shared Lisp core (the SAME src/lm_core.c the
+# kernel compiles for its tests) plus the freestanding setjmp, so it needs extra
+# sources and -Isrc to find lm.h. lm_sys.c (the syscall primitives) is USER-ONLY:
+# the kernel build of the core must never see it. This explicit rule overrides
+# the generic one above for lm.elf.
+LM_CORE := src/lm_core.c src/lm_jmp.S src/rd_core.c
+$(BUILD)/user/lm.elf: user/lm.c user/lm_sys.c user/lm_sys.h user/lm_gfx.c $(LM_CORE) src/lm.h src/rd.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
+	mkdir -p $(BUILD)/user
+	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c user/lm_gfx.c
+
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
 $(BUILD)/user_blob.c: $(USER_ELFS)
 	cd $(BUILD)/user && : > ../user_blob.c && \
 	  for p in $(PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Embed each Lisp source file as a C byte array (<name>_l / <name>_l_len). We copy
+# into build/lisp first and run xxd from there so the symbol names stay clean
+# (bootstrap_l, not user_lisp_bootstrap_l). The initrd writes these to /lib.
+$(BUILD)/lisp_blob.c: $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
+	mkdir -p $(BUILD)/lisp
+	cp $(patsubst %,user/lisp/%.l,$(LISP_FILES)) $(BUILD)/lisp/
+	cd $(BUILD)/lisp && : > ../lisp_blob.c && \
+	  for f in $(LISP_FILES); do xxd -i $$f.l >> ../lisp_blob.c; done
+
+$(BUILD)/lisp_blob.o: $(BUILD)/lisp_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJ) linker.ld
@@ -98,6 +134,16 @@ $(TARGET): $(OBJ) linker.ld
 # terminal (or `pkill qemu-system-aarch64`).
 run: $(TARGET) $(BUILD)/disk.img
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_NET_RUN)
+
+# Run WITH a display window (the graphical Lisp machine, Phase 25): the same
+# flags minus -display none. Serial stays in the terminal; the QEMU window
+# shows the scanout and grabs keyboard+tablet input when focused.
+# zoom-to-fit scales the 1280x720 scanout to the window -- drag it as big as
+# you like (or full-screen). Override on other hosts, e.g.:
+#   make run-gui QEMU_DISPLAY=gtk,zoom-to-fit=on
+QEMU_DISPLAY ?= cocoa,zoom-to-fit=on
+run-gui: $(TARGET) $(BUILD)/disk.img
+	$(QEMU) $(filter-out -display none,$(QEMU_FLAGS)) -display $(QEMU_DISPLAY) $(QEMU_NET_RUN)
 
 # Run the self-tests and return a shell exit code (0 = all passed). Builds a
 # test kernel with -DTEST_EXIT (which exits QEMU via semihosting), runs it under

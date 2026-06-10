@@ -15,6 +15,7 @@
 #include "signal.h"
 #include "console.h"
 #include "net.h"
+#include "input.h"
 
 // GIC interrupt id of UART0 on the virt board: shared peripheral interrupt (SPI)
 // 1, and SPIs start at id 32, so 32 + 1 = 33.
@@ -59,9 +60,13 @@ void sync_handler(struct trapframe *tf)
         }
     }
 
-    // tf->elr is the address of the faulting instruction (from ELR_EL1).
-    kprintf("Caught sync exception: EC=0x%x, ELR=0x%lx, ESR=0x%lx\n",
-            ec, tf->elr, esr);
+    // tf->elr is the address of the faulting instruction (from ELR_EL1);
+    // FAR_EL1 is the data address it touched -- print both, the pair usually
+    // names the culprit outright.
+    uint64_t far_dbg;
+    __asm__ volatile("mrs %0, far_el1" : "=r"(far_dbg));
+    kprintf("Caught sync exception: EC=0x%x, ELR=0x%lx, ESR=0x%lx, FAR=0x%lx\n",
+            ec, tf->elr, esr, far_dbg);
 
     // RECOVER: skip the faulting instruction by advancing the saved return
     // address by 4 bytes (one AArch64 instruction). When vectors.S does `eret`,
@@ -90,6 +95,10 @@ void irq_handler(struct trapframe *tf)
         // The NIC received a frame (or finished a transmit): acknowledge the
         // device and wake any thread blocked waiting for a packet.
         net_isr();
+    } else if ((int)id == input_irq_id(0) || (int)id == input_irq_id(1)) {
+        // A key or pointer event arrived: acknowledge and wake readers; the
+        // event itself is drained by the woken input_read syscall.
+        input_isr();
     }
 
     // Tell the controller we're done so it can deliver the next one.

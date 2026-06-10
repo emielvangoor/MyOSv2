@@ -28,6 +28,11 @@
 #include "signal.h"
 #include "block.h"
 #include "sfs.h"
+#include "virtio.h"
+#include "input.h"
+#include "gfx.h"
+#include "seat.h"
+#include "rd.h"
 #include "net.h"
 #include "console.h"
 #include "socket.h"
@@ -36,6 +41,7 @@
 #include "tcp_rto.h"
 #include "tcp_cc.h"
 #include "poll.h"
+#include "lm.h"
 
 #define PAGE 0x1000UL
 
@@ -1229,6 +1235,416 @@ static void test_pipe_write_then_read(void)
     KASSERT(p->count == 0);
 }
 
+// --- virtio-input (Phase 25.1) ---
+
+static void test_input_devices_present(void)
+{
+    // The graphical machine needs BOTH a keyboard and a tablet. They are two
+    // separate virtio devices with the same DeviceID (18), so the transport
+    // needs to enumerate beyond the first match.
+    KASSERT(virtio_find_nth(18, 0) != 0);
+    KASSERT(virtio_find_nth(18, 1) != 0);
+    KASSERT(virtio_find_nth(18, 2) == 0);   // there is no third one
+}
+
+static void test_input_present(void)
+{
+    pmm_init(); kheap_init();
+    input_init();
+    KASSERT(input_present());
+}
+
+static void test_input_poll_drain(void)
+{
+    // Fake a completed event in device 0's used ring, exactly as the device
+    // would leave it, and check input_poll_event() hands it to us and that the
+    // buffer is recycled (the queue never starves).
+    pmm_init(); kheap_init();
+    input_init();
+    struct input_event ev = { 0xFFFF, 0xFFFF, 0xFFFFFFFF };
+    KASSERT(input_poll_event(&ev) == 0);            // nothing pending
+    input_test_inject(0, EV_KEY, 30 /*KEY_A*/, 1);
+    KASSERT(input_poll_event(&ev) == 1);
+    KASSERT(ev.type == EV_KEY && ev.code == 30 && ev.value == 1);
+    KASSERT(input_poll_event(&ev) == 0);            // consumed
+}
+
+// --- rd_core: the redisplay engine (Phase 25.3) ---
+//
+// Like the Lisp core, rd_core is portable C dual-built into the kernel
+// exactly so these tests can red-green layout, damage and painting on target.
+
+static char rdbuf_store[512];
+static struct rd_cell rd_front[160 * 45], rd_back[160 * 45];
+
+static void test_rd_gap_buffer(void)
+{
+    struct rd_buffer b;
+    rd_buf_init(&b, "*scratch*", rdbuf_store, sizeof(rdbuf_store));
+    KASSERT(rd_buf_len(&b) == 0);
+    rd_buf_insert(&b, "hello");
+    KASSERT(rd_buf_len(&b) == 5);
+    KASSERT(rd_buf_char_at(&b, 0) == 'h' && rd_buf_char_at(&b, 4) == 'o');
+    // Move the point into the middle (forces a gap move) and edit there.
+    rd_buf_set_point(&b, 2);
+    rd_buf_insert(&b, "XY");
+    KASSERT(rd_buf_len(&b) == 7);
+    KASSERT(rd_buf_char_at(&b, 1) == 'e' && rd_buf_char_at(&b, 2) == 'X');
+    KASSERT(rd_buf_char_at(&b, 3) == 'Y' && rd_buf_char_at(&b, 4) == 'l');
+    rd_buf_delete(&b, 2);                          // delete "XY" again
+    KASSERT(rd_buf_len(&b) == 5);
+    KASSERT(rd_buf_char_at(&b, 2) == 'l');
+    KASSERT(rd_buf_char_at(&b, 99) == -1);
+}
+
+// A 640x320 frame in RD_CELL_W x RD_CELL_H cells: the single window's last
+// row is its modeline (rows-2 of the frame); the frame's last row is the echo
+// area. Geometry is computed from the cell constants so font changes don't
+// invalidate the tests.
+static struct rd_frame rdf;
+static struct rd_buffer rdb, rdb2;
+static char rdb_store[512], rdb2_store[512];
+
+static void rd_fresh(void)
+{
+    rd_buf_init(&rdb, "*scratch*", rdb_store, sizeof(rdb_store));
+    rd_buf_init(&rdb2, "*other*", rdb2_store, sizeof(rdb2_store));
+    rd_frame_init(&rdf, 640, 320, rd_front, rd_back, &rdb);
+}
+
+static void test_rd_single_window_layout(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "hi");
+    rd_echo(&rdf, "ok");
+    rd_layout(&rdf);
+    KASSERT(rdf.cols == 640 / RD_CELL_W && rdf.rows == 320 / RD_CELL_H);
+    KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'h');
+    KASSERT(rd_cell_at(&rdf, 1, 0)->ch == 'i');
+    KASSERT(rd_cell_at(&rdf, 2, 0)->ch == ' ');
+    // The modeline (the window's last row) carries the buffer name in face 1.
+    int ml = rdf.rows - 2, echo_row = rdf.rows - 1;
+    int found = 0;
+    for (int c = 0; c < rdf.cols - 9; c++) {
+        if (rd_cell_at(&rdf, c, ml)->ch == '*' &&
+            rd_cell_at(&rdf, c + 1, ml)->ch == 's') { found = 1; }
+    }
+    KASSERT(found);
+    KASSERT(rd_cell_at(&rdf, 0, ml)->face == 1);
+    // Echo area on the frame's last row, default face.
+    KASSERT(rd_cell_at(&rdf, 0, echo_row)->ch == 'o' && rd_cell_at(&rdf, 1, echo_row)->ch == 'k');
+    // A long line truncates at the window edge (no wrap in v1).
+    rd_buf_set_point(&rdb, rd_buf_len(&rdb));
+    for (int i = 0; i < 30; i++) { rd_buf_insert(&rdb, "0123456789"); }
+    rd_layout(&rdf);
+    KASSERT(rd_cell_at(&rdf, rdf.cols - 1, 0)->ch != ' ');   // filled to the edge...
+    KASSERT(rd_cell_at(&rdf, 0, 1)->ch == ' ');    // ...but never wrapped
+}
+
+static void test_rd_split_below(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "top");
+    struct rd_win *nw = rd_split(&rdf, 0);         // split below
+    KASSERT(nw != 0);
+    rd_layout(&rdf);
+    // Both halves show *scratch* initially; switch the NEW window (selected
+    // stays the original) -- select other, give it the other buffer.
+    rd_other_window(&rdf);
+    rd_set_buffer(&rdf, &rdb2);
+    rd_buf_insert(&rdb2, "bottom");
+    rd_layout(&rdf);
+    KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 't');    // top window at row 0
+    // Bottom window starts at row 9 ((20-1)/2 = 9 rows for a, b gets the rest)
+    int brow = rdf.selected->y;
+    KASSERT(brow > 0);
+    KASSERT(rd_cell_at(&rdf, 0, brow)->ch == 'b');
+    // Two modelines: last row of each window.
+    KASSERT(rd_cell_at(&rdf, 0, rdf.selected->y - 1)->face == 1);   // a's modeline
+    KASSERT(rd_cell_at(&rdf, 0, rdf.rows - 2)->face == 1);          // b's modeline
+}
+
+static void test_rd_split_right(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "L");
+    rd_split(&rdf, 1);                             // side by side
+    rd_other_window(&rdf);
+    rd_set_buffer(&rdf, &rdb2);
+    rd_buf_insert(&rdb2, "R");
+    rd_layout(&rdf);
+    KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'L');
+    int bcol = rdf.selected->x;
+    KASSERT(bcol >= rdf.cols / 2 - 1 && bcol <= rdf.cols / 2 + 1);
+    KASSERT(rd_cell_at(&rdf, bcol, 0)->ch == 'R');
+}
+
+static void test_rd_damage_minimal(void)
+{
+    rd_fresh();
+    rd_split(&rdf, 0);
+    rd_other_window(&rdf);
+    rd_set_buffer(&rdf, &rdb2);
+    struct rd_rect rects[RD_MAX_RECTS];
+    rd_redisplay(&rdf, 0, 0, rects, RD_MAX_RECTS); // first paint: everything
+    // No change -> no damage.
+    KASSERT(rd_redisplay(&rdf, 0, 0, rects, RD_MAX_RECTS) == 0);
+    // Edit only the bottom buffer: damage stays inside the bottom window's
+    // pixel rect (its rows start at selected->y cells).
+    rd_buf_insert(&rdb2, "edit");
+    int n = rd_redisplay(&rdf, 0, 0, rects, RD_MAX_RECTS);
+    KASSERT(n > 0);
+    int bottom_top_px = rdf.selected->y * RD_CELL_H;
+    for (int i = 0; i < n; i++) {
+        KASSERT(rects[i].y >= bottom_top_px);
+    }
+}
+
+static void test_rd_glyphs_hit_framebuffer(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "A");
+    static uint32_t fb[640 * 320];
+    struct rd_rect rects[RD_MAX_RECTS];
+    rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
+    // The 'A' glyph, anti-aliased: count pixels CLOSER to fg than bg (stems
+    // saturate to full fg; edges blend between). Corners stay background.
+    uint32_t fg = rdf.faces[0].fg, bg = rdf.faces[0].bg;
+    int fg_seen = 0;
+    for (int y = 0; y < RD_CELL_H; y++) {
+        for (int x = 0; x < RD_CELL_W; x++) {
+            uint32_t px = fb[y * 640 + x];
+            long df = ((long)((px >> 16) & 0xFF) - (long)((fg >> 16) & 0xFF));
+            long db = ((long)((px >> 16) & 0xFF) - (long)((bg >> 16) & 0xFF));
+            if (df * df < db * db) { fg_seen++; }
+        }
+    }
+    KASSERT(fg_seen > 12);                         // a real glyph, not noise
+    KASSERT(fb[0] == bg);                          // corner: pure background
+    // Modeline row painted in face 1 (blends sit between its fg and bg, so
+    // just check it is no longer the default background).
+    int ml_y = (rdf.rows - 2) * RD_CELL_H + 4;
+    KASSERT(fb[ml_y * 640 + 4 * RD_CELL_W] != bg);
+    // The cursor cell (point at end of "A": cell (1,0)) is painted inverted:
+    // its empty pixels are the DEFAULT FOREGROUND color.
+    KASSERT(fb[RD_CELL_W + 1] == fg);
+}
+
+static void test_shared_mapping_survives_fork(void)
+{
+    // Regression (found live, Phase 25.6): as_clone COW-demoted EVERYTHING
+    // writable, including as_map_phys mappings (shm canvases, the display
+    // framebuffer). After a fork the parent's first write went to a private
+    // copy -- a VM rendering into a framebuffer the GPU no longer scanned.
+    // Contract: PTE_SHARED mappings stay writable and same-PA in both spaces.
+    pmm_init(); kheap_init();
+    struct addrspace *parent = as_create();
+    uint64_t pg = (uint64_t)(uintptr_t)pmm_alloc();
+    uint64_t pa[1] = { pg };
+    uint64_t va = as_map_phys(parent, pa, 1);
+    KASSERT(va != 0);
+    KASSERT(as_is_writable(parent, va));
+    struct addrspace *child = as_clone(parent);
+    KASSERT(as_is_writable(parent, va));            // NOT demoted to COW
+    KASSERT(as_is_writable(child, va));
+    KASSERT(as_translate(parent, va) == pg);        // both still the SAME page
+    KASSERT(as_translate(child, va) == pg);
+}
+
+static void test_rd_minibuffer_echo(void)
+{
+    rd_fresh();
+    // Multi-line echo: the area grows to the content, windows shrink above
+    // it, and the selected line renders in face 2 (the vertico bar).
+    rd_echo(&rdf, "M-x spl\nsplit-below\nsplit-right");
+    rd_echo_select(&rdf, 1);
+    rd_layout(&rdf);
+    int e0 = rdf.rows - 3;
+    KASSERT(rdf.root->h == rdf.rows - 3);              // window area shrank
+    KASSERT(rd_cell_at(&rdf, 0, e0)->ch == 'M');
+    KASSERT(rd_cell_at(&rdf, 0, e0 + 1)->ch == 's');
+    KASSERT(rd_cell_at(&rdf, 0, e0 + 1)->face == 2);   // selection bar
+    KASSERT(rd_cell_at(&rdf, 0, e0 + 2)->face == 0);
+    // Back to a single line: full window area again.
+    rd_echo(&rdf, "ready");
+    rd_layout(&rdf);
+    KASSERT(rdf.root->h == rdf.rows - 1);
+    KASSERT(rdf.echo_sel == -1);                       // rd_echo resets the bar
+}
+
+static void test_rd_surface_blit(void)
+{
+    rd_fresh();
+    // Turn the (only) buffer into a surface backed by a small canvas; its
+    // pixels must land in the window's rect and the rect must be damaged on
+    // EVERY redisplay (a program may have drawn since last time).
+    static uint32_t canvas[16 * 8];
+    for (int i = 0; i < 16 * 8; i++) { canvas[i] = 0x00ABCDEF; }
+    rdb.kind = RD_SURFACE;
+    rdb.canvas = canvas; rdb.cv_w = 16; rdb.cv_h = 8;
+    static uint32_t fb[640 * 320];
+    struct rd_rect rects[RD_MAX_RECTS];
+    int n = rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
+    KASSERT(n > 0);
+    KASSERT(fb[0] == 0x00ABCDEF && fb[7 * 640 + 15] == 0x00ABCDEF);
+    KASSERT(fb[8 * 640 + 0] != 0x00ABCDEF);        // cropped at the canvas edge
+    // The modeline below still renders as text cells (face 1).
+    KASSERT(rd_cell_at(&rdf, 0, rdf.rows - 2)->face == 1);
+    // A second redisplay with no text change still damages the surface rect.
+    int n2 = rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
+    KASSERT(n2 >= 1);
+}
+
+// --- virtio-gpu (Phase 25.2) ---
+
+static void test_gpu_present(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    KASSERT(gfx_present());
+    KASSERT(gfx_width() == 1280 && gfx_height() == 720);
+}
+
+static void test_gpu_scanout(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    // Drive the full bring-up against the REAL device: per-seat resource +
+    // backing + scanout + one flush. Every command must come back
+    // RESP_OK_NODATA from QEMU or the calls report failure.
+    uint64_t fb = gfx_fb_new();
+    KASSERT(fb != 0 && (fb & 0xFFF) == 0);
+    KASSERT(gfx_resource_setup(1, fb) == 0);
+    KASSERT(gfx_show(1) == 0);
+    KASSERT(gfx_flush_rect(0, 0, 64, 64) == 0);
+}
+
+static void test_gpu_two_seats(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    // Two clients, two framebuffers, two resources; the scanout can show
+    // either, and flushes target whichever is shown.
+    uint64_t fb1 = gfx_fb_new(), fb2 = gfx_fb_new();
+    KASSERT(fb1 != 0 && fb2 != 0 && fb1 != fb2);
+    KASSERT(gfx_resource_setup(1, fb1) == 0);
+    KASSERT(gfx_resource_setup(2, fb2) == 0);
+    KASSERT(gfx_show(1) == 0);
+    KASSERT(gfx_flush_rect(0, 0, 8, 8) == 0);
+    KASSERT(gfx_show(2) == 0);
+    KASSERT(gfx_flush_rect(0, 0, 8, 8) == 0);
+}
+
+static void test_gpu_cursor_plane(void)
+{
+    pmm_init(); kheap_init();
+    gfx_init();
+    uint64_t fb = gfx_fb_new();
+    KASSERT(fb != 0);
+    KASSERT(gfx_resource_setup(1, fb) == 0);
+    KASSERT(gfx_show(1) == 0);
+    // First move binds the sprite (create + backing + transfer + UPDATE);
+    // later moves are single MOVE_CURSOR commands. The device must accept
+    // both -- this is what makes a pointer visible over virtio-gpu, where
+    // QEMU hides the host cursor and expects a guest cursor plane.
+    KASSERT(gfx_cursor_move(10, 10) == 0);
+    KASSERT(gfx_cursor_move(640, 360) == 0);
+}
+
+static void test_seat_logic(void)
+{
+    // The multiplexer's bookkeeping, as pure logic: registration is
+    // idempotent per pid, the first client gets the screen, switching is
+    // explicit, and releasing the active seat hands off to a survivor.
+    seat_reset();
+    KASSERT(seat_active() == 0 && seat_active_pid() == -1);
+    KASSERT(seat_register(7, 0x1000) == 1);
+    KASSERT(seat_register(7, 0x1000) == 1);        // same pid, same seat
+    KASSERT(seat_register(8, 0x2000) == 2);
+    KASSERT(seat_active() == 1 && seat_active_pid() == 7);
+    KASSERT(seat_fb(2) == 0x2000);
+    KASSERT(seat_switch(2) == 0);
+    KASSERT(seat_active_pid() == 8);
+    KASSERT(seat_switch(3) == -1);                 // no such client
+    KASSERT(seat_release_pid(8) == 1);             // survivor takes over
+    KASSERT(seat_active_pid() == 7);
+    seat_reset();
+}
+
+// The blocking input_read syscall: a worker injects an event device-side and
+// then reads it back through the full syscall path.
+static volatile long inputread_res;
+static void input_read_worker(void *a)
+{
+    (void)a;
+    input_test_inject(0, EV_KEY, 30 /*KEY_A*/, 1);
+    struct input_event ev;
+    struct trapframe tf;
+    tf.x[8] = SYS_INPUT_READ; tf.x[0] = (uint64_t)(uintptr_t)&ev;
+    do_syscall(&tf);
+    inputread_res = ((long)tf.x[0] == 0 && ev.type == EV_KEY &&
+                     ev.code == 30 && ev.value == 1) ? 1 : -1;
+}
+
+static void test_syscall_input_read(void)
+{
+    pmm_init(); kheap_init();
+    input_init();
+    sched_init();
+    inputread_res = 0;
+    thread_create(input_read_worker, 0, 1);
+    for (long i = 0; i < 100000 && !inputread_res; i++) { yield(); }
+    KASSERT(inputread_res == 1);
+}
+
+// Regression (found live, Phase 24): SYS_READ/SYS_WRITE dispatch on ->sock
+// BEFORE ->pipe, and SYS_PIPE kmalloc's its two file structs without
+// initializing ->sock. kmalloc doesn't zero, so when the heap recycles a file
+// struct freed by an exited socket-using process, the new pipe end carries a
+// stale socket pointer and pipe I/O is silently sent to a dead socket --
+// (| (run "http" ...) (run "wc")) returned 0 bytes. Poison the heap the same
+// way and assert both pipe ends come out with a clean ->sock.
+static volatile int pipesock_res;
+static void pipe_stale_sock_worker(void *a)
+{
+    (void)a;
+    pipesock_res = 9;                        // stage: running
+    // Two file-sized blocks, filled wholesale with garbage (as a freed socket
+    // file leaves behind), then freed so SYS_PIPE's kmallocs get them back.
+    struct file *d1 = kmalloc(sizeof(struct file));
+    struct file *d2 = kmalloc(sizeof(struct file));
+    char *p1 = (char *)d1, *p2 = (char *)d2;
+    for (unsigned i = 0; i < sizeof(struct file); i++) { p1[i] = (char)0xAA; p2[i] = (char)0xAA; }
+    kfree(d1); kfree(d2);
+    pipesock_res = 8;                        // stage: heap poisoned
+
+    int ufd[2] = { -1, -1 };
+    struct trapframe tf;
+    tf.x[8] = SYS_PIPE; tf.x[0] = (uint64_t)(uintptr_t)ufd;
+    do_syscall(&tf);
+    if ((long)tf.x[0] != 0) { pipesock_res = 1; return; }
+
+    struct file **fds = sched_current_fds();
+    int stale = (fds[ufd[0]]->sock != 0 || fds[ufd[1]]->sock != 0);
+    // Repair before exiting either way: thread_exit() vfs_close()s our fds,
+    // and a poisoned ->sock would send the CLOSE path into garbage too (the
+    // same trust in ->sock that makes the read path bug bite). The verdict
+    // was already taken above.
+    fds[ufd[0]]->sock = 0;
+    fds[ufd[1]]->sock = 0;
+    pipesock_res = stale ? 2 : 3;
+}
+
+static void test_pipe_file_sock_cleared(void)
+{
+    pmm_init(); kheap_init();
+    sched_init();
+    pipesock_res = 0;
+    thread_create(pipe_stale_sock_worker, 0, 1);
+    for (long i = 0; i < 2000000 && !(pipesock_res >= 1 && pipesock_res <= 3); i++) { yield(); }
+    KASSERT(pipesock_res == 3);              // 0=never ran 9/8=hung mid-stage
+}
+
 static void test_pipe_eof(void)
 {
     pmm_init(); kheap_init();
@@ -1900,8 +2316,222 @@ static void test_poll_pipe_readiness(void)
     KASSERT(bad.revents == POLLERR);
 }
 
+// --- Lisp machine (lm_core: reader, evaluator, printer, GC) ---
+//
+// The portable Lisp core is compiled into the kernel precisely so we can
+// red-green it here, on-target, under `make test`. Each test boots a fresh Lisp
+// image (lm_boot resets the heap + obarray), evaluates source from a string, and
+// asserts on the printed result -- the same read-eval-print path the real REPL
+// uses, minus the tty.
+
+static int lm_streq_(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+// Re-init the allocators (lm_alloc -> kmalloc needs a live heap) then boot a
+// fresh Lisp image. The Lisp tests run before the heap tests in the registry,
+// so -- like every other test here -- they must stand up their own allocators.
+static void lm_fresh(void)
+{
+    pmm_init();
+    kheap_init();
+    lm_boot();
+}
+
+// Evaluate all forms in `src`, print the last result, compare to `expect`.
+static int lm_is(const char *src, const char *expect)
+{
+    char buf[256];
+    lm_print_cstr(lm_eval_all_str(src), buf, sizeof(buf));
+    return lm_streq_(buf, expect);
+}
+
+static void test_lm_arithmetic(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(+ 1 2 3)", "6"));
+    KASSERT(lm_is("(* (+ 1 2) (- 10 6))", "12"));
+    KASSERT(lm_is("(- 5)", "-5"));
+    KASSERT(lm_is("(/ 20 4)", "5"));
+    KASSERT(lm_is("(% 17 5)", "2"));
+}
+
+static void test_lm_lists(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(quote (1 2 3))", "(1 2 3)"));
+    KASSERT(lm_is("(cons 1 2)", "(1 . 2)"));
+    KASSERT(lm_is("(car (quote (a b c)))", "a"));
+    KASSERT(lm_is("(cdr (quote (a b c)))", "(b c)"));
+    KASSERT(lm_is("(list 1 2 (+ 1 2))", "(1 2 3)"));
+}
+
+static void test_lm_conditionals(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(if (< 1 2) 10 20)", "10"));
+    KASSERT(lm_is("(if (> 1 2) 10 20)", "20"));
+    KASSERT(lm_is("(cond ((= 1 2) 'a) ((= 2 2) 'b) (t 'c))", "b"));
+    KASSERT(lm_is("(and 1 2 3)", "3"));
+    KASSERT(lm_is("(or nil nil 7)", "7"));
+    KASSERT(lm_is("(not nil)", "t"));
+}
+
+static void test_lm_let_and_setq(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(let ((x 5) (y 7)) (+ x y))", "12"));
+    KASSERT(lm_is("(progn (setq a 3) (setq a (+ a 4)) a)", "7"));
+}
+
+static void test_lm_defun_and_recursion(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(defun sq (x) (* x x)) (sq 9)", "81"));
+    // Recursion + the evaluator's tail-call path.
+    KASSERT(lm_is("(defun fact (n) (if (= n 0) 1 (* n (fact (- n 1))))) (fact 5)", "120"));
+}
+
+static void test_lm_closures(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(defun adder (n) (lambda (x) (+ x n))) (funcall (adder 10) 5)", "15"));
+}
+
+static void test_lm_macros(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(defmacro inc (v) (list 'setq v (list '+ v 1)))"
+                  " (setq a 1) (inc a) (inc a) a", "3"));
+}
+
+static void test_lm_higher_order(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(mapcar (lambda (x) (* x x)) (quote (1 2 3 4)))", "(1 4 9 16)"));
+    KASSERT(lm_is("(apply (function +) (quote (1 2 3 4)))", "10"));
+}
+
+static void test_lm_strings(void)
+{
+    lm_fresh();
+    KASSERT(lm_is("(string-concat \"ab\" \"cd\")", "\"abcd\""));
+    KASSERT(lm_is("(string-length \"hello\")", "5"));
+    KASSERT(lm_is("(equal \"hi\" \"hi\")", "t"));
+    KASSERT(lm_is("(type-of 5)", "fixnum"));
+    KASSERT(lm_is("(type-of 'x)", "symbol"));
+}
+
+static void test_lm_gc_keeps_roots(void)
+{
+    lm_fresh();
+    lm_eval_all_str("(setq keep (list 1 2 3))");   // rooted via the obarray
+    lm_eval_all_str("(progn (cons 1 2) (cons 3 4) nil)");  // pure garbage
+    size_t before = gc.alloc_count;
+    gc_collect(global_env);
+    size_t after = gc.alloc_count;
+    KASSERT(after < before);                       // garbage was reclaimed
+    KASSERT(lm_is("keep", "(1 2 3)"));             // the rooted list survived
+    // The image is still fully functional after a collection.
+    KASSERT(lm_is("(+ 2 2)", "4"));
+}
+
+static void test_lm_error_recovery(void)
+{
+    lm_fresh();
+    // An unbound variable raises an error that unwinds to the recovery point;
+    // the image keeps working afterwards (a typo at the REPL must not kill init).
+    Lobj r = lm_eval_cstr("nosuchvariable");
+    KASSERT(r == Qnil);
+    KASSERT(lm_is("(+ 40 2)", "42"));
+}
+
+// Does `hay` contain `needle`? (No strstr in a freestanding kernel.)
+static int lm_strhas_(const char *hay, const char *needle)
+{
+    for (; *hay; hay++) {
+        const char *a = hay, *b = needle;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (!*b) { return 1; }
+    }
+    return !*needle;
+}
+
+static void test_lm_rest_params(void)
+{
+    lm_fresh();
+    // A bare symbol in place of the parameter list binds ALL arguments to it
+    // (the classic &rest). The Lisp shell's (run "cmd" "arg" ...) needs this:
+    // a command takes any number of arguments.
+    KASSERT(lm_is("(defun f args args) (f 1 2 3)", "(1 2 3)"));
+    KASSERT(lm_is("(funcall (lambda args (car args)) 7 8)", "7"));
+    // No arguments -> the rest parameter is nil, not unbound.
+    KASSERT(lm_is("(defun g args args) (g)", "nil"));
+    // `|` must read as an ordinary symbol so the pipeline macro can bear the
+    // shell's traditional name.
+    KASSERT(lm_is("(setq | 5) |", "5"));
+}
+
+static void test_lm_global_nil_binding(void)
+{
+    lm_fresh();
+    // A global set to nil is BOUND-to-nil, not unbound. Found live: frame.l's
+    // (setq pending-cx nil) made every later read of pending-cx an unbound-
+    // variable error, because symbol value slots initialized to Qnil and the
+    // lookup used Qnil to mean "no binding". An explicit unbound sentinel
+    // separates the two.
+    KASSERT(lm_is("(setq flag nil) (if flag 1 2)", "2"));
+    KASSERT(lm_is("(setq flag2 nil) flag2", "nil"));
+    // Genuinely unbound still errors (and recovers).
+    Lobj r = lm_eval_cstr("definitely-not-bound");
+    KASSERT(r == Qnil);
+}
+
+static void test_lm_eval_primitive(void)
+{
+    lm_fresh();
+    // (eval form) -- the missing third of read/eval/print, so a REPL can be
+    // written IN Lisp (system.l builds the shell's repl from these).
+    KASSERT(lm_is("(eval (list '+ 1 2))", "3"));
+    KASSERT(lm_is("(eval ''x)", "x"));
+}
+
+static void test_lm_error_goes_to_cur_out(void)
+{
+    lm_fresh();
+    // The REPL may be a TCP socket (24.1b): a remote Emacs user must see error
+    // messages in their buffer, not on the guest's serial console. So lm_error
+    // must write through lm_cur_out when it is set (and only fall back to the
+    // raw fd 2 when it isn't, e.g. during load before the REPL starts).
+    char buf[128];
+    Writer w;
+    writer_to_buffer(&w, buf, sizeof(buf));
+    lm_cur_out = &w;
+    lm_eval_cstr("nosuchvariable");      // raises + recovers
+    lm_cur_out = 0;
+    KASSERT(lm_strhas_(buf, "ERROR"));
+    KASSERT(lm_strhas_(buf, "nosuchvariable"));
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
+    { "lm: arithmetic",                  test_lm_arithmetic },
+    { "lm: lists + cons/car/cdr",        test_lm_lists },
+    { "lm: conditionals",                test_lm_conditionals },
+    { "lm: let + setq",                  test_lm_let_and_setq },
+    { "lm: defun + recursion",           test_lm_defun_and_recursion },
+    { "lm: closures",                    test_lm_closures },
+    { "lm: macros",                      test_lm_macros },
+    { "lm: higher-order (mapcar/apply)", test_lm_higher_order },
+    { "lm: strings + type-of",           test_lm_strings },
+    { "lm: GC keeps roots, frees rest",  test_lm_gc_keeps_roots },
+    { "lm: error recovery",              test_lm_error_recovery },
+    { "lm: errors go to lm_cur_out",     test_lm_error_goes_to_cur_out },
+    { "lm: rest params + | symbol",      test_lm_rest_params },
+    { "lm: eval primitive",              test_lm_eval_primitive },
+    { "lm: global bound to nil",         test_lm_global_nil_binding },
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
     { "pmm: freed page reused",          test_pmm_free_reuse },
     { "pmm: alloc_pages contiguous run", test_pmm_alloc_pages_contiguous },
@@ -1976,6 +2606,7 @@ static const struct ktest tests[] = {
     { "shm: maps shared across spaces",   test_shm_shared_pages },
     { "shm: survives a mapper exiting",   test_shm_survives_unmap },
     { "pipe: write then read",            test_pipe_write_then_read },
+    { "pipe: fds get a clean ->sock",     test_pipe_file_sock_cleared },
     { "pipe: read EOF when no writers",   test_pipe_eof },
     { "pipe: write -1 when no readers",   test_pipe_broken },
     { "pipe: ring buffer wraps",          test_pipe_wraps },
@@ -2000,6 +2631,24 @@ static const struct ktest tests[] = {
     { "sfs: readdir lists entries",       test_sfs_readdir },
     { "sfs: multi-block file",            test_sfs_multiblock },
     { "vfs: mount at /disk",              test_vfs_mount_at },
+    { "input: two devices present",       test_input_devices_present },
+    { "input: driver present",            test_input_present },
+    { "input: poll drains injected event", test_input_poll_drain },
+    { "syscall: input_read drains event", test_syscall_input_read },
+    { "rd: gap buffer insert/delete/read", test_rd_gap_buffer },
+    { "rd: single window layout",         test_rd_single_window_layout },
+    { "rd: split below + other window",   test_rd_split_below },
+    { "rd: split right",                  test_rd_split_right },
+    { "rd: damage confined to edit",      test_rd_damage_minimal },
+    { "rd: glyphs hit the framebuffer",   test_rd_glyphs_hit_framebuffer },
+    { "vm: shared mapping survives fork", test_shared_mapping_survives_fork },
+    { "rd: minibuffer echo + selection", test_rd_minibuffer_echo },
+    { "rd: surface buffer blit + damage", test_rd_surface_blit },
+    { "gpu: device present",              test_gpu_present },
+    { "gpu: scanout configured",          test_gpu_scanout },
+    { "gpu: two seats, two resources",    test_gpu_two_seats },
+    { "gpu: hardware cursor plane",       test_gpu_cursor_plane },
+    { "seat: register/switch/release",    test_seat_logic },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },

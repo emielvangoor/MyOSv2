@@ -347,6 +347,141 @@ program juggle multiple sockets.
 
 ---
 
+## Phase 24 — The Lisp machine  ✅ DONE (24.1–24.4 complete; 24.5 graphics deferred)
+
+**Goal:** make a Lisp the **primary userland** of MyOSv2 (Emacs / Symbolics
+spirit, "Emacs-on-Unix" model). The C kernel is untouched; a Lisp image runs at
+EL0 as an ordinary MMU-protected process talking to the kernel through existing
+syscalls. It fork/execs external ELF programs *and* runs in-image Lisp functions
+(Eshell model), eventually becomes `init`, and accepts live connections from
+Doom Emacs over TCP.
+
+- **Design spec:** `docs/superpowers/specs/2026-06-09-lisp-machine-design.md`
+- **Phase notes:** `docs/notes/phase-24.md`
+- **Ported from:** the standalone host interpreter at `~/Code/Sides/lm-lisp`
+- **Decisions locked by the user:** conservative GC stack scanning; connect
+  Emacs right after 24.1; do 24.1 → 24.5 (graphics deferred to a later phase).
+
+### Architecture (already in place — read before continuing)
+
+The reader/evaluator/printer/GC/primitives are ONE platform-neutral file,
+**`src/lm_core.c`** (+ `src/lm.h`), with no libc and no kernel headers. It is
+compiled into **two** binaries via a small platform layer:
+
+| Build  | Platform file       | alloc     | I/O      | Role                 |
+|--------|---------------------|-----------|----------|----------------------|
+| kernel | `src/lm_platform.c` | `kmalloc` | UART     | drives KTEST cases   |
+| user   | `user/lm.c`         | `malloc`  | syscalls | `/bin/lisp` + REPL   |
+
+Platform hooks: `lm_alloc`/`lm_free`, `lm_sys_read`/`lm_sys_write`/`lm_open`/
+`lm_close`, `lm_setjmp`/`lm_longjmp` (`src/lm_jmp.S`), `lm_abort`. The current
+I/O streams are globals `lm_cur_in` (Reader*) / `lm_cur_out` (Writer*); point
+them at a tty, a socket, or a capture buffer. GC is conservative: `lm_stack_base`
++ register spill via `lm_setjmp`, scanned against the live-object list (bounded by
+`gc.lo/hi`). Auto-collect in `gc_alloc` is gated on `lm_stack_base != 0` (so the
+KTEST build, which leaves it 0, only collects with explicit roots).
+
+Build wiring (Makefile): `lm` is in `PROGS`; `/bin/lisp` has a **dedicated rule**
+linking `user/crt0.S user/ulib.c src/lm_core.c src/lm_jmp.S user/lm.c` with
+`-Isrc`. `.l` files in `user/lisp/` (`LISP_FILES`) are xxd'd into
+`build/lisp_blob.c` and unpacked by the initrd to `/lib/<name>.l`.
+
+### ✅ 24.1 — core port + serial REPL  (DONE, committed `11be899`)
+
+`src/lm.h`, `src/lm_core.c`, `src/lm_jmp.S`, `src/lm_platform.c`, `user/lm.c`
+(`/bin/lisp`), `user/lisp/bootstrap.l` (→ `/lib/bootstrap.l`). 11 KTEST cases in
+`src/tests.c` (`test_lm_*`), full suite green (128 tests). Verified live under
+QEMU: `(fact 6)`→720, `(mapcar … (range 5))`→`(0 1 4 9 16)`, error recovery works.
+Console caveat: pasting long lines overflows the 16-byte PL011 RX FIFO (drops the
+newline → reader stalls); human-speed typing is fine; the TCP path is immune.
+
+### ✅ 24.1b — Emacs ↔ TCP REPL  (DONE)
+
+`lisp -serve [port]` (default **7777**, not 7000 — macOS AirPlay squats on
+7000 and a dead `hostfwd` kills QEMU) serves the REPL over a blocking
+`accept` loop; the image persists across connections. `lm_error` now reports
+through `lm_cur_out` (KTEST `lm: errors go to lm_cur_out`) so remote users see
+their errors. Emacs glue in `user/lisp/lm-mode.el` (`lm-connect`, `C-c C-e`,
+`C-c C-r`). `make run` forwards host:7777 → guest:7777. End-to-end check:
+`python3 tools/lisp_serve_check.py` (boot → serve → eval → error-over-socket →
+reconnect persistence).
+
+### ✅ 24.2 — system primitives (DEFUN over syscalls)  (DONE)
+
+`user/lm_sys.c` (user-only, linked into the `lm.elf` rule): `(getpid)` `(fork)`
+`(exec path argv)` `(wait)`→`(pid . status)` `(exit [code])` `(kill pid sig)`
+`(sleep ms)` `(open)` `(close)` `(fd-read fd n)` `(fd-write fd str)` (named
+`fd-*` because the core owns `read` = parse a form) `(pipe)`→`(rfd . wfd)`
+`(dup2)` `(socket 'stream|'dgram)` `(bind)` `(listen)` `(accept)` `(connect fd
+host port)` `(shutdown)`. Registered via `lm_sys_register()` after `lm_boot()`.
+Verified by `python3 tools/lisp_sys_check.py` (boot-and-observe over the TCP
+REPL: files, pipe roundtrip, fork/exit/wait, fork/exec/wait, sockets).
+
+### ✅ 24.3 — the shell in Lisp (`user/lisp/system.l`)  (DONE)
+
+`(run "hello" "arg")` → fork→exec→wait→status (variadic via new core **rest
+params**: bare-symbol parameter binds all args). `(| a b)` pipeline macro —
+stages run as forked children joined by `pipe`+`dup2`; in-image stages compose
+(`(| (princ "abcde") (run "wc"))` → 5 on the serial console / under init).
+`(ls)`/`(cat)` coreutils over a new `(readdir)` primitive; `(repl)` via a new
+core `eval` primitive. Shipped as `/lib/system.l`, loaded after `bootstrap.l`.
+KTESTs: `lm: rest params + | symbol`, `lm: eval primitive`. Verified by
+`python3 tools/lisp_shell_check.py` (serial + TCP phases).
+
+### ✅ 24.4 — flip `init` to Lisp  (DONE)
+
+`src/initrd.c`: `/bin/init` is now `lm_elf` (`/bin/sh` keeps the C shell as a
+fallback — `(run "sh")` from Lisp, `exit` to come back). As PID 1 the serial
+REPL never exits: on console EOF it reopens the reader and keeps prompting.
+Verified by `python3 tools/lisp_init_check.py`, plus re-runs of all earlier
+checks against the flipped boot (the harness starts the network REPL with
+`(run "lisp" "-serve")`).
+
+### Testing / workflow reminders (user's standing rules — memory)
+
+- **TDD, test-first**, gated by `make test` + the pre-commit hook. Portable-core
+  behavior is unit-tested in `src/tests.c` (`test_lm_*` via `lm_is(...)`); the
+  Lisp tests must call `lm_fresh()` (pmm+kheap init + `lm_boot`) first, because
+  they run before the heap tests in the registry.
+- Integration (primitives, shell, TCP, init flip) is verified by **booting under
+  QEMU and observing** — drive the serial console **char-by-char with ~12 ms
+  gaps** (see the python snippet in the session / `phase-24.md`) to avoid the RX
+  FIFO overflow; the TCP path can be driven directly from the host.
+- **Heavily document** (teaching-level "why" comments). **Keep README current**
+  each phase. **Prefer interrupts/blocking over polling** (the TCP server uses
+  blocking `accept`, not poll-spin).
+
+**Depends on:** 14 (ELF/exec), 17 (pipes), 18 (signals), 22 (sockets).
+**Size:** large — each sub-phase is its own commit.
+
+---
+
+## Phase 25 — The graphical Lisp machine  ✅ DONE
+
+The Emacs architecture, end to end: redisplay in C inside each /bin/lisp,
+Lisp owns buffers/windows/faces, the kernel grows only drivers + a seat
+multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine-design.md`
+· **Notes:** `docs/notes/phase-25.md` · Plans per sub-phase in `docs/superpowers/plans/`.
+
+- ✅ **25.1 — virtio-input**: keyboard + tablet drivers (evdev triples,
+  IRQ top-half/bottom-half), blocking `input_read` syscall, `/bin/evtest`,
+  QMP-driven check (`tools/input_check.py`).
+- ✅ **25.2 — virtio-gpu**: 2D driver (create/backing/scanout + per-rect
+  transfer/flush), `gfx_acquire` maps the fb into userland, `/bin/gfxtest`,
+  screendump-verified (`tools/gfx_check.py`).
+- ✅ **25.3 — rd_core**: gap buffers, window tree, faces, glyph-matrix
+  layout + cell-diff damage, font painting — dual-built, 6 KTESTs red→green.
+- ✅ **25.4 — Lisp integration**: `lm_gfx.c` + `frame.l`; `lisp -frame` boots
+  the graphical REPL; in-OS `(screenshot)`; glyph-level screendump check
+  (`tools/frame_check.py`); see `docs/images/phase-25-graphical-lisp-machine.png`.
+- ✅ **25.5 — the seat**: per-seat gpu resources, input routing, Ctrl-Alt-Fn
+  + `(switch-seat n)`, `(spawn-vm)`; screendump-verified (`tools/seat_check.py`).
+- ✅ **25.6 — surface buffers**: shm canvases, `(surface-fill-rect)`,
+  `(run-in-buffer ...)` external renderers; PTE_SHARED fork fix;
+  screendump-verified (`tools/surface_check.py`).
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,

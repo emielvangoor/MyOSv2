@@ -35,3 +35,7 @@
 #define SYS_ACCEPT   37
 #define SYS_POLL     38
 #define SYS_SOCKSHUT 39
+#define SYS_INPUT_READ 40
+#define SYS_GFX_ACQUIRE 41
+#define SYS_GFX_FLUSH   42
+#define SYS_SEAT_SWITCH 43

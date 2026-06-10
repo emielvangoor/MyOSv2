@@ -51,15 +51,25 @@ static inline void wr(uint64_t base, uint32_t off, uint32_t val)
 }
 static inline void barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
 
-uint64_t virtio_find(uint32_t device_id)
+// Find the MMIO base of the nth (0-based) virtio device with this DeviceID.
+// Multiple identical devices are normal: virtio-input is one DeviceID (18)
+// but appears twice on the command line (keyboard + tablet), and they keep
+// their command-line order in the MMIO slot scan.
+uint64_t virtio_find_nth(uint32_t device_id, int nth)
 {
     for (int i = 0; i < VIRTIO_MMIO_COUNT; i++) {
         uint64_t base = VIRTIO_MMIO_BASE + (uint64_t)i * VIRTIO_MMIO_STRIDE;
         if (rd(base, R_MAGIC) != 0x74726976) { continue; }   // "virt"
         if (rd(base, R_VERSION) != 2) { continue; }          // modern only
-        if (rd(base, R_DEVICE_ID) == device_id) { return base; }
+        if (rd(base, R_DEVICE_ID) != device_id) { continue; }
+        if (nth-- == 0) { return base; }
     }
     return 0;
+}
+
+uint64_t virtio_find(uint32_t device_id)
+{
+    return virtio_find_nth(device_id, 0);
 }
 
 int virtio_setup_queue(uint64_t base, struct virtq *q)
