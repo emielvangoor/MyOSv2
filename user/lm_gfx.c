@@ -1,0 +1,333 @@
+/*
+ * lm_gfx.c -- the graphical Lisp machine's display primitives (Phase 25.4).
+ * ========================================================================
+ *
+ * This file fuses the two cores that /bin/lisp links: the LANGUAGE (lm_core)
+ * and the VIEW (rd_core). Every DEFUN below lets Lisp mutate the redisplay
+ * model -- buffers, the window tree, faces -- or pump the machinery
+ * (redisplay, read-event). Lisp owns all semantics (what a key DOES lives in
+ * frame.l); C owns the mechanics (what a key IS, where a glyph goes).
+ *
+ * User-build-only for the same reason as lm_sys.c: it talks to syscalls
+ * (gfx_acquire, input_read) the kernel build of the cores must never see.
+ */
+
+#include "lm.h"
+#include "rd.h"
+#include "ulib.h"
+#include "lm_sys.h"
+
+/* ---- the machine's one frame + its buffer pool -------------------------- */
+
+#define NBUFS 8
+#define BUF_CAP 8192
+
+static struct rd_frame frame;
+static struct rd_cell front_grid[160 * 45], back_grid[160 * 45];
+static struct rd_buffer bufs[NBUFS];
+static char buf_store[NBUFS][BUF_CAP];
+static int buf_used[NBUFS];
+
+static struct gfx_info gi;          /* the mapped framebuffer */
+static int frame_ready;
+
+/* The selected window's buffer -- the one Lisp edits. */
+static struct rd_buffer *cur(void) { return frame.selected->buf; }
+
+/* ---- argument helpers (the lm_sys.c idiom) ------------------------------- */
+
+static Lobj nth_arg(Lobj args, int n)
+{
+    while (n-- > 0) { args = CDR(args); }
+    return CAR(args);
+}
+static int64_t req_fixnum(Lobj o, const char *who)
+{
+    if (!IS_FIXNUM(o)) { lm_error(who, o); }
+    return FIXNUM_VAL(o);
+}
+static const char *req_string(Lobj o, const char *who)
+{
+    if (!IS_STRING(o)) { lm_error(who, o); }
+    return ((LString *)PTR(o))->data;
+}
+
+#define DEFGFX(lisp_name, c_name, min, max)                                   \
+    static Lobj c_name(Lobj args, Lobj env);                                  \
+    static void register_##c_name(void) {                                     \
+        Lobj sym = intern(lisp_name);                                         \
+        ((Symbol *)PTR(sym))->function = make_prim(lisp_name, c_name, min, max); \
+    }                                                                         \
+    static Lobj c_name(Lobj args, Lobj env)
+
+/* ---- frame bring-up ------------------------------------------------------- */
+
+/* (frame-init) -> t/nil. Acquire the framebuffer and stand up the frame with
+ * one buffer, "*repl*". Idempotent. */
+DEFGFX("frame-init", Gframe_init, 0, 0) {
+    (void)args; (void)env;
+    if (frame_ready) { return Qt; }
+    if (gfx_acquire(&gi) != 0) { return Qnil; }
+    for (int i = 0; i < NBUFS; i++) { buf_used[i] = 0; }
+    buf_used[0] = 1;
+    rd_buf_init(&bufs[0], "*repl*", buf_store[0], BUF_CAP);
+    rd_frame_init(&frame, (int)gi.w, (int)gi.h, front_grid, back_grid, &bufs[0]);
+    frame_ready = 1;
+    return Qt;
+}
+
+/* ---- buffers -------------------------------------------------------------- */
+
+/* (make-buffer "name") -> handle (a fixnum index), or nil if the pool is full. */
+DEFGFX("make-buffer", Gmake_buffer, 1, 1) {
+    (void)env;
+    const char *name = req_string(CAR(args), "make-buffer: name must be a string");
+    for (int i = 0; i < NBUFS; i++) {
+        if (!buf_used[i]) {
+            buf_used[i] = 1;
+            rd_buf_init(&bufs[i], name, buf_store[i], BUF_CAP);
+            return FIXNUM(i);
+        }
+    }
+    return Qnil;
+}
+
+/* (set-buffer handle) -> show that buffer in the selected window. */
+DEFGFX("set-buffer", Gset_buffer, 1, 1) {
+    (void)env;
+    int i = (int)req_fixnum(CAR(args), "set-buffer: handle must be a fixnum");
+    if (i < 0 || i >= NBUFS || !buf_used[i]) { lm_error("set-buffer: no such buffer", CAR(args)); }
+    rd_set_buffer(&frame, &bufs[i]);
+    return CAR(args);
+}
+
+/* (insert "str") -> insert at point in the selected window's buffer. */
+DEFGFX("insert", Ginsert, 1, 1) {
+    (void)env;
+    rd_buf_insert(cur(), req_string(CAR(args), "insert: expected a string"));
+    return Qt;
+}
+
+/* (delete-char n) -> delete n chars before point (backspace is n=1). */
+DEFGFX("delete-char", Gdelete_char, 1, 1) {
+    (void)env;
+    rd_buf_delete(cur(), (int)req_fixnum(CAR(args), "delete-char: expected a fixnum"));
+    return Qt;
+}
+
+DEFGFX("point", Gpoint, 0, 0) { (void)args; (void)env; return FIXNUM(cur()->point); }
+DEFGFX("buffer-length", Gbuflen, 0, 0) { (void)args; (void)env; return FIXNUM(rd_buf_len(cur())); }
+
+DEFGFX("goto-char", Ggoto_char, 1, 1) {
+    (void)env;
+    rd_buf_set_point(cur(), (int)req_fixnum(CAR(args), "goto-char: expected a fixnum"));
+    return FIXNUM(cur()->point);
+}
+
+/* (buffer-substring start end) -> the text [start, end) as a string. The
+ * REPL uses this to lift the line being edited out of the buffer. */
+DEFGFX("buffer-substring", Gbufsub, 2, 2) {
+    (void)env;
+    int s = (int)req_fixnum(nth_arg(args, 0), "buffer-substring: start");
+    int e = (int)req_fixnum(nth_arg(args, 1), "buffer-substring: end");
+    static char tmp[1024];
+    int n = 0;
+    for (int p = s; p < e && n < (int)sizeof(tmp) - 1; p++) {
+        int c = rd_buf_char_at(cur(), p);
+        if (c < 0) { break; }
+        tmp[n++] = (char)c;
+    }
+    tmp[n] = 0;
+    return make_string(tmp);
+}
+
+/* ---- windows + faces ------------------------------------------------------ */
+
+DEFGFX("split-below", Gsplit_below, 0, 0) { (void)args; (void)env; return rd_split(&frame, 0) ? Qt : Qnil; }
+DEFGFX("split-right", Gsplit_right, 0, 0) { (void)args; (void)env; return rd_split(&frame, 1) ? Qt : Qnil; }
+DEFGFX("other-window", Gother_window, 0, 0) { (void)args; (void)env; rd_other_window(&frame); return Qt; }
+DEFGFX("delete-window", Gdelete_window, 0, 0) { (void)args; (void)env; return rd_win_delete(&frame) == 0 ? Qt : Qnil; }
+
+/* (set-face id fg bg) -- colors as 0x00RRGGBB fixnums. */
+DEFGFX("set-face", Gset_face, 3, 3) {
+    (void)env;
+    int id = (int)req_fixnum(nth_arg(args, 0), "set-face: id");
+    if (id < 0 || id >= RD_NFACES) { lm_error("set-face: bad id", nth_arg(args, 0)); }
+    frame.faces[id].fg = (uint32_t)req_fixnum(nth_arg(args, 1), "set-face: fg");
+    frame.faces[id].bg = (uint32_t)req_fixnum(nth_arg(args, 2), "set-face: bg");
+    return Qt;
+}
+
+/* (echo "msg") -> the echo area (the frame's last line). */
+DEFGFX("echo", Gecho, 1, 1) {
+    (void)env;
+    rd_echo(&frame, req_string(CAR(args), "echo: expected a string"));
+    return Qt;
+}
+
+/* (select-window-at x y) -- mouse click routing: select the leaf window whose
+ * rect contains the pixel. The tree walk is C because the tree is C. */
+static struct rd_win *leaf_at(struct rd_win *w, int col, int row)
+{
+    if (w->leaf) { return w; }
+    struct rd_win *a = w->a, *b = w->b;
+    if (w->vertical) {
+        return (col < b->x) ? leaf_at(a, col, row) : leaf_at(b, col, row);
+    }
+    return (row < b->y) ? leaf_at(a, col, row) : leaf_at(b, col, row);
+}
+DEFGFX("select-window-at", Gselect_at, 2, 2) {
+    (void)env;
+    int px = (int)req_fixnum(nth_arg(args, 0), "select-window-at: x");
+    int py = (int)req_fixnum(nth_arg(args, 1), "select-window-at: y");
+    frame.selected = leaf_at(frame.root, px / RD_CELL_W, py / RD_CELL_H);
+    return Qt;
+}
+
+/* ---- redisplay ------------------------------------------------------------ */
+
+/* (redisplay) -> make the screen match the model: rd_redisplay paints changed
+ * cells into the mapped framebuffer, then each damage rect is gfx_flush'd. */
+DEFGFX("redisplay", Gredisplay, 0, 0) {
+    (void)args; (void)env;
+    if (!frame_ready) { return Qnil; }
+    struct rd_rect rects[RD_MAX_RECTS];
+    int n = rd_redisplay(&frame, (uint32_t *)gi.fb, (int)(gi.pitch / 4),
+                         rects, RD_MAX_RECTS);
+    for (int i = 0; i < n; i++) {
+        gfx_flush(rects[i].x, rects[i].y, rects[i].w, rects[i].h);
+    }
+    return FIXNUM(n);
+}
+
+/* ---- input: raw evdev -> cooked Lisp events ------------------------------- */
+/*
+ * The kernel hands us evdev triples; Lisp wants meaning. The cooking -- what
+ * a keycode IS (scancode 30 = 'a', shift makes it 'A') -- is mechanical and
+ * lives here; what a key DOES is policy and lives in frame.l. Cooked shapes:
+ *   (char N)      printable ascii, shift applied; also 10=RET 8=BKSP 9=TAB
+ *   (ctrl N)      Ctrl+letter, N = the lowercase ascii
+ *   (mouse X Y)   left-button press, in pixels
+ */
+static const char keymap_lo[] =
+    "\0\033" "1234567890-=\b\tqwertyuiop[]\n\0asdfghjkl;'`\0\\zxcvbnm,./\0*\0 ";
+static const char keymap_hi[] =
+    "\0\033" "!@#$%^&*()_+\b\tQWERTYUIOP{}\n\0ASDFGHJKL:\"~\0|ZXCVBNM<>?\0*\0 ";
+
+DEFGFX("read-event", Gread_event, 0, 0) {
+    (void)args; (void)env;
+    static int shift, ctrl;
+    static int mx, my;              /* last absolute pointer position, pixels */
+    struct input_event ev;
+    for (;;) {
+        if (input_read(&ev) != 0) { return Qnil; }      /* EINTR */
+        if (ev.type == EV_ABS) {
+            if (ev.code == ABS_X) { mx = (int)((uint64_t)ev.value * gi.w / 32768); }
+            if (ev.code == ABS_Y) { my = (int)((uint64_t)ev.value * gi.h / 32768); }
+            continue;
+        }
+        if (ev.type != EV_KEY) { continue; }
+        if (ev.code == 42 || ev.code == 54) {            /* shift down/up */
+            shift = (ev.value != 0); continue;
+        }
+        if (ev.code == 29 || ev.code == 97) {            /* ctrl down/up */
+            ctrl = (ev.value != 0); continue;
+        }
+        if (ev.code == 272) {                            /* BTN_LEFT */
+            if (ev.value == 1) {
+                return make_cons(intern("mouse"),
+                       make_cons(FIXNUM(mx), make_cons(FIXNUM(my), Qnil)));
+            }
+            continue;
+        }
+        if (ev.value != 1) { continue; }                 /* key releases */
+        if (ev.code < sizeof(keymap_lo)) {
+            char c = (shift ? keymap_hi : keymap_lo)[ev.code];
+            if (c) {
+                const char *tag = ctrl ? "ctrl" : "char";
+                int ch = ctrl ? (c | 0x20) : c;          /* ctrl: lowercase */
+                return make_cons(intern(tag), make_cons(FIXNUM(ch), Qnil));
+            }
+        }
+    }
+}
+
+/* ---- strings <-> forms (the REPL's plumbing) ------------------------------- */
+
+/* (read-string "src") -> the first form in the string, as data. */
+DEFGFX("read-string", Gread_string, 1, 1) {
+    (void)env;
+    const char *src = req_string(CAR(args), "read-string: expected a string");
+    Reader r;
+    reader_from_string(&r, src, (long)((LString *)PTR(CAR(args)))->len);
+    return lm_read(&r);
+}
+
+/* (string-from-char N) -> a one-character string: how self-insert turns a
+ * cooked (char N) event back into buffer text. */
+DEFGFX("string-from-char", Gstr_from_char, 1, 1) {
+    (void)env;
+    char tmp[2];
+    tmp[0] = (char)req_fixnum(CAR(args), "string-from-char: expected a fixnum");
+    tmp[1] = 0;
+    return make_string(tmp);
+}
+
+/* (prin1-to-string obj) -> obj printed into a string. */
+DEFGFX("prin1-to-string", Gprin1str, 1, 1) {
+    (void)env;
+    static char tmp[1024];
+    lm_print_cstr(CAR(args), tmp, sizeof(tmp));
+    return make_string(tmp);
+}
+
+/* ---- the machine photographs itself ---------------------------------------- */
+
+/* (screenshot "/disk/shot.ppm") -> dump the framebuffer as a binary PPM (P6)
+ * to a file. The fb is just process memory and /disk is the persistent SFS,
+ * so the OS can keep evidence of what its screen looked like. */
+DEFGFX("screenshot", Gscreenshot, 1, 1) {
+    (void)env;
+    const char *path = req_string(CAR(args), "screenshot: expected a path");
+    if (!frame_ready) { return Qnil; }
+    long fd = sys_creat(path);          /* open, creating it if missing */
+    if (fd < 0) { return Qnil; }
+    char hdr[32];
+    int n = 0;
+    const char *p6 = "P6\n1280 720\n255\n";
+    while (p6[n]) { hdr[n] = p6[n]; n++; }
+    sys_write((int)fd, hdr, n);
+    /* One pixel row at a time: 0x00RRGGBB words -> R,G,B bytes. */
+    static unsigned char row[1280 * 3];
+    uint32_t *fb = gi.fb;
+    for (unsigned y = 0; y < gi.h; y++) {
+        for (unsigned x = 0; x < gi.w; x++) {
+            uint32_t px = fb[y * (gi.pitch / 4) + x];
+            row[x * 3 + 0] = (px >> 16) & 0xFF;
+            row[x * 3 + 1] = (px >> 8) & 0xFF;
+            row[x * 3 + 2] = px & 0xFF;
+        }
+        if (sys_write((int)fd, row, (long)(gi.w * 3)) < 0) {
+            sys_close((int)fd);          /* out of space: say so, don't lie */
+            return Qnil;
+        }
+    }
+    sys_close((int)fd);
+    return Qt;
+}
+
+/* ---- registration ----------------------------------------------------------- */
+
+void lm_gfx_register(void)
+{
+    register_Gframe_init();
+    register_Gmake_buffer(); register_Gset_buffer();
+    register_Ginsert(); register_Gdelete_char();
+    register_Gpoint(); register_Gbuflen(); register_Ggoto_char(); register_Gbufsub();
+    register_Gsplit_below(); register_Gsplit_right();
+    register_Gother_window(); register_Gdelete_window();
+    register_Gset_face(); register_Gecho(); register_Gselect_at();
+    register_Gredisplay(); register_Gread_event();
+    register_Gread_string(); register_Gprin1str(); register_Gstr_from_char();
+    register_Gscreenshot();
+}

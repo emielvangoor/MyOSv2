@@ -186,6 +186,7 @@ void lm_longjmp(lm_jmp_buf, int);
  * ================================================================ */
 
 extern Lobj Qnil, Qt, Qquote, Qlambda, Qif, Qdefun, Qsetq, Qprogn, Qwhile;
+extern Lobj Qunbound;   /* "never set" sentinel for symbol value slots */
 extern Lobj Qlet, Qdefmacro, Qand, Qor, Qcond, Qfunction;
 
 #define IS_NIL(obj) ((obj) == Qnil)

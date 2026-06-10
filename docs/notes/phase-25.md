@@ -81,3 +81,33 @@ KTESTs (all red→green): gap-buffer ops across the gap, single-window layout
 (text, truncation, modeline face, echo row), split-below/right geometry,
 damage confined to the edited window (and zero on a no-op redisplay), and
 glyph pixels landing in a real framebuffer with face colors + inverted cursor.
+
+## 25.4 — the Lisp integration: `lisp -frame`
+
+The fusion: `/bin/lisp` now links BOTH cores (lm_core + rd_core), and
+`user/lm_gfx.c` exposes the view to the language — buffers, windows, faces,
+`(redisplay)`, `(read-event)` (raw evdev cooked into `(char N)` / `(ctrl N)` /
+`(mouse X Y)`; what a key IS is C, what it DOES is Lisp), plus `(read-string)`
+and `(prin1-to-string)` so a REPL can be built from parts. `user/lisp/frame.l`
+is the personality: the event loop, the C-x keymap (2/3/0/o), mouse-1 window
+selection, and the REPL as buffer editing — all redefinable from the REPL it
+implements. `lisp -frame` boots it; errors unwind to C and re-enter the loop
+with the image intact.
+
+**The machine photographs itself:** `(screenshot "/shot.ppm")` dumps the
+framebuffer as a PPM through ordinary file syscalls (per the user's idea that
+the OS should be able to screenshot to memory/disk). First use found ramfs's
+exact-fit growth (every append copied the whole file → ~1 GB of copying for
+2.7 MB); ramfs now doubles capacity (amortized O(1) per byte) and frees the
+old buffer instead of leaking it.
+
+Also found live: a global `(setq flag nil)` read back as *unbound*, because
+symbol value slots initialized to `Qnil` and lookup used `Qnil` to mean "no
+binding". The core now has a `Qunbound` sentinel (KTEST `lm: global bound to
+nil`).
+
+Verification: `tools/frame_check.py` boots, starts the frame, **types on the
+QMP keyboard** (`(+ 1 2)` RET, then the screenshot form), screendumps, and
+**decodes the glyphs cell-by-cell against the same font the guest renders
+with** — the check literally reads the screen. The captured frame lives at
+`docs/images/phase-25-graphical-lisp-machine.png`.

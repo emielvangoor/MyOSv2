@@ -84,10 +84,18 @@ static int ramfs_write(struct vnode *vn, uint64_t off, const void *buf, uint64_t
     struct ramfs_node *n = vn->priv;
     uint64_t end = off + len;
     if (end > n->cap) {                  // grow the buffer
-        uint64_t newcap = end < 64 ? 64 : end;
+        // GEOMETRIC growth (double, at least), not exact-fit: growing to
+        // exactly `end` made every append copy the whole file -- writing a
+        // 2.7 MB screenshot in 4 KB chunks copied ~1 GB. Doubling makes the
+        // total copying linear in the final size (amortized O(1) per byte).
+        uint64_t newcap = n->cap * 2;
+        if (newcap < end) { newcap = end; }
+        if (newcap < 64)  { newcap = 64; }
         uint8_t *nd = kmalloc(newcap);
+        if (!nd) { return -1; }          // out of heap: fail, don't corrupt
         for (uint64_t i = 0; i < n->size; i++) { nd[i] = n->data[i]; }
-        n->data = nd;                    // old buffer leaks (accepted)
+        if (n->data) { kfree(n->data); } // no longer leaked
+        n->data = nd;
         n->cap = newcap;
     }
     const uint8_t *b = buf;

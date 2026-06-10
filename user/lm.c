@@ -188,7 +188,8 @@ int umain(int argc, char **argv)
     signal(SIGINT, on_sigint);
 
     lm_boot();
-    lm_sys_register();   /* add the syscall primitives (user build only) */
+    lm_sys_register();   /* the syscall primitives (user build only) */
+    lm_gfx_register();   /* the display primitives (Phase 25.4) */
 
     static Writer out;
     writer_to_fd(&out, 1);
@@ -200,6 +201,16 @@ int umain(int argc, char **argv)
     lm_eval_all_str("(load \"/lib/bootstrap.l\")");
     lm_eval_all_str("(load \"/lib/system.l\")");
 
+    if (argc >= 2 && streq(argv[1], "-frame")) {
+        /* The graphical machine: load the frame library and hand control to
+         * its event loop. An error inside (a typo at the graphical REPL that
+         * escapes its own recovery) unwinds to here -- re-enter the loop with
+         * the image intact rather than dying. */
+        lm_eval_all_str("(load \"/lib/frame.l\")");
+        for (;;) {
+            lm_eval_all_str("(frame-main)");
+        }
+    }
     if (argc >= 2 && streq(argv[1], "-serve")) {
         int port = 7777;       /* NOT 7000: macOS AirPlay squats on 7000 */
         if (argc >= 3) {

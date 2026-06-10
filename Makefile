@@ -30,7 +30,7 @@ DEP  := $(OBJ:.o=.d)
 # segments at load/exec time.
 PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest
 # The .l files embedded into the kernel and unpacked to /lib by the initrd.
-LISP_FILES  := bootstrap system
+LISP_FILES  := bootstrap system frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
@@ -102,10 +102,10 @@ $(BUILD)/user/%.elf: user/%.c $(USER_COMMON) user/user.ld user/ulib.h user/sysca
 # sources and -Isrc to find lm.h. lm_sys.c (the syscall primitives) is USER-ONLY:
 # the kernel build of the core must never see it. This explicit rule overrides
 # the generic one above for lm.elf.
-LM_CORE := src/lm_core.c src/lm_jmp.S
-$(BUILD)/user/lm.elf: user/lm.c user/lm_sys.c user/lm_sys.h $(LM_CORE) src/lm.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
+LM_CORE := src/lm_core.c src/lm_jmp.S src/rd_core.c
+$(BUILD)/user/lm.elf: user/lm.c user/lm_sys.c user/lm_sys.h user/lm_gfx.c $(LM_CORE) src/lm.h src/rd.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
 	mkdir -p $(BUILD)/user
-	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c
+	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c user/lm_gfx.c
 
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
 $(BUILD)/user_blob.c: $(USER_ELFS)

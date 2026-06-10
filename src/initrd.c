@@ -42,6 +42,7 @@ extern unsigned char gfxtest_elf[]; extern unsigned int gfxtest_elf_len;
 // The embedded Lisp source (from user/lisp/*.l, via build/lisp_blob.c).
 extern unsigned char bootstrap_l[]; extern unsigned int bootstrap_l_len;
 extern unsigned char system_l[];    extern unsigned int system_l_len;
+extern unsigned char frame_l[];     extern unsigned int frame_l_len;
 
 // Write an embedded program into the filesystem at `path`.
 static void add_prog(const char *path, const void *data, uint64_t len)
@@ -91,4 +92,5 @@ void initrd_unpack(void)
     vfs_create("/lib", VN_DIR);
     add_prog("/lib/bootstrap.l", bootstrap_l, (uint64_t)bootstrap_l_len);
     add_prog("/lib/system.l",    system_l,    (uint64_t)system_l_len);
+    add_prog("/lib/frame.l",     frame_l,     (uint64_t)frame_l_len);
 }

@@ -24,6 +24,7 @@
  * ================================================================ */
 
 Lobj Qnil, Qt, Qquote, Qlambda, Qif, Qdefun, Qsetq, Qprogn, Qwhile;
+Lobj Qunbound;   // the "no value" sentinel (see env_lookup)
 Lobj Qlet, Qdefmacro, Qand, Qor, Qcond, Qfunction;
 
 GC gc = { .objects = 0, .alloc_count = 0, .gc_threshold = 20000, .lo = 0, .hi = 0 };
@@ -326,7 +327,7 @@ Lobj make_symbol(const char *name)
 {
     Symbol *s = gc_alloc(sizeof(Symbol), TAG_SYMBOL);
     s->name = lm_strdup(name);
-    s->value = Qnil; s->function = Qnil;
+    s->value = Qunbound; s->function = Qnil;
     return TAGGED(s, TAG_SYMBOL);
 }
 
@@ -372,7 +373,9 @@ Lobj env_lookup(Lobj sym, Lobj env)
         if (CAR(pair) == sym) { return CDR(pair); }
     }
     Symbol *s = PTR(sym);
-    if (s->value != Qnil || sym == Qnil) { return s->value; }
+    // Qunbound (not Qnil) marks "never set": a global CAN legitimately hold
+    // nil -- (setq flag nil) -- and must read back as nil, not as an error.
+    if (s->value != Qunbound) { return s->value; }
     lm_error("unbound variable", sym);
     return Qnil;
 }
@@ -970,7 +973,13 @@ void lm_boot(void)
     gc.objects = 0; gc.alloc_count = 0; gc.lo = 0; gc.hi = 0;
     symtab_count = 0; global_env = 0;
 
+    // The unbound sentinel must exist before anything else is interned, and
+    // before Qnil exists make_symbol writes garbage into value slots -- so
+    // intern it first and repair its own slot, then give nil and t theirs.
+    Qunbound = intern("--unbound--");
+    ((Symbol *)PTR(Qunbound))->value = Qunbound;
     Qnil = intern("nil");
+    ((Symbol *)PTR(Qnil))->value = Qnil;
     Qt = intern("t");
     ((Symbol *)PTR(Qt))->value = Qt;
     Qquote = intern("quote"); Qlambda = intern("lambda"); Qif = intern("if");

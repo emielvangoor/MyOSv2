@@ -3,3 +3,4 @@
  * wrap, so this must never be included from kernel code. */
 #pragma once
 void lm_sys_register(void);
+void lm_gfx_register(void);   /* display primitives (user/lm_gfx.c) */

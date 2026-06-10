@@ -471,7 +471,9 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
   screendump-verified (`tools/gfx_check.py`).
 - ✅ **25.3 — rd_core**: gap buffers, window tree, faces, glyph-matrix
   layout + cell-diff damage, font painting — dual-built, 6 KTESTs red→green.
-- ☐ **25.4 — Lisp integration**: `lm_gfx.c` + `frame.l`; `lisp -frame`; REPL-as-buffer.
+- ✅ **25.4 — Lisp integration**: `lm_gfx.c` + `frame.l`; `lisp -frame` boots
+  the graphical REPL; in-OS `(screenshot)`; glyph-level screendump check
+  (`tools/frame_check.py`); see `docs/images/phase-25-graphical-lisp-machine.png`.
 - ☐ **25.5 — the seat**: multi-VM + Ctrl-Alt-Fn / `(switch-seat n)` switching.
 - ☐ **25.6 — surface buffers**: shm pixel canvases + `(run-in-buffer ...)`.
 

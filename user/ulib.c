@@ -29,6 +29,7 @@ static long syscall5(long n, long a0, long a1, long a2, long a3, long a4)
 long sys_write(int fd, const void *b, long n) { return syscall3(SYS_WRITE, fd, (long)b, n); }
 long sys_read(int fd, void *b, long n)        { return syscall3(SYS_READ, fd, (long)b, n); }
 long sys_open(const char *p)                  { return syscall3(SYS_OPEN, (long)p, 0, 0); }
+long sys_creat(const char *p)                 { return syscall3(SYS_OPEN, (long)p, 1, 0); }
 long sys_close(int fd)                        { return syscall3(SYS_CLOSE, fd, 0, 0); }
 void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }

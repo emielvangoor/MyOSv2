@@ -48,12 +48,16 @@ long do_syscall(struct trapframe *tf)
         } else { ret = -1; }
         break;
     }
-    case SYS_OPEN: {                        // x0 = path
+    case SYS_OPEN: {                        // x0 = path, x1 = 1 -> create if missing
         const char *path = (const char *)(uintptr_t)tf->x[0];
         struct file **fds = sched_current_fds();
         ret = -1;
         if (fds) {
             struct file *f = vfs_open(path);
+            if (!f && tf->x[1] == 1) {      // creat(): make it, then open it
+                vfs_create(path, VN_FILE);
+                f = vfs_open(path);
+            }
             if (f) {
                 for (int i = 3; i < 16; i++) {
                     if (!fds[i]) { fds[i] = f; ret = i; break; }

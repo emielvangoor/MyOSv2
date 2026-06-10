@@ -2385,6 +2385,21 @@ static void test_lm_rest_params(void)
     KASSERT(lm_is("(setq | 5) |", "5"));
 }
 
+static void test_lm_global_nil_binding(void)
+{
+    lm_fresh();
+    // A global set to nil is BOUND-to-nil, not unbound. Found live: frame.l's
+    // (setq pending-cx nil) made every later read of pending-cx an unbound-
+    // variable error, because symbol value slots initialized to Qnil and the
+    // lookup used Qnil to mean "no binding". An explicit unbound sentinel
+    // separates the two.
+    KASSERT(lm_is("(setq flag nil) (if flag 1 2)", "2"));
+    KASSERT(lm_is("(setq flag2 nil) flag2", "nil"));
+    // Genuinely unbound still errors (and recovers).
+    Lobj r = lm_eval_cstr("definitely-not-bound");
+    KASSERT(r == Qnil);
+}
+
 static void test_lm_eval_primitive(void)
 {
     lm_fresh();
@@ -2427,6 +2442,7 @@ static const struct ktest tests[] = {
     { "lm: errors go to lm_cur_out",     test_lm_error_goes_to_cur_out },
     { "lm: rest params + | symbol",      test_lm_rest_params },
     { "lm: eval primitive",              test_lm_eval_primitive },
+    { "lm: global bound to nil",         test_lm_global_nil_binding },
     { "pmm: pages aligned & contiguous", test_pmm_aligned_and_contiguous },
     { "pmm: freed page reused",          test_pmm_free_reuse },
     { "pmm: alloc_pages contiguous run", test_pmm_alloc_pages_contiguous },

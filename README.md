@@ -107,6 +107,13 @@ deadlines; just building it one piece at a time and enjoying the ride.
   BGRX framebuffer into a process; `gfx_flush` pushes damage rects to the
   scanout. `/bin/gfxtest` paints the screen from userland, verified down to
   exact pixels by a QMP screendump check.
+- **The graphical Lisp machine** — `lisp -frame` boots an Emacs-style frame:
+  tiled windows showing buffers, modelines, an echo area, a block cursor — the
+  redisplay engine (`src/rd_core.c`, glyph matrices + damage diff) is C; the
+  event loop, keymaps (`C-x 2/3/0/o`), mouse handling and the REPL itself are
+  **live Lisp** (`frame.l`) you can redefine from that very REPL. The machine
+  can photograph itself: `(screenshot "/shot.ppm")`.
+  ![the graphical Lisp machine](docs/images/phase-25-graphical-lisp-machine.png)
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to

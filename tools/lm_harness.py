@@ -141,6 +141,35 @@ def qmp_tablet(x: int, y: int):
         {"type": "abs", "data": {"axis": "y", "value": y}}]})
 
 
+_QCODE = {  # ascii -> (qcode, needs_shift)
+    **{c: (c, False) for c in "abcdefghijklmnopqrstuvwxyz0123456789"},
+    **{c.upper(): (c, True) for c in "abcdefghijklmnopqrstuvwxyz"},
+    " ": ("spc", False), "\n": ("ret", False),
+    "(": ("9", True), ")": ("0", True), "+": ("equal", True),
+    "-": ("minus", False), "=": ("equal", False), "*": ("8", True),
+    '"': ("apostrophe", True), "'": ("apostrophe", False),
+    "/": ("slash", False), ".": ("dot", False), ",": ("comma", False),
+    "!": ("1", True), "?": ("slash", True), ";": ("semicolon", False),
+    ":": ("semicolon", True), "<": ("comma", True), ">": ("dot", True),
+}
+
+
+def qmp_type(text: str, delay: float = 0.05):
+    """Type a whole string on the virtio keyboard, shift and all."""
+    for ch in text:
+        qcode, shifted = _QCODE[ch]
+        if shifted:
+            qmp("input-send-event", {"events": [
+                {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "shift"}}},
+                {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": qcode}}}]})
+            qmp("input-send-event", {"events": [
+                {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": qcode}}},
+                {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "shift"}}}]})
+        else:
+            qmp_key(qcode)
+        time.sleep(delay)
+
+
 def qmp_screendump(path: str):
     """Dump the current scanout (display 0) to a binary PPM file."""
     qmp("screendump", {"filename": path})
