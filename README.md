@@ -180,7 +180,7 @@ photograph itself: `(screenshot "/shot.ppm")`.
   stream output, and C-c interrupts a whole job -- the kernel grew Unix
   **process groups** (`setpgid`, `kill -pgid`) so the frame's Ctrl-C
   reaches the program doing the work, not just the wrapper that forked it.
-  ![the Utah teapot in a buffer](docs/images/phase-26-teapot.png)
+  ![the Utah teapot spinning in a buffer while ping streams into the REPL](docs/images/phase-26-teapot.png)
 - **M-x + describe-function, vertico-style** — the echo area grows into a
   live-narrowing command palette over the image's own symbol table; `C-h f`
   shows a function's *living source* in a `*Help*` window, ready to redefine.
