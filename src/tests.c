@@ -1297,8 +1297,10 @@ static void test_rd_gap_buffer(void)
     KASSERT(rd_buf_char_at(&b, 99) == -1);
 }
 
-// A 640x320 frame = 53x13 cells (12x24 AA font): rows 0..11 the (single)
-// window, of which row 11 is its modeline; row 12 the echo area.
+// A 640x320 frame in RD_CELL_W x RD_CELL_H cells: the single window's last
+// row is its modeline (rows-2 of the frame); the frame's last row is the echo
+// area. Geometry is computed from the cell constants so font changes don't
+// invalidate the tests.
 static struct rd_frame rdf;
 static struct rd_buffer rdb, rdb2;
 static char rdb_store[512], rdb2_store[512];
@@ -1316,25 +1318,26 @@ static void test_rd_single_window_layout(void)
     rd_buf_insert(&rdb, "hi");
     rd_echo(&rdf, "ok");
     rd_layout(&rdf);
-    KASSERT(rdf.cols == 53 && rdf.rows == 13);
+    KASSERT(rdf.cols == 640 / RD_CELL_W && rdf.rows == 320 / RD_CELL_H);
     KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'h');
     KASSERT(rd_cell_at(&rdf, 1, 0)->ch == 'i');
     KASSERT(rd_cell_at(&rdf, 2, 0)->ch == ' ');
-    // The modeline (row 11) carries the buffer name in face 1.
+    // The modeline (the window's last row) carries the buffer name in face 1.
+    int ml = rdf.rows - 2, echo_row = rdf.rows - 1;
     int found = 0;
-    for (int c = 0; c < 53 - 9; c++) {
-        if (rd_cell_at(&rdf, c, 11)->ch == '*' &&
-            rd_cell_at(&rdf, c + 1, 11)->ch == 's') { found = 1; }
+    for (int c = 0; c < rdf.cols - 9; c++) {
+        if (rd_cell_at(&rdf, c, ml)->ch == '*' &&
+            rd_cell_at(&rdf, c + 1, ml)->ch == 's') { found = 1; }
     }
     KASSERT(found);
-    KASSERT(rd_cell_at(&rdf, 0, 11)->face == 1);
+    KASSERT(rd_cell_at(&rdf, 0, ml)->face == 1);
     // Echo area on the frame's last row, default face.
-    KASSERT(rd_cell_at(&rdf, 0, 12)->ch == 'o' && rd_cell_at(&rdf, 1, 12)->ch == 'k');
+    KASSERT(rd_cell_at(&rdf, 0, echo_row)->ch == 'o' && rd_cell_at(&rdf, 1, echo_row)->ch == 'k');
     // A long line truncates at the window edge (no wrap in v1).
     rd_buf_set_point(&rdb, rd_buf_len(&rdb));
     for (int i = 0; i < 30; i++) { rd_buf_insert(&rdb, "0123456789"); }
     rd_layout(&rdf);
-    KASSERT(rd_cell_at(&rdf, 52, 0)->ch != ' ');   // filled to the edge...
+    KASSERT(rd_cell_at(&rdf, rdf.cols - 1, 0)->ch != ' ');   // filled to the edge...
     KASSERT(rd_cell_at(&rdf, 0, 1)->ch == ' ');    // ...but never wrapped
 }
 
@@ -1372,7 +1375,7 @@ static void test_rd_split_right(void)
     rd_layout(&rdf);
     KASSERT(rd_cell_at(&rdf, 0, 0)->ch == 'L');
     int bcol = rdf.selected->x;
-    KASSERT(bcol >= 25 && bcol <= 28);
+    KASSERT(bcol >= rdf.cols / 2 - 1 && bcol <= rdf.cols / 2 + 1);
     KASSERT(rd_cell_at(&rdf, bcol, 0)->ch == 'R');
 }
 

@@ -20,7 +20,7 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-CELL_W, CELL_H = 12, 24
+CELL_W, CELL_H = 12, 24                  # overridden by argv[3] argv[4]
 
 
 def pick_size(path):
@@ -39,7 +39,10 @@ def pick_size(path):
 
 
 def main():
+    global CELL_W, CELL_H
     font_path, out_path = sys.argv[1], sys.argv[2]
+    if len(sys.argv) >= 5:
+        CELL_W, CELL_H = int(sys.argv[3]), int(sys.argv[4])
     size, font, ascent, descent = pick_size(font_path)
     name = "/".join(font.getname())
     print(f"{name} at {size}pt (ascent {ascent}, descent {descent}) "

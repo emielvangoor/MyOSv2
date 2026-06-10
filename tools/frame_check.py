@@ -19,7 +19,10 @@ import time
 sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp_type, qmp_screendump
 
-CELL_W, CELL_H = 12, 24
+import re as _re
+_hdr = open("src/font_aa.h").read()
+CELL_W = int(_re.search(r"#define FONT_AA_W (\d+)", _hdr).group(1))
+CELL_H = int(_re.search(r"#define FONT_AA_H (\d+)", _hdr).group(1))
 FG = (0xD5, 0xC4, 0xA1)          # rd_core default face
 BG = (0x1D, 0x20, 0x21)
 

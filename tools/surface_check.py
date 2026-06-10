@@ -19,9 +19,12 @@ sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp_type, qmp_screendump
 from frame_check import read_ppm
 
-# 1280x720 frame at 12x24 cells: 30 rows, 29 for windows. split-below ->
-# a gets 14 rows, the bottom window starts at cell row 14 -> pixel y 336.
-SURF_Y = 14 * 24
+from frame_check import CELL_H
+# split-below: the bottom window starts where a's 50% share of the window
+# area (frame rows minus the echo line) ends. Computed, not hardcoded, so
+# font/cell changes don't move the assertion.
+_ROWS = 720 // CELL_H
+SURF_Y = ((_ROWS - 1) * 50 // 100) * CELL_H
 
 
 def px(data, w, x, y):

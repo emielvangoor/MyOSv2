@@ -207,7 +207,13 @@ int umain(int argc, char **argv)
          * escapes its own recovery) unwinds to here -- re-enter the loop with
          * the image intact rather than dying. */
         lm_eval_all_str("(load \"/lib/frame.l\")");
+        /* The restart loop belongs to THE frame process alone: a forked
+         * pipeline child that hits an error would otherwise unwind into this
+         * loop, re-enter frame-main, and scribble its own banner over the
+         * SHARED framebuffer. Children must die, not redisplay. */
+        long frame_pid = sys_getpid();
         for (;;) {
+            if (sys_getpid() != frame_pid) { sys_exit(1); }
             lm_eval_all_str("(frame-main)");
         }
     }

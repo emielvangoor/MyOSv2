@@ -204,8 +204,9 @@ struct addrspace *as_create_image(const void *img, uint64_t len)
         page_incref(pa);
     }
 
-    // Private stack: 16 pages ending at USER_STACK_TOP, freshly allocated.
-    for (uint64_t i = 1; i <= 16; i++) {
+    // Private stack: 64 pages (256 KiB) ending at USER_STACK_TOP. 16 pages
+    // proved too tight for a recursive-evaluator Lisp under load.
+    for (uint64_t i = 1; i <= 64; i++) {
         uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
         map_page(as->l0, USER_STACK_TOP - i * PAGE, pa, rw_attr);
         page_incref(pa);
@@ -242,10 +243,11 @@ struct addrspace *as_create_elf(const void *img, uint64_t len, uint64_t *entry)
         return 0;
     }
 
-    // Private stack: 16 pages ending at USER_STACK_TOP, freshly allocated.
+    // Private stack: 64 pages (256 KiB) ending at USER_STACK_TOP. 16 pages
+    // proved too tight for a recursive-evaluator Lisp under load.
     uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
                   ATTR_UXN | ATTR_PXN | ATTR_NG;
-    for (uint64_t i = 1; i <= 16; i++) {
+    for (uint64_t i = 1; i <= 64; i++) {
         uint64_t pa = (uint64_t)(uintptr_t)pmm_alloc();
         map_page(as->l0, USER_STACK_TOP - i * PAGE, pa, rw);
         page_incref(pa);

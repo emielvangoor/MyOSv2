@@ -176,3 +176,24 @@ Grid changed from 160×45 to 106×30 cells. The KTESTs moved to AA-tolerant
 assertions (pixels *closer to fg than bg*), and the boot-and-observe glyph
 decoders in `tools/` now threshold against `font_aa.h` — the checks literally
 read EmielPro off the screendump.
+
+## Post-25: the GC stack-overflow incident
+
+First sustained use of the graphical machine produced a banner suddenly
+appearing mid-buffer (a frame-main restart), and the reproduction found worse:
+`User data abort at 0x80000effb0` — a write ~3 MB below the user stack.
+**`gc_mark` recursed once per cons**, so collecting a long list recursed as
+deep as the list is long and blew through the 16-page stack mid-GC.
+
+Fixes, all three:
+- `gc_mark` now **iterates down cdr (and symbol-value) chains** and recurses
+  only into cars: O(1) stack in list length, O(nesting) in tree depth.
+- User stacks grew 16 → 64 pages (256 KiB) — a recursive-evaluator Lisp
+  deserves headroom.
+- The `-frame` restart loop checks `getpid()`: a forked pipeline child that
+  errors now dies instead of unwinding into frame-main and scribbling its
+  banner over the SHARED framebuffer.
+
+Also: the font is now **Zed Mono** at 10×20 (the generator takes cell size on
+the command line), and the geometry-dependent KTESTs/checks compute from the
+cell constants, so font swaps no longer touch them.

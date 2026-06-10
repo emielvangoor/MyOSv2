@@ -151,6 +151,7 @@ _QCODE = {  # ascii -> (qcode, needs_shift)
     "/": ("slash", False), ".": ("dot", False), ",": ("comma", False),
     "!": ("1", True), "?": ("slash", True), ";": ("semicolon", False),
     ":": ("semicolon", True), "<": ("comma", True), ">": ("dot", True),
+    "|": ("backslash", True), "\\": ("backslash", False), "_": ("minus", True),
 }
 
 

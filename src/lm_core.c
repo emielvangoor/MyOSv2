@@ -223,22 +223,30 @@ void *gc_alloc(size_t size, int tag)
  * tag a conservative caller guessed) so misread bits can never drive recursion. */
 static void gc_mark_ptr(void *ptr)
 {
-    if (!ptr) { return; }
-    Cons *c = ptr;
-    if (c->mark) { return; }
-    c->mark = 1;
-    switch (c->type) {
-    case TAG_CONS:
-    case TAG_LAMBDA:
-        gc_mark(((Cons *)ptr)->car);
-        gc_mark(((Cons *)ptr)->cdr);
-        break;
-    case TAG_SYMBOL:
-        gc_mark(((Symbol *)ptr)->value);
-        gc_mark(((Symbol *)ptr)->function);
-        break;
-    default: /* string, primitive: leaves */
-        break;
+    // ITERATE down cdr chains; recurse only into cars. Marking is then O(1)
+    // C stack in list LENGTH and only O(depth) in tree NESTING -- found live:
+    // recursing per cons, collecting a few-hundred-thousand-cons list chewed
+    // through the 64 KiB user stack and killed the machine mid-GC.
+    while (ptr) {
+        Cons *c = ptr;
+        if (c->mark) { return; }
+        c->mark = 1;
+        Lobj next;
+        switch (c->type) {
+        case TAG_CONS:
+        case TAG_LAMBDA:
+            gc_mark(c->car);                    // nesting depth: bounded
+            next = c->cdr;                      // list length: iterate
+            break;
+        case TAG_SYMBOL:
+            gc_mark(((Symbol *)ptr)->function);
+            next = ((Symbol *)ptr)->value;
+            break;
+        default: /* string, primitive: leaves */
+            return;
+        }
+        if (IS_FIXNUM(next)) { return; }
+        ptr = PTR(next);
     }
 }
 
