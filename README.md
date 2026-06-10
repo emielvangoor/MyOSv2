@@ -1,11 +1,60 @@
-# MyOSv2
+# MyOSv2 — a graphical Lisp machine on a Unix-shaped kernel
 
-A little operating system for **ARM64 (AArch64)**, written from scratch in C and
-assembly, running on QEMU's `virt` board.
+A little operating system for **ARM64 (AArch64)**, written from scratch in C,
+assembly and Lisp, running on QEMU's `virt` board. It boots into a live,
+redefinable **Lisp image** that is simultaneously the init process, the shell,
+and — since Phase 25 — an Emacs-style **graphical machine**: tiled windows,
+buffers, anti-aliased text, a vertico-style `M-x`, and external programs
+rendering into buffers.
+
+![the graphical Lisp machine](docs/images/phase-25-graphical-lisp-machine.png)
+![M-x, vertico-style](docs/images/phase-25-mx-vertico.png)
 
 This is a **vibe-coded OS, built just for fun** — to learn how computers and
-operating systems actually work, and to see how far we can get. No grand plan, no
-deadlines; just building it one piece at a time and enjoying the ride.
+operating systems actually work, and to see how far we can get. No grand plan,
+no deadlines; just building it one piece at a time and enjoying the ride.
+
+## Architecture: three layers, three languages of responsibility
+
+**1. The kernel (C) — mechanism, never policy.** A classic Unix-shaped kernel:
+MMU with per-process page tables and ASID-tagged TLBs, fork with copy-on-write,
+an ELF64 loader with the full exec/exit/wait lifecycle, a VFS (ramfs, initrd,
+an on-disk FS), pipes, signals, a BSD-style socket API over a from-scratch
+TCP/IP stack, and virtio drivers (block, net, **gpu, input**) on a shared
+virtio-mmio transport. Everything is interrupt-driven — blocked readers sleep
+and are woken, never polled. The kernel knows nothing about Lisp, buffers or
+windows; its entire graphics vocabulary is four syscalls (`gfx_acquire`,
+`gfx_flush`, `input_read`, `seat_switch`) plus a **seat** table that decides
+which process owns the screen — the Linux virtual-terminal model, so several
+complete Lisp machines can share the display and swap with Ctrl-Alt-Fn.
+
+**2. The Lisp machine (`/bin/lisp`) — the userland IS a live image.** The
+language core (`src/lm_core.c`: reader, evaluator, printer, mark-and-sweep GC
+with conservative C-stack scanning, Lisp-2 with closures and macros) is one
+portable, libc-free file compiled BOTH into the kernel — so the in-kernel test
+suite red-greens the language itself — and into `/bin/lisp`, where syscall
+primitives (`user/lm_sys.c`) expose fork/exec/wait/pipes/sockets to Lisp.
+PID 1 is this Lisp machine: the OS boots into a REPL whose shell (`system.l`)
+runs ELF programs and real pipelines as S-expressions, and whose network REPL
+(`lisp -serve`) lets Doom Emacs eval forms into the running OS over TCP. The
+image persists, accretes, and can be redefined while it runs — the Emacs
+architecture applied to an operating system.
+
+**3. The graphics subsystem — Emacs, all the way down.** The redisplay engine
+(`src/rd_core.c`, dual-built like the Lisp core) implements **glyph matrices**:
+Lisp mutates buffers (gap buffers), a window tree and faces; redisplay lays
+them out into a cell grid, diffs against what's on screen, paints only changed
+cells with prerendered **anti-aliased TTF glyphs** (integer alpha blending —
+the FPU is never enabled), and flushes minimal damage rects to virtio-gpu.
+Everything above the engine is live Lisp in `frame.l`: the event loop, the
+`C-x` keymaps, mouse handling, the REPL-as-buffer, and a vertico-style
+minibuffer where `M-x` completes over the image's own symbol table and
+`C-h f` shows a function's *living source* — the very lambda the machine runs.
+A buffer can also be a **pixel surface** an external ELF renders into via
+shared memory (`(run-in-buffer ...)`) — EXWM, native. And the machine can
+photograph itself: `(screenshot "/shot.ppm")`.
+
+![a surface buffer: an external program rendering into the frame](docs/images/phase-25-surface-buffer.png)
 
 ## What it can do today
 
@@ -121,9 +170,6 @@ deadlines; just building it one piece at a time and enjoying the ride.
 - **M-x + describe-function, vertico-style** — the echo area grows into a
   live-narrowing command palette over the image's own symbol table; `C-h f`
   shows a function's *living source* in a `*Help*` window, ready to redefine.
-  ![M-x vertico](docs/images/phase-25-mx-vertico.png)
-  ![the graphical Lisp machine](docs/images/phase-25-graphical-lisp-machine.png)
-  ![a surface buffer](docs/images/phase-25-surface-buffer.png)
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to
