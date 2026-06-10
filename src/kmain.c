@@ -58,6 +58,11 @@ void kmain(void)
     // tests that REFORMAT the disk are skipped on a normal boot (so persistent
     // data survives) but run under `make test` (-DTEST_EXIT), which also exits
     // QEMU with a status code. A normal boot halts on any failure.
+    // --- FPU first: the scheduler now saves/restores V registers on every
+    // switch, and the self-tests below exercise it -- FP instructions must
+    // not trap from the very first context switch. ---
+    fpu_enable();
+
     int failed = run_self_tests();
 #ifdef TEST_EXIT
     qemu_exit(failed == 0 ? 0 : 1);

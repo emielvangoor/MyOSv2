@@ -27,6 +27,9 @@ enum thread_state {
 
 struct thread {
     struct context ctx;    // MUST be first: switch.S uses &thread (== &thread->ctx)
+    // FP/SIMD state (32 V regs + FPCR/FPSR), saved eagerly at context switch.
+    // 16-aligned because fp.S uses stp q-pairs.
+    uint8_t fp[528] __attribute__((aligned(16)));
     uint8_t *stack;        // kmalloc'd stack base (NULL for the idle thread)
     enum thread_state state;
     int id;
@@ -45,6 +48,9 @@ struct thread {
 
 // Assembly (switch.S):
 void cpu_switch(struct context *old, struct context *newc);
+void fpu_enable(void);                 // CPACR_EL1.FPEN: stop trapping FP/SIMD
+void fp_save(void *area);              // fp.S: V regs + FPCR/FPSR
+void fp_restore(const void *area);
 void thread_trampoline(void);
 void user_entry_trampoline(void);   // assembly (usermode.S): drops a thread to EL0
 

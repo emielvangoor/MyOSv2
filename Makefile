@@ -28,14 +28,16 @@ DEP  := $(OBJ:.o=.d)
 # embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
 # and unpacked into /bin by the initrd. The kernel's ELF loader maps their
 # segments at load/exec time.
-PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest
+PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest
 # The .l files embedded into the kernel and unpacked to /lib by the initrd.
 LISP_FILES  := bootstrap system frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
 # AArch64 default 64 KiB, so PT_LOAD vaddrs/offsets are page-aligned and small.
-USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -mgeneral-regs-only -Wall -O2 \
+# No -mgeneral-regs-only here (unlike CFLAGS): the FPU is enabled and its
+# state is context-switched, so user programs may use floats and NEON.
+USER_CFLAGS := -ffreestanding -nostdlib -nostartfiles -Wall -O2 \
                -Wl,-z,max-page-size=0x1000
 
 QEMU       := qemu-system-aarch64

@@ -390,6 +390,12 @@ void schedule(void)
     if (best->as) {
         as_switch(best->as);         // install the process's page tables (TTBR0)
     }
+    // FP state crosses threads ONLY here: the kernel never touches the V
+    // registers (-mgeneral-regs-only), so whatever user FP state was live at
+    // the trap survives kernel code untouched, and one save/restore pair per
+    // switch keeps every thread's floats private.
+    fp_save(prev->fp);
+    fp_restore(best->fp);
     cpu_switch(&prev->ctx, &best->ctx);
 }
 
