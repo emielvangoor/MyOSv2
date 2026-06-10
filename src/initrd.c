@@ -38,6 +38,7 @@ extern unsigned char polldemo_elf[]; extern unsigned int polldemo_elf_len;
 extern unsigned char lm_elf[];      extern unsigned int lm_elf_len;
 extern unsigned char evtest_elf[];  extern unsigned int evtest_elf_len;
 extern unsigned char gfxtest_elf[]; extern unsigned int gfxtest_elf_len;
+extern unsigned char surftest_elf[]; extern unsigned int surftest_elf_len;
 
 // The embedded Lisp source (from user/lisp/*.l, via build/lisp_blob.c).
 extern unsigned char bootstrap_l[]; extern unsigned int bootstrap_l_len;
@@ -86,6 +87,7 @@ void initrd_unpack(void)
     add_prog("/bin/lisp", lm_elf, (uint64_t)lm_elf_len);
     add_prog("/bin/evtest", evtest_elf, (uint64_t)evtest_elf_len);
     add_prog("/bin/gfxtest", gfxtest_elf, (uint64_t)gfxtest_elf_len);
+    add_prog("/bin/surftest", surftest_elf, (uint64_t)surftest_elf_len);
 
     // The Lisp standard library (bootstrap.l = the language, system.l = the
     // shell), loaded by /bin/lisp at startup.

@@ -28,6 +28,7 @@ static struct rd_buffer bufs[NBUFS];
 static char buf_store[NBUFS][BUF_CAP];
 static int buf_used[NBUFS];
 
+static int buf_shm[NBUFS];          /* shm handle per surface buffer (-1 = none) */
 static struct gfx_info gi;          /* the mapped framebuffer */
 static int frame_ready;
 
@@ -139,6 +140,93 @@ DEFGFX("buffer-substring", Gbufsub, 2, 2) {
     }
     tmp[n] = 0;
     return make_string(tmp);
+}
+
+/* ---- surface buffers: the EXWM move (Phase 25.6) -------------------------- */
+
+/* (make-surface-buffer "name" w h) -> handle. The buffer's content is a PIXEL
+ * CANVAS in shared memory instead of text: in-image Lisp draws into it with
+ * surface-fill-rect, or an external program maps the same shm and renders
+ * (run-in-buffer). rd_core blits it into the window each redisplay. */
+DEFGFX("make-surface-buffer", Gmake_surface, 3, 3) {
+    (void)env;
+    const char *name = req_string(nth_arg(args, 0), "make-surface-buffer: name");
+    int w = (int)req_fixnum(nth_arg(args, 1), "make-surface-buffer: w");
+    int h = (int)req_fixnum(nth_arg(args, 2), "make-surface-buffer: h");
+    if (w < 1 || h < 1 || w > (int)gi.w || h > (int)gi.h) {
+        lm_error("make-surface-buffer: bad size", nth_arg(args, 1));
+    }
+    for (int i = 0; i < NBUFS; i++) {
+        if (!buf_used[i]) {
+            int handle = shm_create((unsigned long)w * h * 4);
+            if (handle < 0) { return Qnil; }
+            void *cv = shm_map(handle);
+            if (!cv) { return Qnil; }
+            buf_used[i] = 1;
+            rd_buf_init(&bufs[i], name, buf_store[i], BUF_CAP);
+            bufs[i].kind = RD_SURFACE;
+            bufs[i].canvas = cv; bufs[i].cv_w = w; bufs[i].cv_h = h;
+            buf_shm[i] = handle;
+            return FIXNUM(i);
+        }
+    }
+    return Qnil;
+}
+
+/* (surface-fill-rect buf x y w h color) -- draw from Lisp (color 0x00RRGGBB). */
+DEFGFX("surface-fill-rect", Gsurf_fill, 6, 6) {
+    (void)env;
+    int i = (int)req_fixnum(nth_arg(args, 0), "surface-fill-rect: buffer");
+    if (i < 0 || i >= NBUFS || !buf_used[i] || bufs[i].kind != RD_SURFACE) {
+        lm_error("surface-fill-rect: not a surface buffer", nth_arg(args, 0));
+    }
+    struct rd_buffer *b = &bufs[i];
+    int x = (int)req_fixnum(nth_arg(args, 1), "x"), y = (int)req_fixnum(nth_arg(args, 2), "y");
+    int w = (int)req_fixnum(nth_arg(args, 3), "w"), h = (int)req_fixnum(nth_arg(args, 4), "h");
+    uint32_t c = (uint32_t)req_fixnum(nth_arg(args, 5), "color");
+    for (int yy = y; yy < y + h && yy < b->cv_h; yy++) {
+        if (yy < 0) { continue; }
+        for (int xx = x; xx < x + w && xx < b->cv_w; xx++) {
+            if (xx >= 0) { b->canvas[yy * b->cv_w + xx] = c; }
+        }
+    }
+    return Qt;
+}
+
+/* (run-in-buffer buf "prog") -> pid: fork+exec /bin/<prog> handing it the
+ * canvas as argv: <prog> <shm-handle> <w> <h>. The program shm_map()s the
+ * handle and draws; its pixels appear in the buffer's window. A tiny Wayland
+ * client's contract, but the "window" is an Emacs buffer. */
+static void itoa10(long v, char *out)
+{
+    char tmp[16]; int n = 0;
+    if (v == 0) { tmp[n++] = '0'; }
+    while (v > 0) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
+    int i = 0;
+    while (n > 0) { out[i++] = tmp[--n]; }
+    out[i] = 0;
+}
+DEFGFX("run-in-buffer", Grun_in_buffer, 2, 2) {
+    (void)env;
+    int i = (int)req_fixnum(nth_arg(args, 0), "run-in-buffer: buffer");
+    const char *prog = req_string(nth_arg(args, 1), "run-in-buffer: program");
+    if (i < 0 || i >= NBUFS || !buf_used[i] || bufs[i].kind != RD_SURFACE) {
+        lm_error("run-in-buffer: not a surface buffer", nth_arg(args, 0));
+    }
+    char path[64], hs[16], ws[16], hh[16];
+    int n = 0;
+    const char *pre = "/bin/";
+    while (pre[n]) { path[n] = pre[n]; n++; }
+    for (int j = 0; prog[j] && n < 62; j++) { path[n++] = prog[j]; }
+    path[n] = 0;
+    itoa10(buf_shm[i], hs); itoa10(bufs[i].cv_w, ws); itoa10(bufs[i].cv_h, hh);
+    long pid = sys_fork();
+    if (pid == 0) {
+        char *argv[5] = { (char *)prog, hs, ws, hh, 0 };
+        sys_exec(path, argv);
+        sys_exit(127);
+    }
+    return FIXNUM(pid);
 }
 
 /* ---- windows + faces ------------------------------------------------------ */
@@ -329,5 +417,6 @@ void lm_gfx_register(void)
     register_Gset_face(); register_Gecho(); register_Gselect_at();
     register_Gredisplay(); register_Gread_event();
     register_Gread_string(); register_Gprin1str(); register_Gstr_from_char();
+    register_Gmake_surface(); register_Gsurf_fill(); register_Grun_in_buffer();
     register_Gscreenshot();
 }

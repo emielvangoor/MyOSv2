@@ -36,6 +36,9 @@
 
 // ---- Page reference counts (for copy-on-write sharing across address spaces) ----
 #define PTE_COW   (1UL << 55)          // software-use bit: "copy on write"
+#define PTE_SHARED (1UL << 56)         // software-use bit: "genuinely shared
+                                       // memory (shm canvas, framebuffer) --
+                                       // fork must NOT copy-on-write this"
 #define RAM_BASE  0x40000000UL
 #define RAM_TOP   0x50000000UL
 #define NPAGES    ((RAM_TOP - RAM_BASE) / PAGE)
@@ -278,6 +281,16 @@ uint64_t as_sbrk(struct addrspace *as, long incr)
     return old;
 }
 
+// Does the PTE for `va` allow EL0 writes? (Test introspection: COW demotion
+// flips this off; shared mappings must keep it on across a fork.)
+static uint64_t *pte_ptr(uint64_t *l0, uint64_t va);   // defined below
+int as_is_writable(struct addrspace *as, uint64_t va)
+{
+    uint64_t *pte = pte_ptr(as->l0, va);
+    if (!pte || !(*pte & 1)) { return 0; }
+    return (*pte & (3UL << 6)) == AP_RW_ALL;
+}
+
 uint64_t as_translate(struct addrspace *as, uint64_t va)
 {
     uint64_t e = as->l0[(va >> 39) & 511];
@@ -402,7 +415,11 @@ struct addrspace *as_clone(struct addrspace *parent)
                     uint64_t va = (1UL << 39) | (l1i << 30) | (l2i << 21) | (l3i << 12);
                     uint64_t pa = *ppte & PA_MASK;
                     int writable = (*ppte & (3UL << 6)) == AP_RW_ALL;
-                    if (writable) {
+                    if (*ppte & PTE_SHARED) {
+                        // Shared memory stays shared: same attributes, still
+                        // writable, in both address spaces. No COW.
+                        map_page(child->l0, va, pa, *ppte & ~PA_MASK);
+                    } else if (writable) {
                         *ppte = pa | ro_cow | DESC_PAGE;             // demote parent
                         map_page(child->l0, va, pa, ro_cow);        // child read-only + COW
                     } else {
@@ -535,8 +552,14 @@ int as_munmap(struct addrspace *as, uint64_t va, uint64_t len)
 uint64_t as_map_phys(struct addrspace *as, const uint64_t *pa, uint64_t n)
 {
     uint64_t base = as->mmap_next;
+    // PTE_SHARED: these pages ARE the shared thing (an shm object's pages, the
+    // display framebuffer). A fork must keep them writable and shared in both
+    // parent and child -- COW-copying them would silently disconnect a process
+    // from the very memory it is sharing (found live: after (spawn-vm), the
+    // parent VM rendered into a private COW copy of its framebuffer while the
+    // GPU kept scanning the original -- a frozen screen).
     uint64_t rw = ATTR_AF | ATTR_SH_INNER | ATTR_IDX_NORMAL | AP_RW_ALL |
-                  ATTR_UXN | ATTR_PXN | ATTR_NG;
+                  ATTR_UXN | ATTR_PXN | ATTR_NG | PTE_SHARED;
     for (uint64_t i = 0; i < n; i++) {
         map_page(as->l0, base + i * PAGE, pa[i], rw);
         page_incref(pa[i]);

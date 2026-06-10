@@ -40,6 +40,10 @@ struct rd_buffer {
     int  cap, gap_start, gap_end;
     int  point;                     // cursor position, in TEXT coordinates
     int  kind;                      // RD_TEXT / RD_SURFACE
+    // RD_SURFACE only: a pixel canvas (0x00RRGGBB words) a program draws
+    // into -- the EXWM move: an external renderer appearing as a buffer.
+    uint32_t *canvas;
+    int cv_w, cv_h;
 };
 
 struct rd_win {

@@ -128,3 +128,35 @@ frame.l forks a fresh `lisp -frame` — a complete second machine.
 Verification: `tools/seat_check.py` spawns VM2 from VM1, hotkey-switches, and
 proves by glyph-decoded screendumps that VM2 evals `(* 6 7) → 42` on its own
 virgin frame while VM1's history survives untouched on seat 1.
+
+## 25.6 — surface buffers: the EXWM move
+
+A buffer can now BE a pixel canvas: `(make-surface-buffer name w h)` backs it
+with a Phase-16 shared-memory object (`SHM_PAGES_MAX` raised to 4 MiB for
+canvases); `(surface-fill-rect ...)` draws from Lisp; `(run-in-buffer buf
+"surftest")` fork+execs an external renderer, handing it the shm handle + 
+geometry in argv — a tiny Wayland-client contract, except the "window" is an
+Emacs buffer in the tree, with a modeline, switchable and splittable like any
+other. rd_core blits the canvas over the window's text area each redisplay
+(no diff for pixels — one blit is the honest price of arbitrary graphics).
+
+**The fork+shared-memory bug this flushed out:** `as_clone` COW-demoted every
+writable page — including `as_map_phys` mappings (shm canvases AND the display
+framebuffer). After any fork, the parent's next framebuffer write went to a
+private COW copy while the GPU kept scanning the original: a frozen screen.
+`as_map_phys` mappings now carry a `PTE_SHARED` software bit and fork keeps
+them writable + same-PA in both spaces (KTEST `vm: shared mapping survives
+fork`). Known v1 blemish: stale text can ghost in a surface window's
+off-canvas area in some sequences.
+
+Verification: `tools/surface_check.py` — Lisp-drawn pixels, then surftest's
+field/frame/square, all screendump-asserted inside the frame. Captured:
+`docs/images/phase-25-surface-buffer.png`.
+
+## Phase 25: done
+
+The machine now looks like what it is: an Emacs frame as the screen, windows
+as tiles, buffers as content — text or pixels, in-image Lisp or external
+programs — multiple complete Lisp machines a Ctrl-Alt-Fn apart, every layer
+verified by tests that literally read the glyphs off a screendump, and an OS
+that can photograph itself.

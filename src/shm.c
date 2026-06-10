@@ -13,7 +13,8 @@
 #include "pmm.h"
 
 #define SHM_MAX       16    // max simultaneous objects
-#define SHM_PAGES_MAX 16    // max pages (64 KiB) per object
+#define SHM_PAGES_MAX 1024  // max pages (4 MiB) per object -- sized for
+                            // surface-buffer pixel canvases (Phase 25.6)
 
 struct shm_obj {
     int      used;

@@ -1424,6 +1424,50 @@ static void test_rd_glyphs_hit_framebuffer(void)
     KASSERT(fb[8 + 1] == fg);
 }
 
+static void test_shared_mapping_survives_fork(void)
+{
+    // Regression (found live, Phase 25.6): as_clone COW-demoted EVERYTHING
+    // writable, including as_map_phys mappings (shm canvases, the display
+    // framebuffer). After a fork the parent's first write went to a private
+    // copy -- a VM rendering into a framebuffer the GPU no longer scanned.
+    // Contract: PTE_SHARED mappings stay writable and same-PA in both spaces.
+    pmm_init(); kheap_init();
+    struct addrspace *parent = as_create();
+    uint64_t pg = (uint64_t)(uintptr_t)pmm_alloc();
+    uint64_t pa[1] = { pg };
+    uint64_t va = as_map_phys(parent, pa, 1);
+    KASSERT(va != 0);
+    KASSERT(as_is_writable(parent, va));
+    struct addrspace *child = as_clone(parent);
+    KASSERT(as_is_writable(parent, va));            // NOT demoted to COW
+    KASSERT(as_is_writable(child, va));
+    KASSERT(as_translate(parent, va) == pg);        // both still the SAME page
+    KASSERT(as_translate(child, va) == pg);
+}
+
+static void test_rd_surface_blit(void)
+{
+    rd_fresh();
+    // Turn the (only) buffer into a surface backed by a small canvas; its
+    // pixels must land in the window's rect and the rect must be damaged on
+    // EVERY redisplay (a program may have drawn since last time).
+    static uint32_t canvas[16 * 8];
+    for (int i = 0; i < 16 * 8; i++) { canvas[i] = 0x00ABCDEF; }
+    rdb.kind = RD_SURFACE;
+    rdb.canvas = canvas; rdb.cv_w = 16; rdb.cv_h = 8;
+    static uint32_t fb[640 * 320];
+    struct rd_rect rects[RD_MAX_RECTS];
+    int n = rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
+    KASSERT(n > 0);
+    KASSERT(fb[0] == 0x00ABCDEF && fb[7 * 640 + 15] == 0x00ABCDEF);
+    KASSERT(fb[8 * 640 + 0] != 0x00ABCDEF);        // cropped at the canvas edge
+    // The modeline below still renders as text cells (face 1).
+    KASSERT(rd_cell_at(&rdf, 0, 18)->face == 1);
+    // A second redisplay with no text change still damages the surface rect.
+    int n2 = rd_redisplay(&rdf, fb, 640, rects, RD_MAX_RECTS);
+    KASSERT(n2 >= 1);
+}
+
 // --- virtio-gpu (Phase 25.2) ---
 
 static void test_gpu_present(void)
@@ -2554,6 +2598,8 @@ static const struct ktest tests[] = {
     { "rd: split right",                  test_rd_split_right },
     { "rd: damage confined to edit",      test_rd_damage_minimal },
     { "rd: glyphs hit the framebuffer",   test_rd_glyphs_hit_framebuffer },
+    { "vm: shared mapping survives fork", test_shared_mapping_survives_fork },
+    { "rd: surface buffer blit + damage", test_rd_surface_blit },
     { "gpu: device present",              test_gpu_present },
     { "gpu: scanout configured",          test_gpu_scanout },
     { "gpu: two seats, two resources",    test_gpu_two_seats },

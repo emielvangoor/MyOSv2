@@ -37,6 +37,7 @@ void as_map_segment(struct addrspace *as, uint64_t vaddr, const void *src,
                     uint64_t filesz, uint64_t memsz, int writable, int exec);
 struct addrspace *as_create_elf(const void *img, uint64_t len, uint64_t *entry); // build from ELF
 uint64_t as_translate(struct addrspace *as, uint64_t va); // software walk -> PA (0 if unmapped)
+int as_is_writable(struct addrspace *as, uint64_t va);    // PTE says AP_RW (for tests)
 void as_switch(struct addrspace *as);            // TTBR0 = as->l0; flush TLB
 uint64_t user_entry_va(void);                    // entry VA of a loaded program
 

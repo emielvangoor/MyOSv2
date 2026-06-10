@@ -35,6 +35,7 @@ void rd_buf_init(struct rd_buffer *b, const char *name, char *store, int cap)
     b->gap_start = 0; b->gap_end = cap;
     b->point = 0;
     b->kind = RD_TEXT;
+    b->canvas = 0; b->cv_w = 0; b->cv_h = 0;
 }
 
 int rd_buf_len(const struct rd_buffer *b)
@@ -224,6 +225,18 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
     struct rd_buffer *b = w->buf;
     int text_rows = w->h - 1;                    // last row is the modeline
 
+    if (b && b->kind == RD_SURFACE) {
+        // A surface window's content is the canvas, blitted in rd_redisplay
+        // AFTER cell painting (so the blit wins). The cells underneath are
+        // blanks; the modeline below still renders like any other window's.
+        for (int row = 0; row < text_rows; row++) {
+            for (int col = 0; col < w->w; col++) {
+                put_cell(f, w->x + col, w->y + row, ' ', 0);
+            }
+        }
+        goto modeline;
+    }
+
     // Walk the buffer line by line; render lines [top_line, top_line+rows).
     int pos = 0, line = 0, len = b ? rd_buf_len(b) : 0;
     for (int row = 0; row < text_rows; row++) {
@@ -254,6 +267,7 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
         for (; col < w->w; col++) { put_cell(f, w->x + col, w->y + row, ' ', 0); }
     }
 
+modeline:;
     // The modeline: "-- <name> " padded with dashes, in face 1.
     char ml[256];
     int n = 0;
@@ -372,5 +386,31 @@ int rd_redisplay(struct rd_frame *f, uint32_t *fb, int stride_px,
         }
     }
     f->cur_pcol = f->cursor_col; f->cur_prow = f->cursor_row;
+
+    // Surface windows: blit each canvas over its window's text area and
+    // damage the whole rect. No diffing for pixels -- the program may have
+    // drawn anything since last time; one memcpy-shaped blit per redisplay
+    // is the honest price of arbitrary graphics.
+    for (int i = 0; i < RD_MAX_WIN; i++) {
+        struct rd_win *w = &f->wins[i];
+        if (!w->used || !w->leaf || !w->buf || w->buf->kind != RD_SURFACE ||
+            !w->buf->canvas) { continue; }
+        int px = w->x * RD_CELL_W, py = w->y * RD_CELL_H;
+        int pw = w->w * RD_CELL_W, ph = (w->h - 1) * RD_CELL_H;
+        int bw = w->buf->cv_w < pw ? w->buf->cv_w : pw;     // crop top-left
+        int bh = w->buf->cv_h < ph ? w->buf->cv_h : ph;
+        if (fb) {
+            for (int y = 0; y < bh; y++) {
+                uint32_t *dst = fb + (py + y) * stride_px + px;
+                const uint32_t *src = w->buf->canvas + y * w->buf->cv_w;
+                for (int x = 0; x < bw; x++) { dst[x] = src[x]; }
+            }
+        }
+        if (nrects < max_rects) {
+            rects[nrects].x = px; rects[nrects].y = py;
+            rects[nrects].w = bw; rects[nrects].h = bh;
+            nrects++;
+        }
+    }
     return nrects;
 }

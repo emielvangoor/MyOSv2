@@ -456,7 +456,7 @@ checks against the flipped boot (the harness starts the network REPL with
 
 ---
 
-## Phase 25 — The graphical Lisp machine  ⟵ IN PROGRESS
+## Phase 25 — The graphical Lisp machine  ✅ DONE
 
 The Emacs architecture, end to end: redisplay in C inside each /bin/lisp,
 Lisp owns buffers/windows/faces, the kernel grows only drivers + a seat
@@ -476,7 +476,9 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
   (`tools/frame_check.py`); see `docs/images/phase-25-graphical-lisp-machine.png`.
 - ✅ **25.5 — the seat**: per-seat gpu resources, input routing, Ctrl-Alt-Fn
   + `(switch-seat n)`, `(spawn-vm)`; screendump-verified (`tools/seat_check.py`).
-- ☐ **25.6 — surface buffers**: shm pixel canvases + `(run-in-buffer ...)`.
+- ✅ **25.6 — surface buffers**: shm canvases, `(surface-fill-rect)`,
+  `(run-in-buffer ...)` external renderers; PTE_SHARED fork fix;
+  screendump-verified (`tools/surface_check.py`).
 
 ---
 
