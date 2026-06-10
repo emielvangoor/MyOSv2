@@ -6,11 +6,12 @@
 ;; a defun sent today is still defined tomorrow (until the guest reboots).
 ;;
 ;; Setup:
-;;   1. In the repo:        make run
-;;   2. At the guest shell: lisp -serve
+;;   1. In the repo:            make run   (boots into the Lisp REPL -- init
+;;                              IS the Lisp machine since Phase 24.4)
+;;   2. At the `lisp> ' prompt: (run "lisp" "-serve")
 ;;      (the Makefile forwards host port 7777 into the guest; 7777 and not the
 ;;       classic 7000 because macOS's AirPlay Receiver squats on 7000)
-;;   3. In Emacs:           M-x lm-connect
+;;   3. In Emacs:               M-x lm-connect
 ;;
 ;; Doom Emacs users -- in config.el:
 ;;   (load! "~/Code/Sides/os/user/lisp/lm-mode.el")

@@ -196,6 +196,34 @@ Shipped via the initrd (`LISP_FILES += system` → `/lib/system.l`), loaded by
 
 Verification: `python3 tools/lisp_shell_check.py` — serial phase: `(run
 "hello")`, `(| (run "hello") (run "wc"))` → 22, `(| (princ "abcde") (run
-"wc"))` → 5, `(cat "/motd")`, `(ls "/bin")`, `(exit 0)` back to the C shell;
+"wc"))` → 5, `(cat "/motd")`, `(ls "/bin")`, `(run "sh")`/`exit` roundtrip;
 TCP phase: `(cat)`, `(ls)`, `(run "hello")` → status over the socket, output
 on the console.
+
+## 24.4 — init IS the Lisp machine
+
+The capstone, and deliberately the smallest diff of the phase: `src/initrd.c`
+writes `lm_elf` (not `sh_elf`) to `/bin/init`. The machine now **boots into a
+Lisp REPL as PID 1**. The C shell keeps its conventional home at `/bin/sh`,
+demoted from "the userland" to "a command": `(run "sh")` drops into it,
+`exit` falls back to Lisp — the Symbolics inversion on a Unix-shaped kernel.
+
+The one behavioral requirement: **PID 1 must never exit**. `serial_repl()` in
+`user/lm.c` checks `(sys_getpid() == 1)` and, as init, reopens the console
+reader on end-of-input instead of returning — there is nothing left to reap
+orphans or own the terminal if PID 1 dies. Run as an ordinary program (`lisp`
+under `/bin/sh`), EOF still exits normally.
+
+Verification: `python3 tools/lisp_init_check.py` — boot lands at `lisp> ` with
+no `$ ` first; `(getpid)` → 1; `(run "hello")` and a pipeline work under init;
+`(run "sh")` → the C shell works → `exit` → back to Lisp; the REPL still
+answers afterwards. The 24.1b/24.2/24.3 checks all run against the flipped
+boot too (the harness now boots to Lisp and starts the server with
+`(run "lisp" "-serve")`).
+
+## Phase 24: done
+
+The OS boots into a live, redefinable Lisp image that is also its init, its
+shell, and — over TCP, from Doom Emacs — its development environment. The
+kernel did not change for any of it beyond one initrd line: every capability
+the Lisp machine has, it gets through the same syscalls every C program uses.

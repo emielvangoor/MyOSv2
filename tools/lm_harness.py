@@ -78,13 +78,21 @@ class Qemu:
         self.proc.wait()
 
 
-def boot_to_serve() -> Qemu:
-    """Boot to the shell and start `lisp -serve`; raise if either step fails."""
+def boot_to_lisp() -> Qemu:
+    """Boot to the Lisp REPL. Since 24.4 init IS /bin/lisp, so the machine
+    lands there by itself; raise if it doesn't."""
     q = Qemu()
-    if not q.expect(b"$ ", 30):
+    if not q.expect(b"lisp> ", 30):
         q.kill()
-        raise RuntimeError("never saw the shell prompt")
-    q.send_line("lisp -serve")
+        raise RuntimeError("never saw the Lisp prompt")
+    return q
+
+
+def boot_to_serve() -> Qemu:
+    """Boot, then start the network REPL as a child of init:
+    (run "lisp" "-serve"). Raise if either step fails."""
+    q = boot_to_lisp()
+    q.send_line('(run "lisp" "-serve")')
     if not q.expect(b"serving on port %d" % GUEST_PORT, 15):
         q.kill()
         raise RuntimeError("lisp -serve did not report it is listening")

@@ -347,7 +347,7 @@ program juggle multiple sockets.
 
 ---
 
-## Phase 24 — The Lisp machine  ⟵ IN PROGRESS (handoff state below)
+## Phase 24 — The Lisp machine  ✅ DONE (24.1–24.4 complete; 24.5 graphics deferred)
 
 **Goal:** make a Lisp the **primary userland** of MyOSv2 (Emacs / Symbolics
 spirit, "Emacs-on-Unix" model). The C kernel is untouched; a Lisp image runs at
@@ -428,12 +428,14 @@ core `eval` primitive. Shipped as `/lib/system.l`, loaded after `bootstrap.l`.
 KTESTs: `lm: rest params + | symbol`, `lm: eval primitive`. Verified by
 `python3 tools/lisp_shell_check.py` (serial + TCP phases).
 
-### ☐ 24.4 — flip `init` to Lisp
+### ✅ 24.4 — flip `init` to Lisp  (DONE)
 
-`src/initrd.c`: change `add_prog("/bin/init", …)` from `sh_elf` to `lm_elf`
-(keep `/bin/sh` as the C fallback). The serial REPL loop in `user/lm.c` must then
-**never exit** (loop on EOF instead of `break`, since exiting PID 1 is bad).
-Update README. Final verification boot.
+`src/initrd.c`: `/bin/init` is now `lm_elf` (`/bin/sh` keeps the C shell as a
+fallback — `(run "sh")` from Lisp, `exit` to come back). As PID 1 the serial
+REPL never exits: on console EOF it reopens the reader and keeps prompting.
+Verified by `python3 tools/lisp_init_check.py`, plus re-runs of all earlier
+checks against the flipped boot (the harness starts the network REPL with
+`(run "lisp" "-serve")`).
 
 ### Testing / workflow reminders (user's standing rules — memory)
 

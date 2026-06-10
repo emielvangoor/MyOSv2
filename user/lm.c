@@ -139,13 +139,24 @@ static int serve_repl(int port)
     return 0;
 }
 
-/* The interactive REPL on the serial console (tty=1: echo + line editing). */
+/* The interactive REPL on the serial console (tty=1: echo + line editing).
+ *
+ * When this process is init (PID 1, Phase 24.4) the loop must NEVER end:
+ * end-of-input on the console is not a reason for PID 1 to die -- there is
+ * nothing left to reap orphans or own the terminal if it does. So on EOF we
+ * simply open a fresh reader and prompt again. Run as an ordinary program
+ * (`lisp` from the C shell), EOF exits normally. */
 static int serial_repl(Writer *out)
 {
-    static Reader in;
-    reader_from_fd(&in, 0, 1);
-    lm_cur_in = &in;
-    repl_loop(out);
+    int is_init = (sys_getpid() == 1);
+    for (;;) {
+        static Reader in;
+        reader_from_fd(&in, 0, 1);
+        lm_cur_in = &in;
+        repl_loop(out);                    /* until end-of-input */
+        if (!is_init) { break; }
+        w_str(out, "\n;; EOF ignored -- init keeps the machine alive\n");
+    }
     return 0;
 }
 

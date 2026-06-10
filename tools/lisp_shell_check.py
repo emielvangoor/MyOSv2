@@ -36,12 +36,10 @@ def main() -> int:
     ok = True
 
     # ---- phase 1: the serial REPL, where fd 1 is the console ----
+    # (Since 24.4 init IS the Lisp machine, so boot lands here directly.)
     q = Qemu()
     try:
-        if not q.expect(b"$ ", 30):
-            print("FAIL: never saw the shell prompt"); return 1
-        q.send_line("lisp")
-        if not q.expect(b"system.l loaded", 15):
+        if not q.expect(b"system.l loaded", 30):
             print("FAIL: /bin/lisp did not load system.l"); return 1
         if not q.expect(b"lisp> ", 5):
             print("FAIL: no REPL prompt after load"); return 1
@@ -64,12 +62,13 @@ def main() -> int:
         ok &= serial_step(q, '(cat "/motd")', b"Welcome to MyOSv2.", "(cat \"/motd\")")
         ok &= serial_step(q, '(ls "/bin")', b"lisp", "(ls \"/bin\") lists /bin")
 
-        # Leave the REPL; the C shell must still be there (we are not init yet).
-        q.send_line("(exit 0)")
-        if not q.expect(b"$ ", 10):
-            print("FAIL: (exit 0) did not return to the C shell"); ok = False
+        # The C shell survives as an ordinary command of the Lisp shell.
+        ok &= serial_step(q, '(run "sh")', b"$ ", "(run \"sh\") starts the C shell")
+        q.send_line("exit")
+        if not q.expect(b"lisp> ", 10):
+            print("FAIL: `exit` did not fall back to the Lisp REPL"); ok = False
         else:
-            print("ok: (exit 0) returns to the C shell")
+            print("ok: `exit` falls back to the Lisp REPL")
     finally:
         q.kill()
     if not ok:

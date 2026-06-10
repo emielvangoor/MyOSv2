@@ -24,9 +24,10 @@ deadlines; just building it one piece at a time and enjoying the ride.
 - **Processes** — user mode at EL0, `fork` + copy-on-write, an **ELF64 loader**,
   and the full lifecycle: `exec`, `exit(status)`, `wait`/reap (with ASID + page
   recycling).
-- **Userland** — an interactive shell (`/bin/init`) that runs real ELF programs
-  from `/bin` (`true`, `false`, `hello`, `mtest`) via fork→exec→wait and reports
-  their exit status.
+- **Userland** — an interactive shell that runs real ELF programs from `/bin`
+  (`true`, `false`, `hello`, `mtest`) via fork→exec→wait and reports their exit
+  status. (Since Phase 24 the C shell lives at `/bin/sh`; **init is the Lisp
+  machine** — see below.)
 - **User-space memory** — `sbrk`-grown per-process heap (demand-zeroed pages) and
   a small `malloc`/`free`; anonymous `mmap`; and **shared memory** objects two
   processes can map to communicate.
@@ -96,6 +97,11 @@ deadlines; just building it one piece at a time and enjoying the ride.
   `(| (run "hello") (run "wc"))` is a real pipe between forked children — and
   stages can be plain Lisp: `(| (princ "abcde") (run "wc"))` → `5`. `(ls)` and
   `(cat ...)` are coreutils written in Lisp.
+- **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
+  Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
+  as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to
+  Lisp. Start the network REPL with `(run "lisp" "-serve")` and hack the
+  running machine from Emacs.
 
 Where it goes next — TCP congestion control and fuller teardown,
 and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a
@@ -104,9 +110,13 @@ capable, Unix-like OS; graphics is deferred.
 ## Try it
 
 ```sh
-make run     # boot it in QEMU (serial in your terminal; Ctrl-C to quit)
+make run     # boot it in QEMU -- you land in the Lisp REPL (PID 1)
 make test    # run the in-kernel self-test suite
 ```
+
+At the `lisp> ` prompt: `(run "sh")` for the classic shell, `(ls "/bin")`,
+`(| (run "hello") (run "wc"))`, or `(run "lisp" "-serve")` and connect from
+Emacs (`user/lisp/lm-mode.el`, port 7777).
 
 You'll need an `aarch64-elf` cross-toolchain and `qemu-system-aarch64`.
 

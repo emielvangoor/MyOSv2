@@ -60,10 +60,12 @@ void initrd_unpack(void)
         vfs_write(&f, files[i].data, files[i].len);
     }
 
-    // Expose the embedded programs under /bin. /bin/init is the first process
-    // (the shell); /bin/sh is the same program by its conventional name.
+    // Expose the embedded programs under /bin. /bin/init is the first process:
+    // since Phase 24.4 that is the LISP MACHINE -- the OS boots into a Lisp
+    // REPL, and the C shell survives as an ordinary command at /bin/sh
+    // ((run "sh") from Lisp). The Symbolics inversion, on a Unix-shaped kernel.
     vfs_create("/bin", VN_DIR);
-    add_prog("/bin/init",  sh_elf,    (uint64_t)sh_elf_len);
+    add_prog("/bin/init",  lm_elf,    (uint64_t)lm_elf_len);
     add_prog("/bin/sh",    sh_elf,    (uint64_t)sh_elf_len);
     add_prog("/bin/true",  true_elf,  (uint64_t)true_elf_len);
     add_prog("/bin/false", false_elf, (uint64_t)false_elf_len);
