@@ -138,8 +138,12 @@ run: $(TARGET) $(BUILD)/disk.img
 # Run WITH a display window (the graphical Lisp machine, Phase 25): the same
 # flags minus -display none. Serial stays in the terminal; the QEMU window
 # shows the scanout and grabs keyboard+tablet input when focused.
+# zoom-to-fit scales the 1280x720 scanout to the window -- drag it as big as
+# you like (or full-screen). Override on other hosts, e.g.:
+#   make run-gui QEMU_DISPLAY=gtk,zoom-to-fit=on
+QEMU_DISPLAY ?= cocoa,zoom-to-fit=on
 run-gui: $(TARGET) $(BUILD)/disk.img
-	$(QEMU) $(filter-out -display none,$(QEMU_FLAGS)) $(QEMU_NET_RUN)
+	$(QEMU) $(filter-out -display none,$(QEMU_FLAGS)) -display $(QEMU_DISPLAY) $(QEMU_NET_RUN)
 
 # Run the self-tests and return a shell exit code (0 = all passed). Builds a
 # test kernel with -DTEST_EXIT (which exits QEMU via semihosting), runs it under
