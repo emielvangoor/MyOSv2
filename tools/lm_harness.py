@@ -26,18 +26,22 @@ GUEST_PORT = 7777
 HOST_PORT = 17777
 QMP_SOCK = f"/tmp/myosv2-qmp-{os.getpid()}.sock"
 
+# A pristine scratch disk per run: checks must not inherit the user's
+# persistent /disk (e.g. an init.l that boots the frame at startup).
+SCRATCH_DISK = f"/tmp/myosv2-test-disk-{os.getpid()}.img"
+with open(SCRATCH_DISK, "wb") as _f:
+    _f.truncate(4 * 1024 * 1024)
+
 QEMU_CMD = [
     "qemu-system-aarch64",
     "-machine", "virt", "-cpu", "cortex-a72", "-m", "256M", "-display", "none",
     "-chardev", "stdio,id=ch0,signal=off", "-serial", "chardev:ch0",
     "-kernel", "build/kernel.elf",
     "-global", "virtio-mmio.force-legacy=false",
-    # locking=off + -snapshot: a test boot must coexist with an interactive
-    # `make run` that holds the image's write lock -- snapshot mode sends all
-    # writes to a throwaway overlay, so skipping the lock is safe.
-    "-drive", "file=build/disk.img,file.locking=off,if=none,format=raw,id=hd0",
+    # A private, pristine scratch disk (see SCRATCH_DISK above): isolated
+    # from the user's persistent build/disk.img and its init.l.
+    "-drive", f"file={SCRATCH_DISK},if=none,format=raw,id=hd0",
     "-device", "virtio-blk-device,drive=hd0",
-    "-snapshot",
     # The same user-mode net as `make run`, with the REPL forward on a
     # test-private host port.
     "-netdev", f"user,id=net0,hostfwd=tcp::{HOST_PORT}-:{GUEST_PORT}",

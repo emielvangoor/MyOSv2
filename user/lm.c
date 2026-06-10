@@ -207,14 +207,17 @@ int umain(int argc, char **argv)
          * escapes its own recovery) unwinds to here -- re-enter the loop with
          * the image intact rather than dying. */
         lm_eval_all_str("(load \"/lib/frame.l\")");
-        /* The restart loop belongs to THE frame process alone: a forked
-         * pipeline child that hits an error would otherwise unwind into this
-         * loop, re-enter frame-main, and scribble its own banner over the
-         * SHARED framebuffer. Children must die, not redisplay. */
+        if (lm_eval_cstr("(frame-setup)") == Qnil) { return 1; }
+        /* One eval per TICK, so every keystroke gets its own error recovery:
+         * a typo aborts one tick, never the loop, and its ERROR text (printed
+         * through the capture writer) appears in the frame on the next beat.
+         * The pid guard keeps forked children that error from unwinding into
+         * this loop and scribbling on the SHARED framebuffer -- they die. */
         long frame_pid = sys_getpid();
         for (;;) {
             if (sys_getpid() != frame_pid) { sys_exit(1); }
-            lm_eval_all_str("(frame-main)");
+            lm_cur_out = lm_gfx_tick_writer();
+            lm_eval_all_str("(frame-tick)");
         }
     }
     if (argc >= 2 && streq(argv[1], "-serve")) {

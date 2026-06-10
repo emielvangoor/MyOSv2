@@ -191,6 +191,33 @@ int gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
     return gpu_cmd(&f, sizeof(f));
 }
 
+// ---- the boot splash --------------------------------------------------------
+
+// Paint a centered hint onto a framebuffer using the same anti-aliased font
+// the redisplay engine uses. Runs once at boot so the display is ACTIVE (and
+// the QEMU window correctly sized) before any client exists.
+#include "../src/font_aa.h"
+void gfx_splash(uint32_t *fb)
+{
+    const char *msg = "MyOSv2  --  (run \"lisp\" \"-frame\") for the graphical machine";
+    int len = 0;
+    while (msg[len]) { len++; }
+    int x0 = (GFX_W - len * FONT_AA_W) / 2;
+    int y0 = (GFX_H - FONT_AA_H) / 2;
+    for (int i = 0; i < len; i++) {
+        int ch = (msg[i] >= FONT_AA_FIRST && msg[i] <= FONT_AA_LAST) ? msg[i] : '?';
+        const uint8_t *glyph = font_aa[ch - FONT_AA_FIRST];
+        for (int gy = 0; gy < FONT_AA_H; gy++) {
+            for (int gx = 0; gx < FONT_AA_W; gx++) {
+                uint32_t a = glyph[gy * FONT_AA_W + gx];
+                // dim gray on black: a * 0x80 / 255 per channel
+                uint32_t v = (a * 0x90) / 255;
+                fb[(y0 + gy) * GFX_W + x0 + i * FONT_AA_W + gx] = (v << 16) | (v << 8) | v;
+            }
+        }
+    }
+}
+
 // ---- the mouse cursor: a hardware overlay plane ---------------------------
 
 #define CURSOR_RES 100                    // resource id reserved for the sprite

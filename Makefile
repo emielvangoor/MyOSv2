@@ -49,9 +49,10 @@ QEMU       := qemu-system-aarch64
 # -m 256M: fix the RAM size so the page allocator knows where RAM ends (0x50000000).
 # A virtio-blk disk on a virtio-mmio transport (modern, non-legacy), backed by a
 # raw image file -- the OS reads/writes its 512-byte sectors.
-QEMU_DISK  := -global virtio-mmio.force-legacy=false \
-              -drive file=$(BUILD)/disk.img,if=none,format=raw,id=hd0 \
+QEMU_DISK  = -global virtio-mmio.force-legacy=false \
+              -drive file=$(DISK_IMG),if=none,format=raw,id=hd0 \
               -device virtio-blk-device,drive=hd0
+DISK_IMG   = $(BUILD)/disk.img
 # QEMU user-mode networking: a virtual LAN (gateway 10.0.2.2, guest 10.0.2.15)
 # with a built-in ARP/ICMP/DHCP responder -- no host setup needed.
 QEMU_NET   := -netdev user,id=net0 -device virtio-net-device,netdev=net0
@@ -84,6 +85,13 @@ $(BUILD):
 
 # A 4 MiB raw disk image for the virtio-blk device (created once if missing).
 $(BUILD)/disk.img: | $(BUILD)
+	dd if=/dev/zero of=$@ bs=1m count=4 2>/dev/null
+
+# The PERSISTENT disk for interactive runs: lives at the repo root (gitignored)
+# so `make clean` / `make test` never destroy it -- /disk/init.l and anything
+# else the machine writes survives. Tests keep using the build-local scratch.
+DISK := disk.img
+$(DISK):
 	dd if=/dev/zero of=$@ bs=1m count=4 2>/dev/null
 
 $(BUILD)/%.o: src/%.c | $(BUILD)
@@ -132,7 +140,8 @@ $(TARGET): $(OBJ) linker.ld
 
 # Run in the terminal. Ctrl-C goes to the guest shell; quit QEMU by closing the
 # terminal (or `pkill qemu-system-aarch64`).
-run: $(TARGET) $(BUILD)/disk.img
+run: DISK_IMG = $(DISK)
+run: $(TARGET) $(DISK)
 	$(QEMU) $(QEMU_FLAGS) $(QEMU_NET_RUN)
 
 # Run WITH a display window (the graphical Lisp machine, Phase 25): the same
@@ -142,7 +151,8 @@ run: $(TARGET) $(BUILD)/disk.img
 # you like (or full-screen). Override on other hosts, e.g.:
 #   make run-gui QEMU_DISPLAY=gtk,zoom-to-fit=on
 QEMU_DISPLAY ?= cocoa,zoom-to-fit=on
-run-gui: $(TARGET) $(BUILD)/disk.img
+run-gui: DISK_IMG = $(DISK)
+run-gui: $(TARGET) $(DISK)
 	$(QEMU) $(filter-out -display none,$(QEMU_FLAGS)) -display $(QEMU_DISPLAY) $(QEMU_NET_RUN)
 
 # Run the self-tests and return a shell exit code (0 = all passed). Builds a

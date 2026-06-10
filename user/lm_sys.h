@@ -4,3 +4,5 @@
 #pragma once
 void lm_sys_register(void);
 void lm_gfx_register(void);   /* display primitives (user/lm_gfx.c) */
+struct Writer;  /* lm.h's Writer */
+Writer *lm_gfx_tick_writer(void);  /* -frame: per-tick output capture */

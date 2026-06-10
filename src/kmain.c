@@ -140,7 +140,20 @@ void kmain(void)
 
     // --- Display (virtio-gpu scanout) ---
     gfx_init();
-    kprintf(gfx_present() ? "gfx: virtio-gpu ready\n" : "gfx: none\n");
+    if (gfx_present()) {
+        // Activate the scanout NOW with a boot splash: without an active
+        // scanout QEMU's window opens tiny showing "Display output is not
+        // active" until something draws. Resource 99 = the splash; the first
+        // display client's gfx_show replaces it.
+        uint64_t fb = gfx_fb_new();
+        if (fb && gfx_resource_setup(99, fb) == 0) {
+            gfx_splash((uint32_t *)(uintptr_t)fb);
+            gfx_show(99);
+        }
+        kprintf("gfx: virtio-gpu ready\n");
+    } else {
+        kprintf("gfx: none\n");
+    }
 
     // --- 5. Interrupts, then the scheduler ---
     exc_init();

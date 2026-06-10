@@ -22,9 +22,11 @@ The whole REPL in one function: buffer-substring lifts the input out of
 the buffer, read-string turns text into a form, eval runs it."
   (let ((src (buffer-substring repl-start (buffer-length))))
     (insert "\n")
-    (insert (prin1-to-string (eval (read-string src))))
-    (insert "\n")
-    (prompt)))
+    (let ((val (eval (read-string src))))
+      (flush-output)                ; princ'd text lands HERE, before the value
+      (insert (prin1-to-string val))
+      (insert "\n")
+      (prompt))))
 
 ;; C-x prefix state: nil normally, t after a C-x.
 (setq pending-cx nil)
@@ -150,8 +152,10 @@ the very lambda the machine runs -- which you can redefine."
         (action mb-action))
     (mb-stop)
     (cond
-      ((eq action 'mx) (insert (prin1-to-string (eval (list sym))))
-                       (insert "\n") (prompt))
+      ((eq action 'mx) (let ((val (eval (list sym))))
+                          (flush-output)
+                          (insert (prin1-to-string val))
+                          (insert "\n") (prompt)))
       ((eq action 'describe) (show-help (describe-function-text sym))))))
 
 (defun mb-dispatch (ev)
@@ -252,16 +256,16 @@ stage, where fds were already plumbed and raw inheritance is the contract."
       (pipe-stages-raw left right)
     (stream-thunk (lambda () (pipe-stages-raw left right)))))
 
-(defun frame-loop ()
-  "read-event -> dispatch -> redisplay, forever. The machine's heartbeat.
-read-event BLOCKS in the kernel (no polling); redisplay paints only what
-changed (the glyph-matrix diff), so an idle machine costs nothing."
-  (while t
-    (dispatch (read-event))
-    (redisplay)))
+(defun flush-output ()
+  "Drain captured image output -- (princ ...) text and ERROR lines -- into
+the current buffer, where the person at the frame can actually see it."
+  (let ((out (frame-output)))
+    (if (> (string-length out) 0)
+        (progn (insert out) (redisplay))
+      nil)))
 
-(defun frame-main ()
-  "Boot the graphical machine: acquire the screen, greet, loop."
+(defun frame-setup ()
+  "Acquire the screen and greet. Returns nil when there is no display."
   (if (frame-init)
       (progn
         (insert "MyOSv2 Graphical Lisp Machine\n")
@@ -269,8 +273,26 @@ changed (the glyph-matrix diff), so an idle machine costs nothing."
         (prompt)
         (echo "ready")
         (redisplay)
-        (frame-loop))
-    (princ "frame: no display\n")))
+        t)
+    (progn (princ "frame: no display\n") nil)))
+
+(defun frame-tick ()
+  "ONE beat of the machine: show anything printed since last time (including
+an error from the previous tick -- each tick gets a fresh C-level recovery,
+so a typo aborts one keystroke's work, never the loop), handle one event,
+show its output, repaint. read-event BLOCKS in the kernel; redisplay paints
+only what changed -- an idle machine costs nothing."
+  (let ((pending (frame-output)))
+    (if (> (string-length pending) 0)
+        ;; Output pending at the TOP of a tick means the previous tick was
+        ;; aborted mid-eval (a typo): show what it printed -- the ERROR line
+        ;; -- and lay a fresh prompt, which also re-anchors repl-start past
+        ;; the broken input so the next RET doesn't re-eval it.
+        (progn (insert pending) (insert "\n") (prompt) (redisplay))
+      nil))
+  (dispatch (read-event))
+  (flush-output)
+  (redisplay))
 
 (princ "frame.l loaded.")
 (terpri)

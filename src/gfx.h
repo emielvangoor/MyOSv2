@@ -27,3 +27,5 @@ uint64_t gfx_fb_new(void);
 // Driven by the kernel input layer on every tablet move: a visible pointer
 // with zero userland involvement and zero framebuffer redraws.
 int gfx_cursor_move(int x, int y);
+// Paint the boot-splash hint into a framebuffer (kmain, once).
+void gfx_splash(uint32_t *fb);

@@ -528,6 +528,39 @@ DEFGFX("screenshot", Gscreenshot, 1, 1) {
     return Qt;
 }
 
+/* ---- routing the image's output into the frame ----------------------------- */
+/*
+ * In -frame mode, lm_cur_out points at this capture buffer for every tick of
+ * the event loop. Whatever the image prints -- (princ ...), and crucially
+ * lm_error's "ERROR: ..." lines -- accumulates here, and frame.l drains it
+ * into the current buffer with (frame-output). Errors become visible in the
+ * frame instead of leaking to the serial console.
+ */
+static char   tick_out[1024];
+static Writer tick_writer;
+
+Writer *lm_gfx_tick_writer(void)
+{
+    /* Initialize ONCE: the C loop fetches this every tick, and re-initializing
+     * would wipe the text an aborted tick left behind -- exactly the ERROR
+     * line the next tick must show. (frame-output) does the draining. */
+    static int inited;
+    if (!inited) {
+        writer_to_buffer(&tick_writer, tick_out, sizeof(tick_out));
+        inited = 1;
+    }
+    return &tick_writer;
+}
+
+/* (frame-output) -> everything printed since the last drain, as a string. */
+DEFGFX("frame-output", Gframe_output, 0, 0) {
+    (void)args; (void)env;
+    Lobj s = make_string(tick_out);
+    tick_out[0] = 0;
+    tick_writer.len = 0;
+    return s;
+}
+
 /* ---- registration ----------------------------------------------------------- */
 
 void lm_gfx_register(void)
@@ -541,6 +574,7 @@ void lm_gfx_register(void)
     register_Gset_face(); register_Gecho(); register_Gselect_at();
     register_Gredisplay(); register_Gread_event();
     register_Gread_event_nb(); register_Gpoll_fd();
+    register_Gframe_output();
     register_Gread_string(); register_Gprin1str(); register_Gstr_from_char();
     register_Gmake_surface(); register_Gsurf_fill(); register_Grun_in_buffer();
     register_Gfunction_info(); register_Gall_symbols(); register_Gstring_search();
