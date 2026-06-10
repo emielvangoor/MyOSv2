@@ -76,6 +76,7 @@ static uint64_t     gpu_base;
 static struct virtq ctlq;                 // queue 0: the control queue
 static int          gpu_ok;
 static uint32_t     fb_w, fb_h;           // what the scanout currently shows
+static uint64_t     fb_pa;                // the kernel framebuffer (gfx_fb_alloc)
 
 // Submit one command + its response buffer and wait (polled). 0 = device said
 // OK. Static response buffer: commands are serialized by our single caller.
@@ -93,7 +94,14 @@ static int gpu_cmd(void *cmd, int cmd_len)
 
 void gfx_init(void)
 {
+    // Full reset, including the cached framebuffer: kmain runs the self-tests
+    // at every boot and then re-inits the allocators, so any pmm-era pointer
+    // cached across a gfx_init() would dangle into reused memory (found live:
+    // the first gfxtest run painted red pixels over the real boot's page
+    // tables). gfx_init() is called after the reset and must forget the past.
     gpu_ok = 0;
+    fb_pa = 0;
+    fb_w = 0; fb_h = 0;
     gpu_base = virtio_find(VIRTIO_ID_GPU);
     if (!gpu_base) { return; }
     if (virtio_init(gpu_base) != 0) { return; }
@@ -157,10 +165,8 @@ int gfx_flush_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
 }
 
 // The kernel-owned framebuffer behind the gfx_acquire syscall. Allocated once
-// (contiguous, so ATTACH_BACKING needs a single entry) and then shared: a
-// second caller gets the same buffer -- there is one screen.
-static uint64_t fb_pa;
-
+// per gfx_init era (contiguous, so ATTACH_BACKING needs a single entry) and
+// then shared: a second caller gets the same buffer -- there is one screen.
 uint64_t gfx_fb_alloc(void)
 {
     if (!gpu_ok) { return 0; }

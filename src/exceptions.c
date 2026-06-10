@@ -60,9 +60,13 @@ void sync_handler(struct trapframe *tf)
         }
     }
 
-    // tf->elr is the address of the faulting instruction (from ELR_EL1).
-    kprintf("Caught sync exception: EC=0x%x, ELR=0x%lx, ESR=0x%lx\n",
-            ec, tf->elr, esr);
+    // tf->elr is the address of the faulting instruction (from ELR_EL1);
+    // FAR_EL1 is the data address it touched -- print both, the pair usually
+    // names the culprit outright.
+    uint64_t far_dbg;
+    __asm__ volatile("mrs %0, far_el1" : "=r"(far_dbg));
+    kprintf("Caught sync exception: EC=0x%x, ELR=0x%lx, ESR=0x%lx, FAR=0x%lx\n",
+            ec, tf->elr, esr, far_dbg);
 
     // RECOVER: skip the faulting instruction by advancing the saved return
     // address by 4 bytes (one AArch64 instruction). When vectors.S does `eret`,

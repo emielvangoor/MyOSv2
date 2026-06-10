@@ -466,7 +466,9 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
 - ✅ **25.1 — virtio-input**: keyboard + tablet drivers (evdev triples,
   IRQ top-half/bottom-half), blocking `input_read` syscall, `/bin/evtest`,
   QMP-driven check (`tools/input_check.py`).
-- ☐ **25.2 — virtio-gpu**: driver + `gfx_acquire`/`gfx_flush`; userland test pattern.
+- ✅ **25.2 — virtio-gpu**: 2D driver (create/backing/scanout + per-rect
+  transfer/flush), `gfx_acquire` maps the fb into userland, `/bin/gfxtest`,
+  screendump-verified (`tools/gfx_check.py`).
 - ☐ **25.3 — rd_core**: the redisplay engine (model structs, layout, font,
   damage), dual-built like lm_core, KTEST-first.
 - ☐ **25.4 — Lisp integration**: `lm_gfx.c` + `frame.l`; `lisp -frame`; REPL-as-buffer.

@@ -42,9 +42,10 @@ QEMU_CMD = [
     # test-private host port.
     "-netdev", f"user,id=net0,hostfwd=tcp::{HOST_PORT}-:{GUEST_PORT}",
     "-device", "virtio-net-device,netdev=net0",
-    # Keyboard + tablet (same as make run since Phase 25) and a QMP socket so
-    # checks can inject input events and take screendumps.
+    # Keyboard + tablet + display (same as make run since Phase 25) and a QMP
+    # socket so checks can inject input events and take screendumps.
     "-device", "virtio-keyboard-device", "-device", "virtio-tablet-device",
+    "-device", "virtio-gpu-device",
     "-qmp", f"unix:{QMP_SOCK},server=on,wait=off",
 ]
 
@@ -138,6 +139,25 @@ def qmp_tablet(x: int, y: int):
     qmp("input-send-event", {"events": [
         {"type": "abs", "data": {"axis": "x", "value": x}},
         {"type": "abs", "data": {"axis": "y", "value": y}}]})
+
+
+def qmp_screendump(path: str):
+    """Dump the current scanout (display 0) to a binary PPM file."""
+    qmp("screendump", {"filename": path})
+
+
+def ppm_pixel(path: str, x: int, y: int) -> tuple:
+    """(r, g, b) at (x, y) of a binary P6 PPM -- QEMU's screendump format."""
+    with open(path, "rb") as f:
+        assert f.readline().strip() == b"P6"
+        line = f.readline()
+        while line.startswith(b"#"):
+            line = f.readline()
+        w, _h = map(int, line.split())
+        f.readline()                              # maxval
+        f.seek(3 * (y * w + x), 1)
+        r, g, b = f.read(3)
+        return (r, g, b)
 
 
 def read_until_prompt(sock: socket.socket, timeout: float = 10.0) -> str:

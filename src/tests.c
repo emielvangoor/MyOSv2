@@ -1305,6 +1305,27 @@ static void test_gfx_fb_alloc(void)
     KASSERT(gfx_flush_rect(0, 0, 1, 1) == 0);
 }
 
+static void test_gfx_init_forgets_fb(void)
+{
+    // kmain runs these tests at EVERY boot and then resets the allocators
+    // (pmm_init) before the real boot. Any driver static that caches a
+    // pmm-era pointer across that reset is a time bomb: gfx_fb_alloc's cached
+    // framebuffer pointed into memory the real boot reused for page tables
+    // and stacks, and the first (run "gfxtest") painted red pixels over them.
+    // Contract: gfx_init() forgets the cached framebuffer.
+    pmm_init(); kheap_init();
+    gfx_init();
+    uint64_t pa1 = gfx_fb_alloc();
+    KASSERT(pa1 != 0);
+    pmm_init();                                // the post-test boot reset
+    void *occupy = pmm_alloc_pages(4);         // the old fb address is reused...
+    KASSERT(occupy != 0);
+    gfx_init();                                // ...so a correct re-init
+    uint64_t pa2 = gfx_fb_alloc();             // must allocate a FRESH buffer
+    KASSERT(pa2 != 0);
+    KASSERT(pa2 != pa1);
+}
+
 // The blocking input_read syscall: a worker injects an event device-side and
 // then reads it back through the full syscall path.
 static volatile long inputread_res;
@@ -2356,6 +2377,7 @@ static const struct ktest tests[] = {
     { "gpu: device present",              test_gpu_present },
     { "gpu: scanout configured",          test_gpu_scanout },
     { "gpu: kernel fb alloc + flush",     test_gfx_fb_alloc },
+    { "gpu: gfx_init forgets cached fb",  test_gfx_init_forgets_fb },
     { "net: present + MAC",               test_net_present },
     { "net: ARP round-trip",              test_net_arp_roundtrip },
     { "net: internet checksum",           test_inet_checksum },

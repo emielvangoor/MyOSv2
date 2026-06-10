@@ -33,3 +33,30 @@ Testing:
   via **QMP** (`input-send-event` over a UNIX socket the harness now opens) —
   the same path a human's keys take into the graphical window — and asserts
   the events appear on the serial console.
+
+## 25.2 — virtio-gpu (the display)
+
+virtio-gpu in 2D mode is delightfully dumb — the guest renders into its OWN
+RAM and the device scans it out. Bring-up is three control-queue commands
+(RESOURCE_CREATE_2D → ATTACH_BACKING → SET_SCANOUT); steady state is two per
+damage rect (TRANSFER_TO_HOST_2D + RESOURCE_FLUSH), submitted polled like
+virtio-blk's sector I/O (commands are rare or per-rect, never per-pixel).
+
+`gfx_acquire` allocates the kernel framebuffer once — contiguous pages, so the
+backing list is a single entry — and maps those same pages into the calling
+process via the Phase-16 `as_map_phys` machinery; userland writes 0x00RRGGBB
+words and calls `gfx_flush(x,y,w,h)`. `/bin/gfxtest` paints RGB thirds + a
+white square.
+
+**A bug worth remembering:** kmain runs the KTEST suite at every boot, then
+resets the allocators for the real boot. `gfx_fb_alloc` cached its framebuffer
+pointer in a static across that reset, so the real boot reused those pages for
+page tables/stacks — and the first `(run "gfxtest")` painted red pixels over
+kernel memory (FAR full of 0x00FF0000). Rule: **any driver static caching a
+pmm-era pointer must be cleared by its init**; `gfx_init()` now forgets the
+cached fb (KTEST `gpu: gfx_init forgets cached fb`). The exception handler now
+prints FAR_EL1 alongside ELR/ESR — the pair named the culprit outright.
+
+Verification: KTESTs drive the real device (incl. the learned-the-hard-way
+minimum scanout size), and `tools/gfx_check.py` boots, runs gfxtest, takes a
+**QMP screendump** and asserts exact pixel values at the pattern's corners.

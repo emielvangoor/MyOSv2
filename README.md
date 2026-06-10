@@ -103,15 +103,19 @@ deadlines; just building it one piece at a time and enjoying the ride.
   tablet; events reach userland as evdev triples through a blocking
   `input_read` syscall (`/bin/evtest` to watch them). First brick of the
   graphical Lisp machine (Phase 25).
+- **Display** — a **virtio-gpu** framebuffer: `gfx_acquire` maps a 1280×720
+  BGRX framebuffer into a process; `gfx_flush` pushes damage rects to the
+  scanout. `/bin/gfxtest` paints the screen from userland, verified down to
+  exact pixels by a QMP screendump check.
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to
   Lisp. Start the network REPL with `(run "lisp" "-serve")` and hack the
   running machine from Emacs.
 
-Where it goes next — TCP congestion control and fuller teardown,
-and beyond — lives in **[docs/ROADMAP.md](docs/ROADMAP.md)**. The goal is a
-capable, Unix-like OS; graphics is deferred.
+Where it goes next lives in **[docs/ROADMAP.md](docs/ROADMAP.md)** — currently
+Phase 25: the **graphical Lisp machine** (Emacs architecture, tiled buffers,
+multiple swappable Lisp VMs).
 
 ## Try it
 
