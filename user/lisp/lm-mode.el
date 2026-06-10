@@ -32,8 +32,11 @@
   "Client for the MyOSv2 Lisp machine's network REPL."
   :group 'comm)
 
-(defcustom lm-host "localhost"
-  "Host where the QEMU forward for the Lisp machine lives."
+(defcustom lm-host "127.0.0.1"
+  "Host where the QEMU forward for the Lisp machine lives.
+The literal IPv4 address, NOT \"localhost\": QEMU's hostfwd binds IPv4
+only, and on macOS \"localhost\" resolves to ::1 first -- the connection
+would be refused before IPv4 is ever tried."
   :type 'string :group 'lm)
 
 (defcustom lm-port 7777
