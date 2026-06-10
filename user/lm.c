@@ -116,18 +116,35 @@ static int serve_repl(int port)
             continue;
         }
 
-        /* Point the core's streams at the socket. tty=0: a socket needs no
-         * echo or backspace handling -- the editor at the far end does that. */
+        /* THE CONNECTION IS THE TERMINAL. Stash the console on high fds and
+         * dup2 the socket onto 0/1/2 for the connection's lifetime. This is
+         * the same redirection idiom the shell uses for pipelines, applied to
+         * a session: every child we fork+exec now inherits the socket as its
+         * stdio, so (run "http" ...) answers to the remote user -- not to the
+         * guest's serial console. */
+        dup2(0, 13); dup2(1, 14); dup2(2, 15);
+        dup2(conn, 0); dup2(conn, 1); dup2(conn, 2);
+
+        /* Point the core's streams at fds 0/1 -- NOT at the conn fd directly.
+         * The numbers matter: a pipeline stage dup2's its pipe onto fd 1, and
+         * because print/princ write "fd 1, whatever that currently is", an
+         * in-image stage like (princ "x") lands in the pipe exactly like an
+         * external program's output. Lisp I/O and Unix plumbing compose.
+         * tty=0: a socket needs no echo or backspace handling -- the editor
+         * at the far end does that. */
         static Reader in;
         static Writer out;
-        reader_from_fd(&in, conn, 0);
-        writer_to_fd(&out, conn);
+        reader_from_fd(&in, 0, 0);
+        writer_to_fd(&out, 1);
         lm_cur_in = &in;
         lm_cur_out = &out;
 
         w_str(&out, BANNER);
         repl_loop(&out);                   /* until the peer disconnects (EOF) */
 
+        /* Put the console back on 0/1/2 and drop the stashes + connection. */
+        dup2(13, 0); dup2(14, 1); dup2(15, 2);
+        sys_close(13); sys_close(14); sys_close(15);
         sys_close(conn);
         lm_cur_in = 0;
         lm_cur_out = &con;

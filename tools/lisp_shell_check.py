@@ -91,15 +91,22 @@ def main() -> int:
         else:
             print("ok: (ls \"/bin\") over TCP")
 
-        # (run ...) evals to the exit status over the socket; the program's own
-        # output lands on the guest console (fd 1 is not the socket).
+        # The connection IS the terminal: serve_repl dup2's the socket onto
+        # fds 0/1/2, so an exec'd child's output comes back over the SOCKET,
+        # exactly like a remote shell.
         out = repl_roundtrip(s, '(run "hello")')
-        if "0" not in out:
-            print(f"FAIL: (run \"hello\") status over TCP, got: {out!r}"); ok = False
-        elif not q.expect(b"Hello from /bin/hello", 5):
-            print("FAIL: hello's output did not reach the console"); ok = False
+        if "Hello from /bin/hello" not in out or "0" not in out:
+            print(f"FAIL: (run \"hello\") output+status over TCP, got: {out!r}"); ok = False
         else:
-            print("ok: (run \"hello\") over TCP -> status 0, output on console")
+            print("ok: (run \"hello\") over TCP -> output AND status on the socket")
+
+        # And because the REPL's own streams sit on fds 0/1 too, in-image
+        # pipeline stages compose over TCP just like on the console.
+        out = repl_roundtrip(s, '(| (princ "abcde") (run "wc"))')
+        if "5" not in out:
+            print(f"FAIL: TCP pipeline with in-image stage, got: {out!r}"); ok = False
+        else:
+            print("ok: (| (princ ...) (run wc)) -> 5 over TCP")
 
         s.close()
     finally:

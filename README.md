@@ -87,7 +87,9 @@ deadlines; just building it one piece at a time and enjoying the ride.
   guest:7777. The image **persists across connections** — disconnect, reconnect,
   and your defuns are still there. `user/lisp/lm-mode.el` wires it into (Doom)
   Emacs: `M-x lm-connect`, then `C-c C-e` evals the form before point into the
-  running OS. Errors come back over the socket too.
+  running OS. **The connection is the terminal**: the socket is `dup2`'d onto
+  fds 0/1/2 for the session, so errors, `(run ...)` output and even pipelines
+  with in-image stages all come back to your editor, remote-shell style.
 - **Lisp ↔ kernel** — the syscalls are Lisp primitives (`user/lm_sys.c`):
   `(fork)`, `(exec path argv)`, `(wait)`, pipes, `dup2`, files and sockets.
   `(if (= (fork) 0) (exec "/bin/hello" ...) (wait))` is the whole Unix process

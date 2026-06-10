@@ -184,8 +184,8 @@ language — it **is** the Lisp image, and commands are functions.
   and in-image Lisp compose freely: `(| (princ "abcde") (run "wc"))` → `5`.
   The parent closes both pipe ends before waiting (or the right stage would
   never see EOF) and returns the right stage's status, like `$?` in sh.
-  Caveat: over the *network* REPL, `print`/`princ` write to the socket, not
-  fd 1, so in-image pipeline stages are a serial-console (and init) feature.
+  (Over the network REPL this composes identically — see "the connection is
+  the terminal" below.)
 - Coreutils in Lisp: `(ls [path])` over a new `(readdir path)` primitive,
   `(cat path)` over `open`/`fd-read`/`princ`.
 - `(repl)` — read→eval→print in one Lisp function, via the new `eval`
@@ -220,6 +220,31 @@ no `$ ` first; `(getpid)` → 1; `(run "hello")` and a pipeline work under init;
 answers afterwards. The 24.1b/24.2/24.3 checks all run against the flipped
 boot too (the harness now boots to Lisp and starts the server with
 `(run "lisp" "-serve")`).
+
+## Post-24.4 — the connection is the terminal
+
+First real-use feedback: `(run "http" "http://...")` over the Emacs REPL
+printed its output on the guest's *serial console*, because an exec'd child
+writes to its inherited fd 1 — the console — while only Lisp-level output went
+through `lm_cur_out` (the socket). Expected under the original design, but not
+the remote-shell experience the phase promises.
+
+The fix is the most Unix move available: on `accept`, `serve_repl` stashes the
+console on fds 13–15 and `dup2`s the socket onto **0/1/2** for the connection's
+lifetime (restoring on disconnect) — the same redirection idiom the shell uses
+for pipelines, applied to a session. Children now inherit the socket as stdio,
+so external programs answer to the remote user.
+
+The REPL's own Reader/Writer sit on fds 0/1 too (not on the conn fd directly),
+and the *numbers* are the point: a pipeline stage `dup2`s its pipe onto fd 1,
+and since `print`/`princ` write to "fd 1, whatever that currently is", in-image
+stages land in the pipe exactly like external output. So
+`(| (princ "abcde") (run "wc"))` → `5` now works over TCP identically to the
+console. Lisp I/O and Unix plumbing compose because both speak fd numbers.
+
+Trade-offs, accepted: programs started from a TCP session no longer echo on
+the guest console, and a child that reads stdin reads the socket (telnet-ish —
+also a feature). Covered by the updated `tools/lisp_shell_check.py` TCP phase.
 
 ## Phase 24: done
 
