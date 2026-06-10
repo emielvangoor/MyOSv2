@@ -276,6 +276,21 @@ the current buffer, where the person at the frame can actually see it."
         t)
     (progn (princ "frame: no display\n") nil)))
 
+;; When t, the event loop polls input at ~25Hz instead of blocking, so
+;; surface buffers with live renderers (the teapot!) keep repainting.
+(setq animate nil)
+
+(defun teapot ()
+  "The Utah teapot, spinning in a buffer: split the window, give the new
+half a surface canvas, and run /bin/teapot (TinyGL) into it."
+  (split-below)
+  (other-window)
+  (let ((sb (make-surface-buffer "*teapot*" 480 360)))
+    (set-buffer sb)
+    (other-window)
+    (setq animate t)
+    (run-in-buffer sb "teapot")))
+
 (defun frame-tick ()
   "ONE beat of the machine: show anything printed since last time (including
 an error from the previous tick -- each tick gets a fresh C-level recovery,
@@ -290,7 +305,13 @@ only what changed -- an idle machine costs nothing."
         ;; the broken input so the next RET doesn't re-eval it.
         (progn (insert pending) (insert "\n") (prompt) (redisplay))
       nil))
-  (dispatch (read-event))
+  (if animate
+      ;; Animation heartbeat: poll input, repaint at ~25Hz so live surface
+      ;; renderers show. (The blocking path below stays the idle default.)
+      (progn (let ((ev (read-event-nowait)))
+               (if ev (dispatch ev) nil))
+             (sleep 40))
+    (dispatch (read-event)))
   (flush-output)
   (redisplay))
 

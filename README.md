@@ -172,6 +172,12 @@ photograph itself: `(screenshot "/shot.ppm")`.
   share the screen VT-style — `(spawn-vm)`, then Ctrl-Alt-F1..F4 — and a
   buffer can be a **pixel surface** that an external program renders into via
   shared memory (`(run-in-buffer buf "surftest")`) — EXWM, native.
+- **3D, for real** — the FPU is enabled (per-thread FP state, context-switched),
+  user programs compile with floats/NEON, and a vendored **TinyGL** (software
+  OpenGL 1.x) renders the **Utah teapot** — Newell's 1975 Bézier patches,
+  tessellated and lit — spinning at 25fps inside an Emacs-style buffer:
+  type `(teapot)` at the REPL.
+  ![the Utah teapot in a buffer](docs/images/phase-26-teapot.png)
 - **M-x + describe-function, vertico-style** — the echo area grows into a
   live-narrowing command palette over the image's own symbol table; `C-h f`
   shows a function's *living source* in a `*Help*` window, ready to redefine.

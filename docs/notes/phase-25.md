@@ -240,3 +240,21 @@ path)`, plus a non-blocking flag on the input syscall.
 
 The cursor became the classic notched arrow (ASCII-art sprite, 2x), then a
 slimmer one after user review.
+
+## Phase 26: the FPU and the teapot
+
+`fpu_enable()` (CPACR_EL1.FPEN) runs before anything schedules; every thread
+carries a 528-byte FP area saved/restored eagerly at `cpu_switch` — the only
+boundary FP state can cross, since the kernel stays `-mgeneral-regs-only`.
+`/bin/fptest` proves isolation: two processes park sentinels in V registers
+across 50 interleaved context switches.
+
+On top: **TinyGL** (Bellard/C-Chads, zlib-style license, vendored under
+`user/tinygl/`) compiled freestanding against shim headers; `tgl_rt.c`
+supplies its tiny libc surface (memcpy & co over ulib; sqrt/fabs/floor are
+hardware instructions via builtins; sin/cos are range-reduced Taylor; pow is
+exp·ln). `/bin/teapot` tessellates the classic Newell Bézier patches
+(SGI GLUT's data tables) with analytic normals and renders ~2300 lit
+triangles per frame into a surface buffer at ~25fps. `(teapot)` in frame.l
+splits a window and runs it; an `animate` heartbeat polls input at 25Hz so
+live canvases repaint (the blocking read stays the idle default).

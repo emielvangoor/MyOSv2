@@ -28,7 +28,7 @@ DEP  := $(OBJ:.o=.d)
 # embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
 # and unpacked into /bin by the initrd. The kernel's ELF loader maps their
 # segments at load/exec time.
-PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest
+PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest teapot
 # The .l files embedded into the kernel and unpacked to /lib by the initrd.
 LISP_FILES  := bootstrap system frame
 USER_COMMON := user/crt0.S user/ulib.c
@@ -118,6 +118,20 @@ LM_CORE := src/lm_core.c src/lm_jmp.S src/rd_core.c
 $(BUILD)/user/lm.elf: user/lm.c user/lm_sys.c user/lm_sys.h user/lm_gfx.c $(LM_CORE) src/lm.h src/rd.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
 	mkdir -p $(BUILD)/user
 	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c user/lm_gfx.c
+
+# TinyGL (vendored, user/tinygl/): software OpenGL 1.x compiled freestanding
+# against the shim headers; tgl_rt.c supplies its libc/math needs over ulib.
+TGL_SRC  := $(wildcard user/tinygl/src/*.c) user/tinygl/tgl_rt.c
+TGL_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(TGL_SRC))
+TGL_INC  := -Iuser/tinygl/shim -Iuser/tinygl/include -Iuser
+$(BUILD)/user/tinygl/%.o: user/tinygl/%.c | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CC) $(USER_CFLAGS) -w $(TGL_INC) -c $< -o $@
+
+# /bin/teapot: TinyGL + the Newell patches, rendering into a surface buffer.
+$(BUILD)/user/teapot.elf: user/teapot.c user/teapot_data.h $(TGL_OBJS) $(USER_COMMON) user/user.ld | $(BUILD)
+	mkdir -p $(BUILD)/user
+	$(CC) $(USER_CFLAGS) $(TGL_INC) -T user/user.ld -o $@ $(USER_COMMON) user/teapot.c $(TGL_OBJS)
 
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
 $(BUILD)/user_blob.c: $(USER_ELFS)
