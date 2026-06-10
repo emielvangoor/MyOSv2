@@ -123,8 +123,10 @@ void rd_frame_init(struct rd_frame *f, int px_w, int px_h,
     // 2 = reserved for region highlight later. Lisp can repaint these.
     f->faces[0].fg = 0x00D5C4A1; f->faces[0].bg = 0x001D2021;
     f->faces[1].fg = 0x001D2021; f->faces[1].bg = 0x00928374;
-    for (int i = 2; i < RD_NFACES; i++) { f->faces[i] = f->faces[0]; }
+    f->faces[2].fg = 0x00FBF1C7; f->faces[2].bg = 0x00504945;   // selection bar
+    for (int i = 3; i < RD_NFACES; i++) { f->faces[i] = f->faces[0]; }
     f->echo[0] = 0;
+    f->echo_sel = -1;
     f->front = front; f->back = back;
     // Force a full first paint: make the front grid impossible cells.
     for (int i = 0; i < f->cols * f->rows; i++) {
@@ -207,6 +209,24 @@ void rd_set_buffer(struct rd_frame *f, struct rd_buffer *b)
 void rd_echo(struct rd_frame *f, const char *s)
 {
     rd_scpy(f->echo, s, (int)sizeof(f->echo));
+    f->echo_sel = -1;
+}
+
+void rd_echo_select(struct rd_frame *f, int line)
+{
+    f->echo_sel = line;
+}
+
+// How many lines the echo text wants (1..RD_ECHO_MAX). The echo area GROWS
+// for multi-line content -- that is the whole minibuffer/vertico mechanism:
+// Lisp just hands redisplay a few lines of text and a selected index.
+static int echo_lines(const struct rd_frame *f)
+{
+    int n = 1;
+    for (int i = 0; f->echo[i]; i++) {
+        if (f->echo[i] == '\n') { n++; }
+    }
+    return n > RD_ECHO_MAX ? RD_ECHO_MAX : n;
 }
 
 // ---- layout: model -> back grid --------------------------------------------
@@ -305,13 +325,21 @@ static void layout_tree(struct rd_frame *f, struct rd_win *w,
 void rd_layout(struct rd_frame *f)
 {
     f->cursor_col = f->cursor_row = -1;
-    // Window area = everything above the echo line.
-    layout_tree(f, f->root, 0, 0, f->cols, f->rows - 1);
-    // The echo area: the frame's last cell row, default face.
-    int row = f->rows - 1;
-    for (int col = 0; col < f->cols; col++) {
-        int c = col < rd_slen(f->echo) ? f->echo[col] : ' ';
-        put_cell(f, col, row, c, 0);
+    // Window area = everything above the echo AREA, whose height follows its
+    // content (1 line normally; up to RD_ECHO_MAX when the minibuffer shows
+    // vertico-style candidates). Line echo_sel renders in face 2 -- the
+    // selection bar.
+    int elines = echo_lines(f);
+    layout_tree(f, f->root, 0, 0, f->cols, f->rows - elines);
+    const char *p = f->echo;
+    for (int line = 0; line < elines; line++) {
+        int row = f->rows - elines + line;
+        int face = (line == f->echo_sel) ? 2 : 0;
+        int col = 0;
+        while (*p && *p != '\n' && col < f->cols) { put_cell(f, col++, row, *p++, face); }
+        while (*p && *p != '\n') { p++; }           // clip an over-long line
+        if (*p == '\n') { p++; }
+        for (; col < f->cols; col++) { put_cell(f, col, row, ' ', face); }
     }
 }
 

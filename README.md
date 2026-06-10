@@ -118,6 +118,10 @@ deadlines; just building it one piece at a time and enjoying the ride.
   share the screen VT-style — `(spawn-vm)`, then Ctrl-Alt-F1..F4 — and a
   buffer can be a **pixel surface** that an external program renders into via
   shared memory (`(run-in-buffer buf "surftest")`) — EXWM, native.
+- **M-x + describe-function, vertico-style** — the echo area grows into a
+  live-narrowing command palette over the image's own symbol table; `C-h f`
+  shows a function's *living source* in a `*Help*` window, ready to redefine.
+  ![M-x vertico](docs/images/phase-25-mx-vertico.png)
   ![the graphical Lisp machine](docs/images/phase-25-graphical-lisp-machine.png)
   ![a surface buffer](docs/images/phase-25-surface-buffer.png)
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a

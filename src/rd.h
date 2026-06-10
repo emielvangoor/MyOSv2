@@ -23,6 +23,7 @@
 #define RD_MAX_WIN 16               // window-tree node pool (per frame)
 #define RD_NFACES 8
 #define RD_MAX_RECTS 32
+#define RD_ECHO_MAX 10              // minibuffer: input + up to 9 candidates
 
 // Buffer kinds: TEXT renders through the glyph grid; SURFACE (Phase 25.6)
 // will blit a pixel canvas instead. The field exists now so 25.6 needs no
@@ -66,7 +67,8 @@ struct rd_frame {
     struct rd_win wins[RD_MAX_WIN];
     struct rd_win *root, *selected;
     struct rd_face faces[RD_NFACES];   // 0 default, 1 modeline, 2 cursor
-    char echo[256];
+    char echo[512];                 // multi-line: the minibuffer lives here
+    int  echo_sel;                  // echo line drawn as the selection bar (-1 none)
     struct rd_cell *front, *back;   // cols*rows each, caller-allocated
     int cursor_col, cursor_row;     // computed by layout (selected's point)
     int cur_pcol, cur_prow;         // where the cursor was last painted
@@ -90,7 +92,8 @@ struct rd_win *rd_split(struct rd_frame *f, int vertical);  // selected leaf -> 
 int  rd_win_delete(struct rd_frame *f);                     // remove selected
 void rd_other_window(struct rd_frame *f);                   // cycle selection
 void rd_set_buffer(struct rd_frame *f, struct rd_buffer *b);
-void rd_echo(struct rd_frame *f, const char *s);
+void rd_echo(struct rd_frame *f, const char *s);            // resets selection
+void rd_echo_select(struct rd_frame *f, int line);          // vertico bar
 
 // ---- redisplay ----
 void rd_layout(struct rd_frame *f);                         // model -> back grid

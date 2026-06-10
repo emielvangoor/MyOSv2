@@ -304,7 +304,7 @@ static const char keymap_hi[] =
 
 DEFGFX("read-event", Gread_event, 0, 0) {
     (void)args; (void)env;
-    static int shift, ctrl;
+    static int shift, ctrl, alt;
     static int mx, my;              /* last absolute pointer position, pixels */
     struct input_event ev;
     for (;;) {
@@ -321,6 +321,14 @@ DEFGFX("read-event", Gread_event, 0, 0) {
         if (ev.code == 29 || ev.code == 97) {            /* ctrl down/up */
             ctrl = (ev.value != 0); continue;
         }
+        if (ev.code == 56 || ev.code == 100) {           /* alt (Meta) down/up */
+            alt = (ev.value != 0); continue;
+        }
+        if (ev.value == 1 && (ev.code == 103 || ev.code == 108)) {
+            /* arrows: cook Up/Down into C-p / C-n -- vertico's navigation. */
+            return make_cons(intern("ctrl"),
+                   make_cons(FIXNUM(ev.code == 103 ? 'p' : 'n'), Qnil));
+        }
         if (ev.code == 272) {                            /* BTN_LEFT */
             if (ev.value == 1) {
                 return make_cons(intern("mouse"),
@@ -332,12 +340,94 @@ DEFGFX("read-event", Gread_event, 0, 0) {
         if (ev.code < sizeof(keymap_lo)) {
             char c = (shift ? keymap_hi : keymap_lo)[ev.code];
             if (c) {
-                const char *tag = ctrl ? "ctrl" : "char";
-                int ch = ctrl ? (c | 0x20) : c;          /* ctrl: lowercase */
+                const char *tag = ctrl ? "ctrl" : (alt ? "meta" : "char");
+                int ch = (ctrl || alt) ? (c | 0x20) : c; /* modifiers: lowercase */
                 return make_cons(intern(tag), make_cons(FIXNUM(ch), Qnil));
             }
         }
     }
+}
+
+/* ---- introspection: the image examining itself (M-x, describe) ------------ */
+
+/* (function-info 'sym) -> what lives in the symbol's function slot:
+ *   nil                          not a function
+ *   (lambda PARAMS BODY)         a defun -- BODY is the LIVE source
+ *   (macro PARAMS BODY)          a defmacro
+ *   (primitive "name" MIN MAX)   a C primitive
+ * describe-function on a Lisp machine doesn't read documentation ABOUT the
+ * system; it shows the living object itself. */
+DEFGFX("function-info", Gfunction_info, 1, 1) {
+    (void)env;
+    Lobj sym = CAR(args);
+    if (!IS_SYMBOL(sym)) { lm_error("function-info: expected a symbol", sym); }
+    Lobj fn = ((Symbol *)PTR(sym))->function;
+    if (IS_PRIM(fn)) {
+        Prim *p = PTR(fn);
+        return make_cons(intern("primitive"),
+               make_cons(make_string(p->name),
+               make_cons(FIXNUM(p->min_args),
+               make_cons(FIXNUM(p->max_args), Qnil))));
+    }
+    if (IS_LAMBDA(fn)) {
+        Cons *lc = PTR(fn);
+        return make_cons(intern("lambda"),
+               make_cons(lc->car, make_cons(CAR(lc->cdr), Qnil)));
+    }
+    if (IS_CONS(fn) && CAR(fn) == intern("macro") && IS_LAMBDA(CDR(fn))) {
+        Cons *mc = PTR(CDR(fn));
+        return make_cons(intern("macro"),
+               make_cons(mc->car, make_cons(CAR(mc->cdr), Qnil)));
+    }
+    return Qnil;
+}
+
+/* (all-symbols) -> every interned symbol, as a list. The symbol table IS the
+ * command registry -- this is what M-x completes over. */
+DEFGFX("all-symbols", Gall_symbols, 0, 0) {
+    (void)args; (void)env;
+    Lobj out = Qnil;
+    for (int i = symtab_count - 1; i >= 0; i--) {
+        out = make_cons(symtab[i], out);
+    }
+    return out;
+}
+
+/* (string-search needle hay) -> index of the first match, or nil. */
+DEFGFX("string-search", Gstring_search, 2, 2) {
+    (void)env;
+    const char *needle = req_string(nth_arg(args, 0), "string-search: needle");
+    const char *hay = req_string(nth_arg(args, 1), "string-search: haystack");
+    for (int i = 0; hay[i]; i++) {
+        int j = 0;
+        while (needle[j] && hay[i + j] == needle[j]) { j++; }
+        if (!needle[j]) { return FIXNUM(i); }
+    }
+    return Qnil;
+}
+
+/* (substring str start end) -> the slice [start, end). */
+DEFGFX("substring", Gsubstring, 3, 3) {
+    (void)env;
+    Lobj str = nth_arg(args, 0);
+    if (!IS_STRING(str)) { lm_error("substring: expected a string", str); }
+    LString *ls = (LString *)PTR(str);
+    int a = (int)req_fixnum(nth_arg(args, 1), "substring: start");
+    int b = (int)req_fixnum(nth_arg(args, 2), "substring: end");
+    if (a < 0) { a = 0; }
+    if (b > (int)ls->len) { b = (int)ls->len; }
+    static char tmp[512];
+    int n = 0;
+    for (int i = a; i < b && n < (int)sizeof(tmp) - 1; i++) { tmp[n++] = ls->data[i]; }
+    tmp[n] = 0;
+    return make_string(tmp);
+}
+
+/* (echo-select n) -> highlight echo line n as the vertico selection bar. */
+DEFGFX("echo-select", Gecho_select, 1, 1) {
+    (void)env;
+    rd_echo_select(&frame, (int)req_fixnum(CAR(args), "echo-select: expected a fixnum"));
+    return Qt;
 }
 
 /* ---- strings <-> forms (the REPL's plumbing) ------------------------------- */
@@ -418,5 +508,7 @@ void lm_gfx_register(void)
     register_Gredisplay(); register_Gread_event();
     register_Gread_string(); register_Gprin1str(); register_Gstr_from_char();
     register_Gmake_surface(); register_Gsurf_fill(); register_Grun_in_buffer();
+    register_Gfunction_info(); register_Gall_symbols(); register_Gstring_search();
+    register_Gsubstring(); register_Gecho_select();
     register_Gscreenshot();
 }

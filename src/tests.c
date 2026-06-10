@@ -1451,6 +1451,27 @@ static void test_shared_mapping_survives_fork(void)
     KASSERT(as_translate(child, va) == pg);
 }
 
+static void test_rd_minibuffer_echo(void)
+{
+    rd_fresh();
+    // Multi-line echo: the area grows to the content, windows shrink above
+    // it, and the selected line renders in face 2 (the vertico bar).
+    rd_echo(&rdf, "M-x spl\nsplit-below\nsplit-right");
+    rd_echo_select(&rdf, 1);
+    rd_layout(&rdf);
+    int e0 = rdf.rows - 3;
+    KASSERT(rdf.root->h == rdf.rows - 3);              // window area shrank
+    KASSERT(rd_cell_at(&rdf, 0, e0)->ch == 'M');
+    KASSERT(rd_cell_at(&rdf, 0, e0 + 1)->ch == 's');
+    KASSERT(rd_cell_at(&rdf, 0, e0 + 1)->face == 2);   // selection bar
+    KASSERT(rd_cell_at(&rdf, 0, e0 + 2)->face == 0);
+    // Back to a single line: full window area again.
+    rd_echo(&rdf, "ready");
+    rd_layout(&rdf);
+    KASSERT(rdf.root->h == rdf.rows - 1);
+    KASSERT(rdf.echo_sel == -1);                       // rd_echo resets the bar
+}
+
 static void test_rd_surface_blit(void)
 {
     rd_fresh();
@@ -2605,6 +2626,7 @@ static const struct ktest tests[] = {
     { "rd: damage confined to edit",      test_rd_damage_minimal },
     { "rd: glyphs hit the framebuffer",   test_rd_glyphs_hit_framebuffer },
     { "vm: shared mapping survives fork", test_shared_mapping_survives_fork },
+    { "rd: minibuffer echo + selection", test_rd_minibuffer_echo },
     { "rd: surface buffer blit + damage", test_rd_surface_blit },
     { "gpu: device present",              test_gpu_present },
     { "gpu: scanout configured",          test_gpu_scanout },

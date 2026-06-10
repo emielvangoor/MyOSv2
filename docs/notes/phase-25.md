@@ -197,3 +197,24 @@ Fixes, all three:
 Also: the font is now **Zed Mono** at 10×20 (the generator takes cell size on
 the command line), and the geometry-dependent KTESTs/checks compute from the
 cell constants, so font swaps no longer touch them.
+
+## Post-25: M-x and describe-function — vertico-style
+
+The minibuffer is a grown echo area: `rd_core` lets the echo hold multiple
+lines (windows shrink above it) with one line rendered as a face-2 selection
+bar — that's the entire engine cost of a vertico UI (KTEST `rd: minibuffer
+echo + selection`). Everything else is Lisp + three introspection primitives:
+
+- `(function-info 'sym)` → `(lambda PARAMS BODY)` / `(macro ...)` /
+  `(primitive name min max)` — the LIVING object, not docs about it;
+- `(all-symbols)` — the symbol table IS the command palette;
+- `(string-search)` / `(substring)` for narrowing.
+
+`M-x` (the cooker now tracks Meta; arrows cook to C-n/C-p) opens a
+live-narrowing candidate list over every fbound symbol: type to filter,
+C-n/C-p/arrows to move the bar, TAB adopts the selection, RET runs it, C-g
+cancels. `C-h f` opens the same picker and shows the function in a `*Help*`
+window — for a defun that's the actual lambda the machine runs, printed from
+the image, ready to be redefined. Verified by `tools/mx_check.py` (narrowing,
+execution, and the *Help* source read off screendumps); captured at
+`docs/images/phase-25-mx-vertico.png`.

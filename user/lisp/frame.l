@@ -43,10 +43,19 @@ the buffer, read-string turns text into a form, eval runs it."
   "Route one cooked input event. The keymap is a cond -- live data."
   (cond
     ((null ev) nil)
+    (mb-action (mb-dispatch ev))                          ; minibuffer owns input
     ((eq (car ev) 'mouse)
      (select-window-at (cadr ev) (caddr ev)))
+    ((eq (car ev) 'meta)
+     (if (= (cadr ev) 120) (mb-start 'mx) nil))           ; M-x
+    (pending-ch
+     (setq pending-ch nil)
+     (if (and (eq (car ev) 'char) (= (cadr ev) 102))      ; C-h f
+         (mb-start 'describe)
+       (echo "unbound C-h key")))
     ((eq (car ev) 'ctrl)
      (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
+           ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
            ((= (cadr ev) 103) (setq pending-cx nil)      ; C-g: never mind
                               (echo "quit"))
            (t nil)))
@@ -59,6 +68,124 @@ the buffer, read-string turns text into a form, eval runs it."
           (if (> (buffer-length) repl-start) (delete-char 1) nil))
          (t (insert (string-from-char ch))))))            ; self-insert
     (t nil)))
+
+;; ---- the minibuffer: vertico-style command selection -------------------
+;;
+;; The echo area grows into a live-narrowing candidate list: type to filter,
+;; C-n/C-p (or arrows) to move the selection bar, RET to commit, C-g to
+;; cancel, TAB to adopt the selection as input. M-x completes over every
+;; symbol with a function -- the symbol table IS the command palette.
+
+(setq mb-action nil)        ; nil = inactive; 'mx or 'describe
+(setq mb-input "")
+(setq mb-matches nil)
+(setq mb-sel 0)
+
+(defun command-symbols ()
+  "Every symbol whose function slot holds something runnable."
+  (filter (lambda (s) (function-info s)) (all-symbols)))
+
+(defun mb-filter ()
+  "Narrow the candidates to those containing mb-input."
+  (setq mb-matches
+        (filter (lambda (s)
+                  (or (= (string-length mb-input) 0)
+                      (string-search mb-input (symbol-name s))))
+                (command-symbols)))
+  (setq mb-sel 0))
+
+(defun take (n lst)
+  (if (or (= n 0) (null lst)) nil
+    (cons (car lst) (take (- n 1) (cdr lst)))))
+
+(defun mb-render ()
+  "Paint the minibuffer: prompt+input on top, up to 8 candidates below,
+the selected one highlighted (echo-select drives the face-2 bar)."
+  (let ((txt (string-concat (if (eq mb-action 'mx) "M-x " "Describe: ") mb-input)))
+    (foreach (lambda (s) (setq txt (string-concat txt "\n  " (symbol-name s))))
+             (take 8 mb-matches))
+    (echo txt)
+    (echo-select (+ mb-sel 1))))
+
+(defun mb-start (action)
+  (setq mb-action action)
+  (setq mb-input "")
+  (mb-filter)
+  (mb-render))
+
+(defun mb-stop ()
+  (setq mb-action nil)
+  (echo "ready"))
+
+(defun describe-function-text (sym)
+  "The living object, not documentation about it: for a defun this prints
+the very lambda the machine runs -- which you can redefine."
+  (let ((info (function-info sym)))
+    (cond
+      ((null info) (string-concat (symbol-name sym) " is not a function"))
+      ((eq (car info) 'primitive)
+       (string-concat (symbol-name sym) " is a C primitive taking "
+                      (caddr info) ".." (caddr (cdr info)) " args"))
+      (t (string-concat (symbol-name sym) " is a " (symbol-name (car info))
+                        "\n\nparameters: " (prin1-to-string (cadr info))
+                        "\n\nsource:\n" (prin1-to-string (caddr info)))))))
+
+(setq help-buf nil)
+
+(defun show-help (txt)
+  "Pop *Help* in the other window (splitting on first use), Emacs-style."
+  (if help-buf nil
+    (progn (setq help-buf (make-buffer "*Help*"))
+           (split-below)))
+  (other-window)
+  (set-buffer help-buf)
+  (goto-char (buffer-length))
+  (delete-char (buffer-length))
+  (insert txt)
+  (other-window))
+
+(defun mb-commit ()
+  (let ((sym (if mb-matches (nth mb-sel mb-matches)
+               (read-string mb-input)))
+        (action mb-action))
+    (mb-stop)
+    (cond
+      ((eq action 'mx) (insert (prin1-to-string (eval (list sym))))
+                       (insert "\n") (prompt))
+      ((eq action 'describe) (show-help (describe-function-text sym))))))
+
+(defun mb-dispatch (ev)
+  "The minibuffer keymap -- live data, like everything else here."
+  (cond
+    ((eq (car ev) 'ctrl)
+     (cond ((= (cadr ev) 110)                              ; C-n: down
+            (if (< (+ mb-sel 1) (length (take 8 mb-matches)))
+                (setq mb-sel (+ mb-sel 1)) nil)
+            (mb-render))
+           ((= (cadr ev) 112)                              ; C-p: up
+            (if (> mb-sel 0) (setq mb-sel (- mb-sel 1)) nil)
+            (mb-render))
+           ((= (cadr ev) 103) (mb-stop))                   ; C-g: cancel
+           (t nil)))
+    ((eq (car ev) 'char)
+     (let ((ch (cadr ev)))
+       (cond
+         ((= ch 10) (mb-commit))                           ; RET
+         ((= ch 9)                                         ; TAB: adopt selection
+          (if mb-matches
+              (progn (setq mb-input (symbol-name (nth mb-sel mb-matches)))
+                     (mb-filter) (mb-render))
+            nil))
+         ((= ch 8)                                         ; backspace
+          (let ((n (string-length mb-input)))
+            (if (> n 0) (setq mb-input (substring mb-input 0 (- n 1))) nil))
+          (mb-filter) (mb-render))
+         (t (setq mb-input (string-concat mb-input (string-from-char ch)))
+            (mb-filter) (mb-render)))))
+    (t nil)))
+
+;; C-h prefix state (like pending-cx): C-h f = describe-function.
+(setq pending-ch nil)
 
 (defun spawn-vm ()
   "Start ANOTHER complete Lisp machine on its own seat: fork, and the child
