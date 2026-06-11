@@ -482,6 +482,31 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
 
 ---
 
+## Phase 26 — Floating point + TinyGL (the teapot)  ✅ DONE
+
+3D "just for fun", and the kernel features it smoked out.
+**Notes:** Phase 26 section in `docs/notes/phase-25.md`.
+
+- ✅ **26.1 — FPU**: `fpu_enable()` (CPACR_EL1.FPEN) before anything
+  schedules; per-thread 528-byte FP/SIMD area saved/restored eagerly at
+  `cpu_switch` (`src/fp.S`); the kernel itself stays `-mgeneral-regs-only`,
+  user programs get floats/NEON; `/bin/fptest` proves V-register isolation
+  across fork + 50 context switches.
+- ✅ **26.2 — TinyGL + the Utah teapot**: TinyGL (Bellard/C-Chads, zlib
+  license) vendored under `user/tinygl/` against shim headers + `tgl_rt.c`;
+  `/bin/teapot` tessellates Newell's 1975 Bezier patches (quadrant data
+  mirrored out, orientation-corrected normals) into a surface buffer at
+  ~25fps; `(teapot)` in frame.l + the `animate` heartbeat; stream-thunk
+  repaints on quiet poll ticks so slow-printing children don't drag the
+  frame rate. Verified end to end by `tools/teapot_check.py`.
+- ✅ **26.3 — process groups**: `pgid` in `struct thread` (fork inherits,
+  fresh threads lead their own), `SYS_SETPGID`, `kill(-pgid)` signals the
+  whole group — the frame's C-c now interrupts an entire job (Lisp wrapper
+  AND the ping it forked), not just the wrapper. KTEST `sig: process
+  groups` + the teapot check's C-c stage.
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
@@ -508,10 +533,8 @@ the current path.
   shell runs in a window.
 - **i3-style tiling window manager** — tiling tree, workspaces, keybindings,
   borders, status bar.
-- **virtio-input (mouse + keyboard)** — needed for a cursor/GUI; reuses the
-  Phase-19 virtio transport.
-- **virtio-gpu** — a richer display than ramfb (dynamic resolution, hardware
-  cursor, 2D accel).
+- ~~virtio-input (mouse + keyboard)~~ — **built in 25.1.**
+- ~~virtio-gpu~~ — **built in 25.2** (2D + hardware cursor plane).
 
 (The previous user-space-WM roadmap is preserved in git history if you return to
 graphics later.)
