@@ -12,6 +12,9 @@
 #define SYS_GETPID 172
 #define SYS_YIELD  124
 #define SYS_OPENAT 56
+#define SYS_BRK    214
+#define SYS_MUNMAP 215
+#define SYS_MMAP   222
 #define SYS_SLEEP  3
 #define SYS_FORK   9
 
@@ -24,9 +27,6 @@
 #define SYS_READDIR 10
 #define SYS_EXEC   11
 #define SYS_WAIT   12
-#define SYS_SBRK   13
-#define SYS_MMAP   14
-#define SYS_MUNMAP 15
 #define SYS_PIPE   18
 #define SYS_DUP2   19
 #define SYS_KILL   20

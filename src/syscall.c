@@ -162,12 +162,26 @@ long do_syscall(struct trapframe *tf)
     case SYS_WAIT:                           // x0 = int *status
         ret = sched_wait((int *)(uintptr_t)tf->x[0]);
         break;
-    case SYS_SBRK:                           // x0 = signed increment
-        ret = (long)as_sbrk(sched_current_as(), (long)tf->x[0]);
+    case SYS_BRK: {                          // x0 = new break (0 = query)
+        // Linux brk: set the break to x0 and return the resulting break; a 0
+        // (or out-of-range) request just returns the current one. as_sbrk is
+        // increment-based, so we translate. musl uses this for its main heap.
+        struct addrspace *as = sched_current_as();
+        uint64_t cur = as_sbrk(as, 0);       // current break (incr 0 = no change)
+        uint64_t want = tf->x[0];
+        if (want < cur) { ret = (long)cur; break; }     // query / shrink-ignored
+        uint64_t old = as_sbrk(as, (long)(want - cur));
+        ret = (old == (uint64_t)-1) ? (long)cur : (long)want;
         break;
-    case SYS_MMAP:                           // x0 = len
-        ret = (long)as_mmap(sched_current_as(), tf->x[0]);
+    }
+    case SYS_MMAP: {                         // x0=addr x1=len x2=prot x3=flags ...
+        // Anonymous mappings only (what musl's malloc uses); file-backed mmap
+        // is out of scope until a program needs it. Returns the base VA, or
+        // -ENOMEM (which musl turns into MAP_FAILED).
+        uint64_t va = as_mmap(sched_current_as(), tf->x[1]);
+        ret = va ? (long)va : -ENOMEM;
         break;
+    }
     case SYS_MUNMAP:                         // x0 = va, x1 = len
         ret = as_munmap(sched_current_as(), tf->x[0], tf->x[1]);
         break;

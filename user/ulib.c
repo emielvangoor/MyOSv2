@@ -49,8 +49,16 @@ void sys_sleep(long ms)                       { syscall3(SYS_SLEEP, ms, 0, 0); }
 long sys_fork(void)                           { return syscall3(SYS_FORK, 0, 0, 0); }
 long sys_exec(const char *p, char *const argv[]) { return syscall3(SYS_EXEC, (long)p, (long)argv, 0); }
 long sys_wait(int *status)                    { return syscall3(SYS_WAIT, (long)status, 0, 0); }
-void *sys_sbrk(long incr)                     { return (void *)syscall3(SYS_SBRK, incr, 0, 0); }
-void *mmap(unsigned long len)                 { return (void *)syscall3(SYS_MMAP, (long)len, 0, 0); }
+void *sys_sbrk(long incr)                     {           // sbrk over Linux brk
+    long cur = syscall3(SYS_BRK, 0, 0, 0);                // query current break
+    if (incr == 0) { return (void *)cur; }
+    long neu = syscall3(SYS_BRK, cur + incr, 0, 0);
+    return (neu == cur + incr) ? (void *)cur : (void *)-1;  // sbrk returns the OLD break
+}
+void *mmap(unsigned long len)                 {           // anonymous: kernel reads x1=len
+    long r = syscall5(SYS_MMAP, 0, (long)len, 3 /*PROT_RW*/, 0x22 /*ANON|PRIVATE*/, -1);
+    return (r < 0 && r > -4096) ? (void *)-1 : (void *)r;  // -errno -> MAP_FAILED
+}
 int   munmap(void *a, unsigned long len)      { return (int)syscall3(SYS_MUNMAP, (long)a, (long)len, 0); }
 int   shm_create(unsigned long len)           { return (int)syscall3(SYS_SHM_CREATE, (long)len, 0, 0); }
 void *shm_map(int handle)                     { return (void *)syscall3(SYS_SHM_MAP, handle, 0, 0); }
