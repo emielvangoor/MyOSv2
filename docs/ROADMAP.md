@@ -541,6 +541,10 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
 - ✅ **27.7 — M-x list scrolls**: the vertico candidate window slides to follow
   the selection (`mb-top`/`mb-move`) so all matches are reachable, with an
   "i/n" position counter. `tools/mxscroll_check.py`.
+- ✅ **27.8 — self-documenting help**: keymaps became DATA
+  (`global`/`cx`/`help-keymap`, `key-lookup`/`run-key`) so dispatch and help
+  share one source; **C-h b** lists bindings, **C-h k** shows a key's command
+  and living source, **C-h m** describes the mode. `tools/helpkeys_check.py`.
 
 ---
 

@@ -173,17 +173,71 @@ move right K and delete K -- those K become the chars that were ahead."
 (defun kill-word ()       ; M-d
   (let ((e (fwd-word-pos))) (if (> e (point)) (del-fwd (- e (point))) nil)))
 
+;; ---- keymaps as DATA (the self-documenting heart) -----------------------
+;; A binding is (kind code command description). dispatch looks a key up in a
+;; keymap and runs its command; C-h b/k/m read the SAME tables -- so the help
+;; can never drift from what the keys actually do. Commands are named functions
+;; so C-h k can show each one's living source via describe-function-text.
+
+(defun cmd-beginning-of-line () (goto-char (bol-pos)))
+(defun cmd-end-of-line () (goto-char (eol-pos)))
+(defun cmd-backward-char ()
+  (let ((lo (edit-lo))) (if (> (point) lo) (goto-char (- (point) 1)) nil)))
+(defun cmd-forward-char ()
+  (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
+(defun cmd-delete-forward () (del-fwd 1))
+(defun cmd-forward-word () (goto-char (fwd-word-pos)))
+(defun cmd-backward-word () (goto-char (bwd-word-pos)))
+(defun cmd-history-prev () (if (editing-p) nil (repl-history-prev)))
+(defun cmd-history-next () (if (editing-p) nil (repl-history-next)))
+(defun cmd-describe-function () (mb-start 'describe))
+
+(setq global-keymap
+  (list
+    (list 'ctrl 97  'cmd-beginning-of-line "C-a    beginning of line")
+    (list 'ctrl 101 'cmd-end-of-line       "C-e    end of line")
+    (list 'ctrl 98  'cmd-backward-char     "C-b    backward char (Left)")
+    (list 'ctrl 102 'cmd-forward-char      "C-f    forward char (Right)")
+    (list 'ctrl 100 'cmd-delete-forward    "C-d    delete forward char")
+    (list 'ctrl 107 'kill-line             "C-k    kill to end of line")
+    (list 'ctrl 112 'cmd-history-prev      "C-p    previous history (Up)")
+    (list 'ctrl 110 'cmd-history-next      "C-n    next history (Down)")
+    (list 'meta 102 'cmd-forward-word      "M-f    forward word")
+    (list 'meta 98  'cmd-backward-word     "M-b    backward word")
+    (list 'meta 100 'kill-word             "M-d    kill word")))
+
+(setq cx-keymap
+  (list
+    (list 'char 50  'split-repl-below "C-x 2  split below (new REPL)")
+    (list 'char 51  'split-repl-right "C-x 3  split right (new REPL)")
+    (list 'char 48  'delete-window    "C-x 0  delete window")
+    (list 'char 111 'other-window     "C-x o  other window")
+    (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")))
+
+(setq help-keymap
+  (list
+    (list 'char 102 'cmd-describe-function "C-h f  describe function")
+    (list 'char 107 'describe-key          "C-h k  describe key")
+    (list 'char 98  'describe-bindings     "C-h b  list key bindings")
+    (list 'char 109 'describe-mode         "C-h m  describe mode")))
+
+(defun key-lookup (ev km)
+  "The binding for EV (a (kind code ...) event) in keymap KM, or nil."
+  (cond ((null km) nil)
+        ((and (eq (nth 0 (car km)) (car ev)) (= (nth 1 (car km)) (cadr ev)))
+         (car km))
+        (t (key-lookup ev (cdr km)))))
+
+(defun run-key (ev km)
+  "If EV is bound in KM, run its command and return t; otherwise nil."
+  (let ((b (key-lookup ev km)))
+    (if b (progn (eval (list (nth 2 b))) t) nil)))
+
 (defun handle-cx (ev)
-  "The C-x map: 2/3 split, 0 delete, o other-window, C-s save -- note C-x C-s
-is two CTRL events, so this dispatches on the whole event, not a bare char."
+  "The C-x map (data-driven). C-x C-s is two CTRL events, so we dispatch on
+the whole event, not a bare char."
   (setq pending-cx nil)
-  (cond
-    ((and (eq (car ev) 'char) (= (cadr ev) 50)) (split-repl-below))  ; C-x 2
-    ((and (eq (car ev) 'char) (= (cadr ev) 51)) (split-repl-right))  ; C-x 3
-    ((and (eq (car ev) 'char) (= (cadr ev) 48)) (delete-window))  ; C-x 0
-    ((and (eq (car ev) 'char) (= (cadr ev) 111)) (other-window))  ; C-x o
-    ((and (eq (car ev) 'ctrl) (= (cadr ev) 115)) (save-buffer))   ; C-x C-s
-    (t (echo "unbound C-x key"))))
+  (if (run-key ev cx-keymap) nil (echo "unbound C-x key")))
 
 (defun dispatch (ev)
   "Route one cooked input event. The keymap is a cond -- live data."
@@ -194,36 +248,18 @@ is two CTRL events, so this dispatches on the whole event, not a bare char."
     ((eq (car ev) 'mouse)
      (select-window-at (cadr ev) (caddr ev)))
     ((eq (car ev) 'meta)
-     (cond ((= (cadr ev) 120) (mb-start 'mx))             ; M-x
-           ((= (cadr ev) 100) (kill-word))                ; M-d: kill word ahead
-           ((= (cadr ev) 102) (goto-char (fwd-word-pos))) ; M-f: forward word
-           ((= (cadr ev) 98)  (goto-char (bwd-word-pos))) ; M-b: backward word
-           (t nil)))
+     (if (= (cadr ev) 120) (mb-start 'mx)                 ; M-x (a prefix of its own)
+       (run-key ev global-keymap)))                       ; M-f/M-b/M-d, ...
     (pending-ch
      (setq pending-ch nil)
-     (if (and (eq (car ev) 'char) (= (cadr ev) 102))      ; C-h f
-         (mb-start 'describe)
-       (echo "unbound C-h key")))
+     (if (run-key ev help-keymap) nil (echo "unbound C-h key")))  ; C-h f/k/b/m
     ((eq (car ev) 'ctrl)
      (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
            ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
-           ((= (cadr ev) 98)                             ; C-b / Left: back a char
-            ;; In a REPL, stop at the prompt; in a file buffer, at position 0.
-            (let ((lo (edit-lo)))
-              (if (> (point) lo) (goto-char (- (point) 1)) nil)))
-           ((= (cadr ev) 102)                            ; C-f / Right: forward
-            (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
-           ((= (cadr ev) 97)  (goto-char (bol-pos)))     ; C-a: beginning of line
-           ((= (cadr ev) 101) (goto-char (eol-pos)))     ; C-e: end of line
-           ((= (cadr ev) 100) (del-fwd 1))               ; C-d: delete forward
-           ((= (cadr ev) 107) (kill-line))               ; C-k: kill to line end
-           ((= (cadr ev) 112)                            ; C-p / Up: history (REPL)
-            (if (editing-p) nil (repl-history-prev)))
-           ((= (cadr ev) 110)                            ; C-n / Down: history (REPL)
-            (if (editing-p) nil (repl-history-next)))
            ((= (cadr ev) 103) (setq pending-cx nil)      ; C-g: never mind
                               (echo "quit"))
-           (t nil)))
+           (t (run-key ev global-keymap))))              ; C-a/C-e/C-b/C-f/...
+
     ((eq (car ev) 'char)
      (if (editing-p)
          (edit-key (cadr ev))                             ; file buffer: plain edit
@@ -368,7 +404,56 @@ the very lambda the machine runs -- which you can redefine."
   (goto-char (buffer-length))
   (delete-char (buffer-length))
   (insert txt)
+  (goto-char 0)          ; show *Help* from the TOP, like Emacs (scroll follows point)
   (other-window))
+
+;; ---- self-documenting help: C-h k / C-h b / C-h m -----------------------
+
+(defun fmt-bindings (km)
+  "One description line per binding in KM."
+  (let ((s ""))
+    (foreach (lambda (b) (setq s (string-concat s (nth 3 b) "\n"))) km)
+    s))
+
+(defun describe-bindings ()
+  "C-h b: every key binding, in a *Help* window -- read from the live keymaps."
+  (show-help (string-concat
+    "=== Key bindings ===\n\n"
+    (fmt-bindings global-keymap)
+    (fmt-bindings cx-keymap)
+    (fmt-bindings help-keymap)
+    "\nC-x      prefix\nC-h      prefix (help)\nC-g      quit\n"
+    "M-x      run a command by name\nRET      evaluate (REPL) / newline (file)\n")))
+
+(defun describe-mode ()
+  "C-h m: describe the selected buffer's mode and the keys that work in it."
+  (show-help (string-concat
+    (if (editing-p)
+        "=== File buffer ===\n\nText self-inserts; RET inserts a newline.\nC-x C-s saves to disk.\n\n"
+      "=== REPL ===\n\nRET evaluates the input; the value prints below.\nUp/Down walk the input history.\n\n")
+    "Key bindings:\n\n"
+    (fmt-bindings global-keymap)
+    (fmt-bindings cx-keymap))))
+
+(defun describe-binding (b prefix)
+  (if b
+      (show-help (string-concat prefix (nth 3 b) "\n\nruns " (symbol-name (nth 2 b))
+                                "\n\n" (describe-function-text (nth 2 b))))
+    (show-help (string-concat prefix "key is unbound (or self-inserts)"))))
+
+(defun describe-key ()
+  "C-h k: read a key (following a C-x / C-h prefix) and report the command it
+runs, with that command's living source -- read from the same keymaps dispatch
+uses, so it is always accurate."
+  (echo "Describe key: press a key")
+  (redisplay)
+  (let ((ev (read-event)))
+    (cond
+      ((and (eq (car ev) 'ctrl) (= (cadr ev) 120))
+       (describe-binding (key-lookup (read-event) cx-keymap) "C-x "))
+      ((and (eq (car ev) 'ctrl) (= (cadr ev) 104))
+       (describe-binding (key-lookup (read-event) help-keymap) "C-h "))
+      (t (describe-binding (key-lookup ev global-keymap) "")))))
 
 (defun mb-commit ()
   (let ((sym (if mb-matches (nth mb-sel mb-matches)

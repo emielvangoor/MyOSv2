@@ -149,6 +149,30 @@ point. The prompt also gained a vertico-style position counter ("M-x  13/176").
 Verified by `tools/mxscroll_check.py`: M-x with no filter, Down x12, and the
 selection reaches 13 with the candidate window scrolled.
 
+## 27.8 — Self-documenting help: C-h k / C-h b / C-h m
+
+The Emacs trait the user prizes: the editor explains itself, because its
+keymaps are DATA and C-h reads the same data the dispatcher runs. The big move
+here was turning `dispatch`'s inline `cond` of keybindings into keymap tables.
+A binding is `(kind code command description)`; `global-keymap` (the ctrl/meta
+single-key commands), `cx-keymap` (the C-x map) and `help-keymap` (the C-h map)
+hold them, `key-lookup`/`run-key` drive dispatch from those tables, and each
+key runs a NAMED command (`cmd-beginning-of-line`, `kill-word`, ...) so its
+source is inspectable.
+
+- **C-h b** (`describe-bindings`) lists every binding from the live tables.
+- **C-h k** (`describe-key`) reads a key (following a C-x/C-h prefix) and shows
+  the command it runs PLUS that command's living source via
+  `describe-function-text` -- e.g. C-h k C-d shows `cmd-delete-forward` is
+  `(del-fwd 1)`.
+- **C-h m** (`describe-mode`) describes the selected buffer's mode (REPL vs
+  file) and its keys.
+
+`show-help` now leaves point at the top so *Help* shows from the beginning
+(the scroll-follows-point rule otherwise pinned it to the bottom). One source
+of truth: the help can never drift from what the keys actually do. Verified by
+`tools/helpkeys_check.py`.
+
 ## 27.4 — Windows scroll to keep point visible
 
 Buffers taller than their window simply ran off the bottom: the prompt and the
