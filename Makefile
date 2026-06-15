@@ -40,6 +40,12 @@ USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 MUSL_CC     := aarch64-linux-musl-gcc
 MUSL_PROGS  := mhello mmalloc mfork mfile
 MUSL_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(MUSL_PROGS))
+
+# Prebuilt static-musl binaries embedded in the initrd as-is (built from source
+# with CONFIG_STATIC + -Wl,-Ttext-segment=0x8000000000; see user/musl/*.bin).
+# busybox is the forcing function for the long syscall tail.
+PREBUILT_PROGS := busybox
+PREBUILT_ELFS  := $(patsubst %,$(BUILD)/user/%.elf,$(PREBUILT_PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
 # AArch64 default 64 KiB, so PT_LOAD vaddrs/offsets are page-aligned and small.
 # No -mgeneral-regs-only here (unlike CFLAGS): the FPU is enabled and its
@@ -160,10 +166,15 @@ $(BUILD)/user/%.elf: user/musl/%.c | $(BUILD)
 	mkdir -p $(BUILD)/user
 	$(MUSL_CC) -static -no-pie -Os -Wl,-Ttext-segment=$(MUSL_TEXT) -o $@ $<
 
+# Prebuilt binaries: just copy them into place for the blob.
+$(BUILD)/user/%.elf: user/musl/%.bin | $(BUILD)
+	mkdir -p $(BUILD)/user
+	cp $< $@
+
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
-$(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS)
+$(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS)
 	cd $(BUILD)/user && : > ../user_blob.c && \
-	  for p in $(PROGS) $(MUSL_PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
+	  for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@
