@@ -538,6 +538,9 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
 - ✅ **27.6 — independent REPLs**: REPL state went per-buffer (`repl-bufs`,
   `repl-starts`) so C-x 2 / C-x 3 give the new window its OWN fresh REPL
   instead of mirroring the current buffer. `tools/split_check.py`.
+- ✅ **27.7 — M-x list scrolls**: the vertico candidate window slides to follow
+  the selection (`mb-top`/`mb-move`) so all matches are reachable, with an
+  "i/n" position counter. `tools/mxscroll_check.py`.
 
 ---
 

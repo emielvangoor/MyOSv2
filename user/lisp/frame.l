@@ -282,7 +282,9 @@ the file buffer. Switch to the file with C-x o to start editing."
 (setq mb-action nil)        ; nil = inactive; 'mx or 'describe
 (setq mb-input "")
 (setq mb-matches nil)
-(setq mb-sel 0)
+(setq mb-sel 0)              ; selected candidate, an index into ALL matches
+(setq mb-top 0)             ; first VISIBLE candidate -- the scroll offset
+(setq mb-rows 8)            ; how many candidates the echo area shows at once
 
 (defun command-symbols ()
   "Every symbol whose function slot holds something runnable."
@@ -295,20 +297,41 @@ the file buffer. Switch to the file with C-x o to start editing."
                   (or (= (string-length mb-input) 0)
                       (string-search mb-input (symbol-name s))))
                 (command-symbols)))
-  (setq mb-sel 0))
+  (setq mb-sel 0)
+  (setq mb-top 0))
 
 (defun take (n lst)
   (if (or (= n 0) (null lst)) nil
     (cons (car lst) (take (- n 1) (cdr lst)))))
 
+(defun mb-move (d)
+  "Move the selection by D over ALL matches, scrolling the visible window
+(mb-top .. mb-top+mb-rows) to keep the selection inside it -- vertico's
+behavior, the same minimal-scroll rule the buffer uses for point."
+  (let ((n (length mb-matches)))
+    (if (> n 0)
+        (progn
+          (setq mb-sel (+ mb-sel d))
+          (if (< mb-sel 0) (setq mb-sel 0) nil)
+          (if (>= mb-sel n) (setq mb-sel (- n 1)) nil)
+          (if (< mb-sel mb-top) (setq mb-top mb-sel) nil)               ; scrolled up
+          (if (>= mb-sel (+ mb-top mb-rows))                            ; scrolled down
+              (setq mb-top (- mb-sel (- mb-rows 1))) nil))
+      nil)))
+
 (defun mb-render ()
-  "Paint the minibuffer: prompt+input on top, up to 8 candidates below,
-the selected one highlighted (echo-select drives the face-2 bar)."
-  (let ((txt (string-concat (if (eq mb-action 'mx) "M-x " "Describe: ") mb-input)))
+  "Paint the minibuffer: prompt + a position counter on top, then the visible
+slice of candidates (mb-top onward), the selected one highlighted (echo-select
+drives the face-2 bar)."
+  (let ((n (length mb-matches))
+        (txt (string-concat (if (eq mb-action 'mx) "M-x " "Describe: ") mb-input)))
+    (if (> n 0)
+        (setq txt (string-concat txt "  " (prin1-to-string (+ mb-sel 1))
+                                 "/" (prin1-to-string n))) nil)
     (foreach (lambda (s) (setq txt (string-concat txt "\n  " (symbol-name s))))
-             (take 8 mb-matches))
+             (take mb-rows (nthcdr mb-top mb-matches)))
     (echo txt)
-    (echo-select (+ mb-sel 1))))
+    (echo-select (+ (- mb-sel mb-top) 1))))
 
 (defun mb-start (action)
   (setq mb-action action)
@@ -363,13 +386,8 @@ the very lambda the machine runs -- which you can redefine."
   "The minibuffer keymap -- live data, like everything else here."
   (cond
     ((eq (car ev) 'ctrl)
-     (cond ((= (cadr ev) 110)                              ; C-n: down
-            (if (< (+ mb-sel 1) (length (take 8 mb-matches)))
-                (setq mb-sel (+ mb-sel 1)) nil)
-            (mb-render))
-           ((= (cadr ev) 112)                              ; C-p: up
-            (if (> mb-sel 0) (setq mb-sel (- mb-sel 1)) nil)
-            (mb-render))
+     (cond ((= (cadr ev) 110) (mb-move 1) (mb-render))     ; C-n / Down
+           ((= (cadr ev) 112) (mb-move -1) (mb-render))    ; C-p / Up
            ((= (cadr ev) 103) (mb-stop))                   ; C-g: cancel
            (t nil)))
     ((eq (car ev) 'char)

@@ -139,6 +139,16 @@ history stays shared (one command history across REPLs). Verified by
 `tools/split_check.py`: after C-x 2, `(+ 2 2)` evaluates in the new window
 only and does not bleed into the original.
 
+## 27.7 — The M-x vertico list scrolls
+
+The minibuffer painted only the first 8 matches and C-n/C-p couldn't move the
+selection past them, so commands further down were unreachable. Now `mb-sel` is
+an index into ALL matches and `mb-move` slides an 8-row window (`mb-top`) to
+keep the selection visible -- the same minimal-scroll rule the buffer uses for
+point. The prompt also gained a vertico-style position counter ("M-x  13/176").
+Verified by `tools/mxscroll_check.py`: M-x with no filter, Down x12, and the
+selection reaches 13 with the candidate window scrolled.
+
 ## 27.4 — Windows scroll to keep point visible
 
 Buffers taller than their window simply ran off the bottom: the prompt and the
