@@ -85,7 +85,41 @@ Lookup of an inheritable field walks `mode → parent → …`: `(mode-field m
 
 ### 3. The mode hierarchy (this spec)
 
-- **fundamental-mode** — root, `parent` nil.
+There are **two orthogonal hierarchies**, and "graphics is the substrate" lives
+in the first, not the second:
+
+- **Rendering axis (C, the `kind` field).** Pixels are the base: `rd_core`
+  writes pixels for everything. A surface buffer blits its canvas; a text buffer
+  **rasterizes glyphs into the same framebuffer**. So "text is a graphic" is true
+  at render time — it needs no mode to express it.
+- **Behavior axis (Lisp, the major-mode tree).** This is about *what keys do*,
+  inherited parent→child. The common base is not "surface" (that implies a pixel
+  canvas a text buffer doesn't have) but **"displayed + inert"**; pixels and text
+  editing are two specializations of it. This mirrors Emacs's `special-mode`
+  (inert: image-mode, dired, help) vs `fundamental-mode` (editing) being shallow
+  siblings — there is no "everything descends from image."
+
+The mode tree:
+
+```
+special-mode            ; root: displayed, ignores input
+  surface-mode          ; + a pixel canvas an external renderer draws into
+  fundamental-mode      ; + text self-insert / RET
+    text-mode
+    repl-mode
+    lisp-interaction-mode
+```
+
+- **special-mode** — root, `parent` nil.
+  - `on-self-insert` = `ignore-char` → no-op; `on-return` = `ignore-ret` → no-op.
+  - `keymap` nil; `setup-fn` nil; mode-line-name `"Special"`. An inert displayed
+    buffer: stray keys do nothing, but ctrl/meta still fall through to
+    `global-keymap` (so `C-x o` etc. still navigate away).
+- **surface-mode** ← special-mode. A full-window **pixel canvas** (the teapot /
+  any external renderer). Inherits the inert handlers (you can't type into a
+  canvas); mode-line-name `"Surface"`. Set automatically by the
+  `make-surface-buffer` Lisp wrapper (§9a).
+- **fundamental-mode** ← special-mode. Adds text editing:
   - `on-self-insert` = `fundamental-self-insert` → `(insert (string-from-char ch))`
   - `on-return` = `fundamental-return` → `(insert "\n")`
   - `keymap` nil; `setup-fn` nil; mode-line-name `"Fundamental"`.
@@ -204,8 +238,32 @@ a short banner. A `*repl*` is created on demand:
 
 `frame-tick`'s error-recovery (today: always `(insert pending) (insert "\n")
 (prompt)`) becomes mode-aware: insert the pending output, then only re-prompt if
-the current buffer's mode is repl-mode (resolved via a small
-`(mode-after-output m)` that repl-mode binds to `prompt` and others leave nil).
+the current buffer's mode is repl-mode.
+
+A `repl-here` command (bound to `C-x r`) turns the current window's buffer into
+a fresh REPL (clear + `set-major-mode … 'repl-mode`), so a REPL is one chord
+away from `*scratch*`. `new-repl` (used by `C-x 2` / `C-x 3`) likewise sets
+repl-mode.
+
+### 9a. `surface-mode` for graphical buffers
+
+Surface buffers (the teapot, any external renderer) are unchanged mechanically:
+`make-surface-buffer` (C) still allocates an shm pixel canvas marked
+`RD_SURFACE`, an external program draws into it, and `rd_core` blits it. The
+only addition brings them into the mode system: a thin **Lisp wrapper**
+`(make-surface name w h)` calls the C `make-surface-buffer` primitive and then
+`(set-major-mode b 'surface-mode)`. `teapot` (and any future renderer) uses the
+wrapper. Result: selecting `*teapot*` and typing does nothing (surface-mode
+inherits `ignore-char`/`ignore-ret` from special-mode) instead of corrupting the
+hidden text store, the mode line reads `(Surface)`, and `C-h m` describes it —
+uniform with text buffers.
+
+(Future, Spec 2: a *surface anchored to a text span* — `display`-property on a
+text run pointing at a surface handle — is how **inline graphics in a text
+buffer** will work. Surfaces become the unifying graphics primitive: full-window
+(surface-mode) or inline (a text property). That needs the text-property layer
+plus an `rd_core` change to blit a canvas across K×M cells during text layout,
+so it lives in the DolDoc/text-properties follow-on, not here.)
 
 ### 10. `C-x C-f` interactive
 
@@ -217,8 +275,8 @@ the current buffer's mode is repl-mode (resolved via a small
   `text-mode` buffer (`make-buffer-in path 'text-mode`), read the file in with
   `open`/`fd-read` (missing file → empty buffer), `(buffer-local-set b
   'file-path path)`, `(goto-char 0)`, `(redisplay)`. No auto-split.
-- Bind `C-x C-f` (`ctrl 6`) in `cx-keymap` to a command `cmd-find-file` →
-  `(mb-start 'find-file)`.
+- Bind `C-x C-f` (`ctrl 102`, `f`=102) in `cx-keymap` to a command
+  `cmd-find-file` → `(mb-start 'find-file)`.
 - `save-buffer` reads `file-path` from buffer-locals (§4); unchanged behavior.
 
 The minibuffer generalization: `mb-source`/`mb-filter`/`mb-render`/`mb-commit`
@@ -287,12 +345,16 @@ screendump, OCR'd against `font_aa.h`, like the Phase-27 checks):
 - `tools/textmode_check.py`: `C-x C-f`, type a `/disk/...` path, RET, type text,
   `C-x C-s`; reopen the same path in a fresh boot (persistent disk) and verify
   the text is present; mode line reads `(Text)`.
-- `tools/replmode_check.py`: `C-x 2` opens a repl-mode window whose mode line
+- `tools/replmode_check.py`: `C-x r` opens a repl-mode window whose mode line
   reads `(REPL)` and whose RET evaluates.
+- `tools/surface_check.py`: `(teapot)` (via a REPL) opens `*teapot*` whose mode
+  line reads `(Surface)`.
 
-All existing KTESTs (`make test`, currently 155) and `tools/*_check.py` must
-stay green — the rd_core mode-line change is additive and guarded by a
-non-empty `mode_name`.
+Existing KTESTs go 155 → **156** (one new `rd: modeline shows mode name`).
+Changing the frame's default buffer from a REPL to `*scratch*` changes
+RET-evaluates-here, so the ~13 existing frame checks that type a form+RET get a
+one-line "open a REPL here" (`C-x r`) preamble — that fallout is handled
+explicitly in the plan, not waved away.
 
 ## Risks
 
