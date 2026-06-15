@@ -38,8 +38,14 @@ separate per-process mode.
   `getpid`/`yield`) + `openat` on Linux numbers + negative-errno; `errno` infra.
 - ✅ **B-SP2** — **a static musl `hello` runs and prints** (`set_tid_address`,
   `ioctl`→`ENOTTY`, `writev`; programs linked into the clean user VA range).
-- ⬜ **B-SP3** — files & processes depth (next).
-- ⬜ **B-SP4** — busybox.
+- ✅ **B-SP3** — files & processes: `mmap`/`brk` (malloc), `clone`/`execve`/
+  `wait4` (fork/exec/wait + Linux exit-status encoding), `lseek`/`fstat`/
+  `newfstatat`. Demonstrated by `mmalloc`, `mfork`, `mfile`.
+- ✅ **B-SP4** — **static-musl busybox 1.36.1 runs cleanly.** `busybox echo`,
+  `uname -a` (`Linux ... aarch64`), `true` all work. VA layout spread for the
+  ~1.25 MB image; `getuid`/`uname` added. The forcing function is in:
+  `[syscall] unhandled #N` drives the long tail (getdents64/pipe2/dup3/… →
+  more applets → gcc).
 
 ## Decomposition (each its own spec → plan → build)
 
