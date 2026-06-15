@@ -535,6 +535,9 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   (pure Lisp over a new `(char-at)` primitive), clamped to the prompt in the
   REPL. Fixed `repl-eval` to append at end-of-buffer (cursor motion could leave
   point mid-input). `tools/keyedit_check.py`.
+- ✅ **27.6 — independent REPLs**: REPL state went per-buffer (`repl-bufs`,
+  `repl-starts`) so C-x 2 / C-x 3 give the new window its OWN fresh REPL
+  instead of mirroring the current buffer. `tools/split_check.py`.
 
 ---
 

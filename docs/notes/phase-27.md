@@ -124,6 +124,21 @@ into the middle** once cursor motion leaves point elsewhere. Fixed by
 Verified by `tools/keyedit_check.py`, which edits expressions into shape with
 these keys and checks the evaluated results (C-a+C-d -> 42, C-k -> 2, M-d -> 16).
 
+## 27.6 — Each split is its own REPL
+
+C-x 2 / C-x 3 used to split the window but leave BOTH halves showing the same
+buffer, so the new window just mirrored the old (typing in either changed
+both). Now each split gets a fresh, independent REPL. The enabling change was
+making REPL state **per buffer** instead of global: `repl-bufs` is the set of
+handles that are REPLs (so `editing-p` is "current buffer isn't a REPL"), and
+`repl-starts` is an alist mapping each buffer to where its prompt left off
+(`cur-start`/`set-cur-start` replace the old single `repl-start` global). The
+split commands (`split-repl-below`/`-right`) split, move to the new window,
+and `new-repl` makes a fresh `*repl*` buffer with its own prompt. Command
+history stays shared (one command history across REPLs). Verified by
+`tools/split_check.py`: after C-x 2, `(+ 2 2)` evaluates in the new window
+only and does not bleed into the original.
+
 ## 27.4 — Windows scroll to keep point visible
 
 Buffers taller than their window simply ran off the bottom: the prompt and the

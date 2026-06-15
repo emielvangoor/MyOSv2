@@ -8,25 +8,42 @@
 ;;;
 ;;; Loaded by `lisp -frame` after bootstrap.l and system.l.
 
-;; Where the current REPL input begins (just after the last prompt).
-(setq repl-start 0)
-
-;; Input history: submitted forms, most-recent-first, walked with Up/Down
-;; (which the kernel cooks into C-p/C-n). repl-hist-idx is the position being
-;; shown -- -1 means "not navigating; the live line is the user's own".
+;; REPL state, kept PER BUFFER so each split window is an independent REPL:
+;;   repl-bufs   -- handles that are REPLs (vs file/editable buffers)
+;;   repl-starts -- alist (handle . input-start), where the prompt left off
+;; Input history is shared across REPLs (one command history), newest-first;
+;; repl-hist-idx is the position being shown (-1 = the live line).
+(setq repl-bufs nil)
+(setq repl-starts nil)
 (setq repl-history nil)
 (setq repl-hist-idx -1)
 
+(defun in-list (x lst)                 ; numeric membership (handles are fixnums)
+  (cond ((null lst) nil) ((= x (car lst)) t) (t (in-list x (cdr lst)))))
+
+(defun repl-buf-p (b) (in-list b repl-bufs))
+
+(defun cur-start ()
+  "Where the SELECTED buffer's REPL input begins (0 if it has no prompt yet)."
+  (let ((e (assoc (current-buffer) repl-starts)))
+    (if e (cdr e) 0)))
+
+(defun set-cur-start (pos)
+  "Record the current buffer's input start, replacing any previous entry."
+  (let ((b (current-buffer)))
+    (setq repl-starts (cons (cons b pos)
+                            (filter (lambda (e) (not (= (car e) b))) repl-starts)))))
+
 (defun prompt ()
-  "Show a fresh prompt and remember where input starts."
+  "Show a fresh prompt and remember where input starts (in THIS buffer)."
   (insert "lisp> ")
-  (setq repl-start (buffer-length)))
+  (set-cur-start (buffer-length)))
 
 (defun repl-eval ()
   "Evaluate the text after the last prompt; print its value; re-prompt.
 The whole REPL in one function: buffer-substring lifts the input out of
 the buffer, read-string turns text into a form, eval runs it."
-  (let ((src (buffer-substring repl-start (buffer-length))))
+  (let ((src (buffer-substring (cur-start) (buffer-length))))
     ;; Remember non-empty input, and leave history-navigation mode: the next
     ;; Up starts again from the most recent entry.
     (if (> (string-length src) 0)
@@ -45,7 +62,7 @@ the buffer, read-string turns text into a form, eval runs it."
 
 (defun repl-set-input (s)
   "Replace the current REPL input (everything after the prompt) with S."
-  (let ((n (- (buffer-length) repl-start)))
+  (let ((n (- (buffer-length) (cur-start))))
     (if (> n 0) (delete-char n) nil))     ; erase the old line back to the prompt
   (insert s))
 
@@ -66,15 +83,33 @@ the buffer, read-string turns text into a form, eval runs it."
 ;; C-x prefix state: nil normally, t after a C-x.
 (setq pending-cx nil)
 
-;; The REPL's buffer handle, and the alist of (buffer . file path) for buffers
-;; visiting a file. editing-p tells dispatch which keymap to use: the same RET
-;; means "evaluate" in the REPL and "insert a newline" in a file buffer.
-(setq repl-buf 0)
+;; The alist of (buffer . file path) for buffers visiting a file. editing-p
+;; tells dispatch which keymap to use: the same RET means "evaluate" in a REPL
+;; buffer and "insert a newline" in a file buffer.
 (setq file-of nil)
 
 (defun editing-p ()
-  "t when the selected buffer is a plain editable buffer, not the REPL."
-  (not (= (current-buffer) repl-buf)))
+  "t when the selected buffer is a plain editable buffer, not a REPL."
+  (not (repl-buf-p (current-buffer))))
+
+(defun new-repl ()
+  "Turn the selected window's buffer into a FRESH REPL: a new buffer, marked as
+a REPL, with its own prompt. The split commands use this so each window is an
+independent REPL instead of mirroring one shared buffer."
+  (let ((b (make-buffer "*repl*")))
+    (set-buffer b)
+    (setq repl-bufs (cons b repl-bufs))
+    (goto-char 0)
+    (prompt)
+    b))
+
+(defun split-repl-below ()
+  "C-x 2: split, and give the new (lower) window its own fresh REPL."
+  (split-below) (other-window) (new-repl) (redisplay))
+
+(defun split-repl-right ()
+  "C-x 3: split side by side, fresh REPL in the new (right) window."
+  (split-right) (other-window) (new-repl) (redisplay))
 
 (defun edit-key (ch)
   "Self-insert editing for a file buffer: backspace deletes before point,
@@ -89,7 +124,7 @@ everything else (RET included -> a newline) inserts at point."
 
 (defun edit-lo ()
   "Leftmost editable position: 0 in a file buffer, the prompt in the REPL."
-  (if (editing-p) 0 repl-start))
+  (if (editing-p) 0 (cur-start)))
 
 (defun word-char-p (c)
   (or (and (>= c 48) (<= c 57))          ; 0-9
@@ -143,8 +178,8 @@ move right K and delete K -- those K become the chars that were ahead."
 is two CTRL events, so this dispatches on the whole event, not a bare char."
   (setq pending-cx nil)
   (cond
-    ((and (eq (car ev) 'char) (= (cadr ev) 50)) (split-below))    ; C-x 2
-    ((and (eq (car ev) 'char) (= (cadr ev) 51)) (split-right))    ; C-x 3
+    ((and (eq (car ev) 'char) (= (cadr ev) 50)) (split-repl-below))  ; C-x 2
+    ((and (eq (car ev) 'char) (= (cadr ev) 51)) (split-repl-right))  ; C-x 3
     ((and (eq (car ev) 'char) (= (cadr ev) 48)) (delete-window))  ; C-x 0
     ((and (eq (car ev) 'char) (= (cadr ev) 111)) (other-window))  ; C-x o
     ((and (eq (car ev) 'ctrl) (= (cadr ev) 115)) (save-buffer))   ; C-x C-s
@@ -173,9 +208,8 @@ is two CTRL events, so this dispatches on the whole event, not a bare char."
      (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
            ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
            ((= (cadr ev) 98)                             ; C-b / Left: back a char
-            ;; In the REPL, stop at the prompt (repl-start); in a file buffer,
-            ;; at the start of the buffer.
-            (let ((lo (if (editing-p) 0 repl-start)))
+            ;; In a REPL, stop at the prompt; in a file buffer, at position 0.
+            (let ((lo (edit-lo)))
               (if (> (point) lo) (goto-char (- (point) 1)) nil)))
            ((= (cadr ev) 102)                            ; C-f / Right: forward
             (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
@@ -197,7 +231,7 @@ is two CTRL events, so this dispatches on the whole event, not a bare char."
          (cond
            ((= ch 10) (repl-eval))                        ; RET: evaluate
            ((= ch 8)                                      ; backspace: char before
-            (if (> (point) repl-start) (delete-char 1) nil))  ; point, not the prompt
+            (if (> (point) (cur-start)) (delete-char 1) nil)) ; point, not the prompt
            (t (insert (string-from-char ch)))))))         ; self-insert (at point)
     (t nil)))
 
@@ -493,7 +527,7 @@ the current buffer, where the person at the frame can actually see it."
   "Acquire the screen and greet. Returns nil when there is no display."
   (if (frame-init)
       (progn
-        (setq repl-buf (current-buffer))   ; the REPL is whatever frame-init selected
+        (setq repl-bufs (list (current-buffer)))  ; the first REPL is frame-init's buffer
         (insert "MyOSv2 Graphical Lisp Machine\n")
         (insert "C-x 2/3 split  C-x 0 delete  C-x o next  mouse-1 select\n\n")
         (prompt)
