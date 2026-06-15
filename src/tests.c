@@ -1022,16 +1022,26 @@ static void test_exec_argv_on_stack(void)
 
     char *argv[] = { "ping", "example.com", 0 };
     int argc = -1;
-    uint64_t sp = proc_setup_argv(as, argv, &argc);
+    uint64_t argv_arr = 0;
+    uint64_t sp = proc_setup_argv(as, argv, &argc, &argv_arr);
     KASSERT(argc == 2);
     KASSERT((sp & 15) == 0);                       // AArch64 needs a 16-aligned sp
 
+    // The Linux/aarch64 initial stack: sp -> argc, argv[], NULL, envp NULL, auxv.
     uint64_t pbase = USER_STACK_TOP - 0x1000;      // VA of the top stack page
     uint8_t *page = (uint8_t *)(uintptr_t)as_translate(as, pbase);
-    uint64_t a0 = stack_u64(page, pbase, sp);      // argv[0]
-    uint64_t a1 = stack_u64(page, pbase, sp + 8);  // argv[1]
-    uint64_t aN = stack_u64(page, pbase, sp + 16); // argv[2]
-    KASSERT(aN == 0);                              // NULL-terminated
+    KASSERT(stack_u64(page, pbase, sp) == 2);          // argc at sp
+    KASSERT(argv_arr == sp + 8);                       // argv[] right after argc
+    uint64_t a0 = stack_u64(page, pbase, sp + 8);      // argv[0]
+    uint64_t a1 = stack_u64(page, pbase, sp + 16);     // argv[1]
+    KASSERT(stack_u64(page, pbase, sp + 24) == 0);     // argv[argc] = NULL
+    KASSERT(stack_u64(page, pbase, sp + 32) == 0);     // envp[0]   = NULL
+    KASSERT(stack_u64(page, pbase, sp + 40) == 6);     // AT_PAGESZ
+    KASSERT(stack_u64(page, pbase, sp + 48) == 4096);  //   = page size
+    KASSERT(stack_u64(page, pbase, sp + 56) == 25);    // AT_RANDOM
+    uint64_t rnd = stack_u64(page, pbase, sp + 64);    //   -> 16 bytes in the page
+    KASSERT(rnd >= pbase && rnd < USER_STACK_TOP);
+    KASSERT(stack_u64(page, pbase, sp + 72) == 0);     // AT_NULL terminates auxv
 
     const char *s0 = (const char *)&page[a0 - pbase];
     const char *s1 = (const char *)&page[a1 - pbase];
