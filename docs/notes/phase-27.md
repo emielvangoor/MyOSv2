@@ -214,3 +214,19 @@ line), while moving point up scrolls up by exactly the overflow. KTEST `rd:
 scroll follows point` (a 20-line buffer in a ~6-row window scrolls to the end,
 then back to 0 when point returns home) plus `tools/scroll_check.py` (50 lines
 at the REPL; the banner scrolls off, line 49 and a fresh prompt stay visible).
+
+
+## 27.11 — A persistent disk that boots into the frame
+
+The recurring "I only see the splash" problem: the graphical frame autostarts
+only if `/disk/init.l` exists (PID 1 loads it on boot), and a freshly-created
+`disk.img` was blank `dd`-zero -- no init.l -- so a reset disk dropped you at
+the serial REPL. Fixed at the source: `tools/mkdisk.py` builds a valid SFS
+image (mirroring `src/sfs.c` byte-for-byte) **pre-seeded** with
+`/init.l = (run-bg "lisp" "-frame")`, and the Makefile's `$(DISK)` rule uses it
+instead of `dd`. A brand-new persistent disk now boots straight into the frame,
+keeps doing so (the disk persists -- `make clean`/`test` never touch it), and
+`/disk/init.l` stays editable from inside the machine. `make fresh-disk`
+re-seeds on demand. The test scratch disk stays blank, so the serial-based
+checks are unaffected. Verified by `tools/autostart_check.py` (boot a seeded
+image; init.l loads and the frame comes up by itself).

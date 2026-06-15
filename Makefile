@@ -93,10 +93,19 @@ $(BUILD)/disk.img: | $(BUILD)
 
 # The PERSISTENT disk for interactive runs: lives at the repo root (gitignored)
 # so `make clean` / `make test` never destroy it -- /disk/init.l and anything
-# else the machine writes survives. Tests keep using the build-local scratch.
+# else the machine writes survives. Tests keep using the build-local (blank)
+# scratch. A FRESH persistent disk is pre-seeded with /init.l (via mkdisk.py)
+# so it boots straight into the graphical frame; existing disks are left alone.
 DISK := disk.img
 $(DISK):
-	dd if=/dev/zero of=$@ bs=1m count=4 2>/dev/null
+	python3 tools/mkdisk.py $@
+
+# Rebuild the persistent disk from scratch (re-seeds /init.l). Destroys any
+# files the machine wrote -- run it when the frame stops autostarting.
+.PHONY: fresh-disk
+fresh-disk:
+	rm -f $(DISK)
+	python3 tools/mkdisk.py $(DISK)
 
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@

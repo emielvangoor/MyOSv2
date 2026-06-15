@@ -553,6 +553,10 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   complete over any candidates (`mb-source`/`mb-label`); switch-to-buffer
   completes over buffer names and shows the pick in the window.
   `tools/bufswitch_check.py`.
+- ✅ **27.11 — disk boots into the frame**: `tools/mkdisk.py` builds a fresh
+  persistent `disk.img` pre-seeded with `/init.l = (run-bg "lisp" "-frame")`
+  (the `$(DISK)` rule + `make fresh-disk`), so a reset disk boots straight into
+  the graphical machine instead of the bare serial REPL. `tools/autostart_check.py`.
 
 ---
 
