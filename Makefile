@@ -38,7 +38,7 @@ USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 # the loader needs no relocations) and embedded in the initrd alongside the
 # native programs. The whole point of Phase 28: these run on the migrated ABI.
 MUSL_CC     := aarch64-linux-musl-gcc
-MUSL_PROGS  := mhello mmalloc mfork
+MUSL_PROGS  := mhello mmalloc mfork mfile
 MUSL_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(MUSL_PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
 # AArch64 default 64 KiB, so PT_LOAD vaddrs/offsets are page-aligned and small.

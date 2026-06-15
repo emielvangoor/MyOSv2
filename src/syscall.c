@@ -29,6 +29,20 @@
 #include "vm.h"
 #include "seat.h"
 
+// Fill a Linux/aarch64 `struct stat` (128 bytes) for a vnode -- enough fields
+// (mode, nlink, size, blksize/blocks) for musl's stat()/fstat() to be useful.
+static void fill_stat(void *ubuf, struct vnode *vn)
+{
+    uint8_t *s = (uint8_t *)ubuf;
+    for (int i = 0; i < 128; i++) { s[i] = 0; }
+    uint32_t mode = (vn->type == VN_DIR) ? (040000 | 0755) : (0100000 | 0644);
+    *(uint32_t *)(s + 16) = mode;                       // st_mode
+    *(uint32_t *)(s + 20) = 1;                          // st_nlink
+    *(int64_t  *)(s + 48) = (int64_t)vn->size;          // st_size
+    *(int32_t  *)(s + 56) = 512;                        // st_blksize
+    *(int64_t  *)(s + 64) = (int64_t)((vn->size + 511) / 512);  // st_blocks
+}
+
 long do_syscall(struct trapframe *tf)
 {
     uint64_t num = tf->x[8];
@@ -175,6 +189,35 @@ long do_syscall(struct trapframe *tf)
     case SYS_RT_SIGPROCMASK:                 // x0=how, x1=set, x2=oldset, x3=sigsetsize
         ret = 0;                             // no per-process signal mask yet -> no-op
         break;
+    case SYS_LSEEK: {                        // x0=fd, x1=offset, x2=whence
+        uint64_t fd = tf->x[0];
+        long off = (long)tf->x[1];
+        int whence = (int)tf->x[2];          // 0=SET, 1=CUR, 2=END
+        struct file **fds = sched_current_fds();
+        if (!fds || fd >= 16 || !fds[fd] || !fds[fd]->vnode) { ret = -EBADF; break; }
+        long base = (whence == 1) ? (long)fds[fd]->off
+                  : (whence == 2) ? (long)fds[fd]->vnode->size : 0;
+        long neu = base + off;
+        if (neu < 0) { ret = -EINVAL; break; }
+        fds[fd]->off = (uint64_t)neu;
+        ret = neu;
+        break;
+    }
+    case SYS_FSTAT: {                        // x0=fd, x1=statbuf
+        uint64_t fd = tf->x[0];
+        struct file **fds = sched_current_fds();
+        if (!fds || fd >= 16 || !fds[fd] || !fds[fd]->vnode) { ret = -EBADF; break; }
+        fill_stat((void *)(uintptr_t)tf->x[1], fds[fd]->vnode);
+        ret = 0;
+        break;
+    }
+    case SYS_NEWFSTATAT: {                    // x0=dirfd, x1=path, x2=statbuf, x3=flags
+        struct vnode *vn = vfs_lookup((const char *)(uintptr_t)tf->x[1]);
+        if (!vn) { ret = -ENOENT; break; }
+        fill_stat((void *)(uintptr_t)tf->x[2], vn);
+        ret = 0;
+        break;
+    }
     case SYS_BRK: {                          // x0 = new break (0 = query)
         // Linux brk: set the break to x0 and return the resulting break; a 0
         // (or out-of-range) request just returns the current one. as_sbrk is

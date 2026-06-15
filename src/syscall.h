@@ -33,6 +33,9 @@
 #define SYS_WRITEV 66  // x0=fd, x1=struct iovec*, x2=iovcnt -> bytes / -errno
 #define SYS_SET_TID_ADDRESS 96  // x0=ptr (ignored; single-threaded) -> tid
 #define SYS_RT_SIGPROCMASK 135  // no per-process signal mask yet -> 0 (no-op)
+#define SYS_LSEEK  62  // x0=fd, x1=offset, x2=whence -> new offset / -errno
+#define SYS_NEWFSTATAT 79 // x0=dirfd, x1=path, x2=statbuf, x3=flags -> 0 / -errno
+#define SYS_FSTAT  80  // x0=fd, x1=statbuf -> 0 / -errno
 #define SYS_BRK    214 // x0=new break (0=query) -> resulting break
 #define SYS_MUNMAP 215 // x0=va, x1=len -> 0 / -errno
 #define SYS_MMAP   222 // x0=addr,x1=len,... (anonymous) -> base VA / -ENOMEM
