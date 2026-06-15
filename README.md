@@ -196,6 +196,14 @@ photograph itself: `(screenshot "/shot.ppm")`.
 - **M-x + describe-function, vertico-style** — the echo area grows into a
   live-narrowing command palette over the image's own symbol table; `C-h f`
   shows a function's *living source* in a `*Help*` window, ready to redefine.
+- **Major modes** — the frame boots into `*scratch*` (lisp-interaction-mode:
+  `C-j` evaluates the form before point and inserts the result inline). `C-x C-f`
+  opens a file in `text-mode` in the current window; `C-x C-s` saves; `C-x r`
+  opens a REPL (repl-mode) in the current window. The mode line names the active
+  mode, and `C-h m` / `C-h b` describe it from the live keymaps. Surface buffers
+  (the teapot canvas and friends) use `surface-mode`. The hierarchy is
+  `special-mode` (inert root) → `surface-mode` + `fundamental-mode` →
+  `text-mode` / `repl-mode` / `lisp-interaction-mode`.
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to

@@ -560,6 +560,34 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
 
 ---
 
+## Phase 28 — Emacs-style major modes  ✅ DONE
+
+A real Emacs-style major-mode system layered over the graphical Lisp machine.
+**Spec:** `docs/superpowers/specs/2026-06-15-major-modes-design.md`
+· **Plan:** `docs/superpowers/plans/2026-06-15-major-modes.md`
+
+- ✅ Pure mode model in `user/lisp/modes.l`: `*modes*` registry,
+  `register-mode`, `define-derived-mode`, buffer-local variables,
+  `key-lookup` / `mode-key-lookup`. Hierarchy: `special-mode` (inert root)
+  → `surface-mode` + `fundamental-mode` → `text-mode` / `repl-mode` /
+  `lisp-interaction-mode`.
+- ✅ Mode-line field: `char mode_line[24]` in `struct rd_buffer`
+  (`src/rd.h`); painted as `-- name  (mode_line) --` by `rd_core.c`;
+  `(set-mode-line-name str)` primitive from `user/lm_gfx.c`. KTEST
+  `rd: modeline shows mode name`.
+- ✅ Mode definitions + `set-major-mode` + `eval-last-sexp` in `frame.l`;
+  dispatch rewired onto `mode-key-lookup`; boot into `*scratch*`
+  (lisp-interaction-mode).
+- ✅ `repl-here` / `C-x r` opens a REPL (repl-mode) in the current window;
+  `C-x C-f` opens files in `text-mode`; `surface-mode` wraps the teapot
+  canvas. Mode-aware `frame-tick` recovery and `describe-mode` /
+  `describe-bindings` follow the live keymap chain.
+- [x] Emacs-style major modes (fundamental/text/repl/lisp-interaction),
+      `*scratch*` default, interactive `C-x C-f`, mode line names the mode.
+      Spec: docs/superpowers/specs/2026-06-15-major-modes-design.md
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
