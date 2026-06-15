@@ -85,6 +85,11 @@ the buffer, read-string turns text into a form, eval runs it."
     (set-major-mode b 'repl-mode)                         ; prompts via repl-setup
     b))
 
+(defun repl-here ()
+  "C-x r: turn the current window's buffer into a fresh REPL (clear + prompt)."
+  (goto-char (buffer-length)) (delete-char (buffer-length))   ; clear the buffer
+  (set-major-mode (current-buffer) 'repl-mode))
+
 (defun split-repl-below ()
   "C-x 2: split, and give the new (lower) window its own fresh REPL."
   (split-below) (other-window) (new-repl) (redisplay))
@@ -306,7 +311,8 @@ so forget help-buf and let show-help re-split next time."
     (list 'char 111 'other-window     "C-x o  other window")
     (list 'char 98  'switch-to-buffer "C-x b  switch to buffer")
     (list 'ctrl 98  'list-buffers     "C-x C-b  list buffers")
-    (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")))
+    (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")
+    (list 'char 114 'repl-here       "C-x r    open a REPL in this window")))
 
 (setq help-keymap
   (list
@@ -755,12 +761,11 @@ the current buffer, where the person at the frame can actually see it."
       nil)))
 
 (defun frame-setup ()
-  "Acquire the screen and greet. Returns nil when there is no display."
+  "Acquire the screen, then open *scratch* in lisp-interaction-mode (Emacs-style)."
   (if (frame-init)
       (progn
-        (insert "MyOSv2 Graphical Lisp Machine\n")
-        (insert "C-x 2/3 split  C-x 0 delete  C-x o next  mouse-1 select\n\n")
-        (set-major-mode (current-buffer) 'repl-mode)       ; prompts at end
+        (let ((sb (make-buffer "*scratch*")))
+          (set-major-mode sb 'lisp-interaction-mode))     ; selects + banner
         (echo "ready")
         (redisplay)
         t)
@@ -793,7 +798,9 @@ only what changed -- an idle machine costs nothing."
         ;; aborted mid-eval (a typo): show what it printed -- the ERROR line
         ;; -- and lay a fresh prompt, which also re-anchors repl-start past
         ;; the broken input so the next RET doesn't re-eval it.
-        (progn (insert pending) (insert "\n") (prompt) (redisplay))
+        (progn (insert pending) (insert "\n")
+               (if (eq (buffer-mode (current-buffer)) 'repl-mode) (prompt) nil)
+               (redisplay))
       nil))
   (if animate
       ;; Animation heartbeat: poll input, repaint at ~25Hz so live surface

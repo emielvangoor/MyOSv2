@@ -94,6 +94,43 @@ def row_text(font, w, data, row, ncols=40):
     return "".join(cell_char(font, w, data, c, row) for c in range(ncols)).rstrip()
 
 
+# The mode line is painted in face 1 (inverse video: dark glyphs on a grey
+# bar), so the default light-on-dark OCR above (cell_char/row_text) can't read
+# it. Decode those rows with the inverse face colors instead. (fg/bg are face
+# 1's defaults from src/rd_core.c: fg=0x1D2021, bg=0x928374.)
+INV_FG = (0x1D, 0x20, 0x21)
+INV_BG = (0x92, 0x83, 0x74)
+
+
+def inv_cell(font, w, data, col, row):
+    bits = []
+    for gy in range(CELL_H):
+        y = row * CELL_H + gy
+        rb = 0
+        for gx in range(CELL_W):
+            x = col * CELL_W + gx
+            off = 3 * (y * w + x)
+            px = data[off:off + 3]
+            d_bg = sum(abs(px[i] - INV_BG[i]) for i in range(3))
+            d_fg = sum(abs(px[i] - INV_FG[i]) for i in range(3))
+            if d_fg < d_bg:
+                rb |= 1 << gx
+        bits.append(rb)
+    best, bs = "?", -1
+    mask = (1 << CELL_W) - 1
+    for ch, rows in font.items():
+        sc = sum(bin(~(bits[i] ^ rows[i]) & mask).count("1") for i in range(CELL_H))
+        if sc > bs:
+            best, bs = ch, sc
+    return best
+
+
+def inv_row(font, w, data, row, ncols=60):
+    # ncols=60 scans wider than body text (row_text's 40) to capture the full
+    # mode line, which spans the whole window width.
+    return "".join(inv_cell(font, w, data, c, row) for c in range(ncols)).rstrip()
+
+
 def main() -> int:
     font = load_font()
     dump = os.path.join(tempfile.gettempdir(), "myosv2-frame-check.ppm")
