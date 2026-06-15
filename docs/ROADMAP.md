@@ -517,8 +517,10 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   serial port -- typed chars echo into the buffer and feed the child, RET
   sends a line, C-d is EOF, C-c still group-kills the job. Pure Lisp
   (`frame.l`); verified by `tools/stdin_check.py` (type into a live `wc`).
-- ⬜ **27.2 — line editing / in-buffer comint**: cooked input (backspace edits
-  the line instead of sending char-8), input history.
+- ✅ **27.2 — line editing + history**: `stream-thunk` runs canonical (cooked)
+  input -- backspace edits the buffered line, RET delivers it, C-d is EOF;
+  and the REPL keeps an Up/Down history of submitted forms. Verified by
+  `tools/lineedit_check.py` and `tools/history_check.py`.
 - ⬜ **27.3 — editable file buffers**: `find-file`, edit a buffer, save back to
   disk -- the larger Emacs-machine step.
 

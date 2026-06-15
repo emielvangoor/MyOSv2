@@ -11,6 +11,12 @@
 ;; Where the current REPL input begins (just after the last prompt).
 (setq repl-start 0)
 
+;; Input history: submitted forms, most-recent-first, walked with Up/Down
+;; (which the kernel cooks into C-p/C-n). repl-hist-idx is the position being
+;; shown -- -1 means "not navigating; the live line is the user's own".
+(setq repl-history nil)
+(setq repl-hist-idx -1)
+
 (defun prompt ()
   "Show a fresh prompt and remember where input starts."
   (insert "lisp> ")
@@ -21,12 +27,37 @@
 The whole REPL in one function: buffer-substring lifts the input out of
 the buffer, read-string turns text into a form, eval runs it."
   (let ((src (buffer-substring repl-start (buffer-length))))
+    ;; Remember non-empty input, and leave history-navigation mode: the next
+    ;; Up starts again from the most recent entry.
+    (if (> (string-length src) 0)
+        (setq repl-history (cons src repl-history)) nil)
+    (setq repl-hist-idx -1)
     (insert "\n")
     (let ((val (eval (read-string src))))
       (flush-output)                ; princ'd text lands HERE, before the value
       (insert (prin1-to-string val))
       (insert "\n")
       (prompt))))
+
+(defun repl-set-input (s)
+  "Replace the current REPL input (everything after the prompt) with S."
+  (let ((n (- (buffer-length) repl-start)))
+    (if (> n 0) (delete-char n) nil))     ; erase the old line back to the prompt
+  (insert s))
+
+(defun repl-recall ()
+  "Show the history entry at repl-hist-idx (or an empty line at -1)."
+  (repl-set-input (if (>= repl-hist-idx 0) (nth repl-hist-idx repl-history) "")))
+
+(defun repl-history-prev ()
+  "Up / C-p: step to an OLDER entry, if there is one."
+  (if (< (+ repl-hist-idx 1) (length repl-history))
+      (progn (setq repl-hist-idx (+ repl-hist-idx 1)) (repl-recall)) nil))
+
+(defun repl-history-next ()
+  "Down / C-n: step to a NEWER entry, or back to the empty line."
+  (if (>= repl-hist-idx 0)
+      (progn (setq repl-hist-idx (- repl-hist-idx 1)) (repl-recall)) nil))
 
 ;; C-x prefix state: nil normally, t after a C-x.
 (setq pending-cx nil)
@@ -58,6 +89,8 @@ the buffer, read-string turns text into a form, eval runs it."
     ((eq (car ev) 'ctrl)
      (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
            ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
+           ((= (cadr ev) 112) (repl-history-prev))       ; C-p / Up: older
+           ((= (cadr ev) 110) (repl-history-next))       ; C-n / Down: newer
            ((= (cadr ev) 103) (setq pending-cx nil)      ; C-g: never mind
                               (echo "quit"))
            (t nil)))
@@ -214,10 +247,11 @@ Switch with Ctrl-Alt-F1..F4 or (switch-seat n). Returns the child's pid."
   "Run THUNK in a forked child wired to TWO pipes -- the child's fd 1 streams
 into the current buffer (output), and the frame's keyboard streams into the
 child's fd 0 (input). The terminal, finally complete inside the frame: while
-the child runs, what you type is echoed into the buffer AND fed to its stdin,
-RET sends a newline, C-d closes the input (EOF), and C-c interrupts the whole
-job. The general mechanism behind EVERY command in the frame: single programs
-and whole pipelines alike.
+the child runs, what you type is echoed into the buffer and edited in a COOKED
+line (backspace fixes it locally, the program never sees the editing); RET
+delivers the line, C-d is end-of-input, and C-c interrupts the whole job. The
+general mechanism behind EVERY command in the frame: single programs and whole
+pipelines alike.
 
 Before this, a frame child inherited the frame's fd 0 -- the serial console
 nobody was typing on -- so anything that READ stdin (wc, a prompt) hung. Now
@@ -244,8 +278,10 @@ the input comes from the very keyboard you are using."
           (close (car inp))                  ; and only WRITE its input
           ;; sin = is our stdin write end still open? C-d closes it early; if
           ;; the child exits first we close it after the loop. Closing twice
-          ;; would be a bug, so we track it.
-          (let ((running t) (sin t))
+          ;; would be a bug, so we track it. line = the COOKED input line: a
+          ;; canonical terminal buffers a line and lets you edit it (backspace)
+          ;; before delivering it on RET, so the program never sees the editing.
+          (let ((running t) (sin t) (line ""))
             (while running
               (if (poll-fd (car out) 50)
                   (let ((chunk (fd-read (car out) 1024)))
@@ -268,17 +304,31 @@ the input comes from the very keyboard you are using."
                    (kill (- 0 pid) 2)
                    (echo "C-c: interrupted"))
                   ((and (eq (car ev) 'ctrl) (= (cadr ev) 100))  ; C-d: EOF
-                   ;; Close our write end: the child's next read on fd 0 then
-                   ;; returns 0 bytes -- the Unix end-of-input convention that
-                   ;; lets a filter like wc know the input is done.
-                   (if sin (progn (close (cdr inp)) (setq sin nil)) nil))
+                   ;; Canonical EOF: a pending (unsent) line is delivered NOW
+                   ;; without a newline; on an empty line we close the write end
+                   ;; so the child's next read returns 0 -- end of input. (Real
+                   ;; ttys do exactly this: C-d twice ends input mid-line.)
+                   (if (> (string-length line) 0)
+                       (progn (if sin (fd-write (cdr inp) line) nil) (setq line ""))
+                     (if sin (progn (close (cdr inp)) (setq sin nil)) nil)))
                   ((eq (car ev) 'char)
-                   ;; A typed character: echo it into the buffer (a terminal
-                   ;; shows what you type) AND forward the byte to the child's
-                   ;; stdin. RET arrives as char 10, so Enter sends a newline.
                    (let ((ch (cadr ev)))
-                     (insert (string-from-char ch)) (redisplay)
-                     (if sin (fd-write (cdr inp) (string-from-char ch)) nil)))
+                     (cond
+                       ((= ch 10)                  ; RET: deliver the cooked line
+                        (insert (string-from-char 10)) (redisplay)
+                        (if sin (fd-write (cdr inp)
+                                          (string-concat line (string-from-char 10)))
+                          nil)
+                        (setq line ""))
+                       ((= ch 8)                   ; backspace: edit locally only
+                        (if (> (string-length line) 0)
+                            (progn (setq line (substring line 0
+                                                          (- (string-length line) 1)))
+                                   (delete-char 1) (redisplay))
+                          nil))
+                       (t                          ; ordinary char: echo + buffer
+                        (insert (string-from-char ch)) (redisplay)
+                        (setq line (string-concat line (string-from-char ch)))))))
                   (t nil))))
             (close (car out))
             (if sin (close (cdr inp)) nil)   ; child exited before C-d

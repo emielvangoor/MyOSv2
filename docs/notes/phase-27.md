@@ -45,3 +45,24 @@ echo, no count — wc is blocked on the serial console). See
 char-8 rather than editing the line; cooked/line-editing input and a real
 in-buffer comint history are the next refinements. Editable file buffers
 (`find-file`, edit, save back to disk) are the larger next step in this arc.
+
+## 27.2 — Cooked line editing and REPL history
+
+**Cooked input.** 27.1 forwarded every keystroke to the child raw, so
+backspace travelled down the pipe as a literal char-8 and a program saw
+`help\x08lo`. A real terminal runs in *canonical* mode: it buffers the line
+locally and only delivers it on RET. `stream-thunk` now keeps a `line`
+accumulator — ordinary chars echo and append, **backspace** edits the buffered
+line (and erases the echoed glyph) without sending anything, **RET** delivers
+`line` + newline, and **C-d** flushes a pending line (no newline) or, on an
+empty line, closes the pipe for EOF — exactly the classic tty behavior of
+"C-d twice ends input mid-line". `tools/lineedit_check.py` types `help`, a
+backspace, then `lo` into a live `wc`; the byte count is `6` (`hello\n`), not
+`8`, proving the edit happened before any byte was sent.
+
+**REPL history.** The REPL now remembers submitted forms (most-recent-first)
+and walks them with **Up/Down**, which the kernel already cooks into C-p/C-n.
+`repl-hist-idx` tracks the shown entry (-1 = the live line); `repl-set-input`
+swaps the text after the prompt for a recalled form, ready to re-run or edit.
+`tools/history_check.py` evaluates `(+ 1 2)` then `(* 2 5)`, presses Up twice
+back to `(+ 1 2)`, and RET re-evaluates it to `3`.
