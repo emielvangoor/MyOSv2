@@ -18,7 +18,7 @@ import time
 
 sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp_key, qmp_type, qmp_screendump
-from frame_check import load_font, read_ppm, row_text
+from frame_check import load_font, read_ppm, row_text, ctrl
 
 
 def main() -> int:
@@ -32,6 +32,7 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
         qmp_type("12"); time.sleep(0.3)
         qmp_key("left"); time.sleep(0.3)      # cursor between 1 and 2

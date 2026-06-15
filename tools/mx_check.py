@@ -59,6 +59,7 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
         # M-x spli -> the candidate list must narrow to the split commands.
         meta_x()
@@ -76,9 +77,10 @@ def main() -> int:
         qmp_type("\n")
         time.sleep(1.5)
         # (Inverse-video modelines don't glyph-decode, so detect the split by
-        # the banner appearing in BOTH windows showing *repl*.)
+        # the REPL prompt appearing in BOTH windows -- split-below shows the
+        # same REPL buffer above and below the new modeline.)
         _, allrows = rows_of(font, dump, 1)
-        banners = [r for r in allrows if r.startswith("MyOSv2 Graphical")]
+        banners = [r for r in allrows if r.startswith("lisp>")]
         if len(banners) < 2:
             print(f"FAIL: M-x split did not run: {allrows!r}"); return 1
         print(f"ok: M-x ran the command (window split visible)")

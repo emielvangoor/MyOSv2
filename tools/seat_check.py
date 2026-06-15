@@ -33,6 +33,15 @@ def hotkey_seat(n):
         {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}}]})
 
 
+def ctrl(letter):
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": letter}}}]})
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": letter}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}}]})
+
+
 def screen_rows(font, dump, n=8):
     qmp_screendump(dump)
     time.sleep(0.5)
@@ -51,6 +60,7 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: VM1 frame did not load"); return 1
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
         qmp_type("(spawn-vm)\n")
         time.sleep(4.0)                       # the child loads its libraries
@@ -62,6 +72,7 @@ def main() -> int:
 
         hotkey_seat(2)
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL on VM2's own frame
         qmp_type("(* 6 7)\n")
         time.sleep(1.0)
         rows = screen_rows(font, dump)

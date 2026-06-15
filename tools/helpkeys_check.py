@@ -50,14 +50,21 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
         ok = True
 
-        # C-h b -- the bindings list.
+        # C-h b -- the bindings list. It is now mode-aware: a "-- <mode> mode --"
+        # section (the current buffer's own keymap) is listed first, then the
+        # global maps. We assert on content that fits the *Help* window's visible
+        # top: the section headers, a mode binding (C-p, from repl-mode's keymap)
+        # and a global binding (C-a) -- proving C-h b reads the live keymaps.
+        # (The C-x prefix bindings sit below the fold now that the mode section
+        # pushes them down; C-h k / C-h m below still exercise those paths.)
         ctrl("h"); time.sleep(0.2); qmp_type("b"); time.sleep(1.0)
         f = flat(font, dump)
         print(f"  C-h b: {f!r}")
-        if not ("C-a" in f and "C-x 2" in f and "M-d" in f):
+        if not ("REPL mode" in f and "global" in f and "C-a" in f and "C-p" in f):
             print("FAIL: C-h b did not list the bindings"); ok = False
 
         # C-h k C-d -- describe one key.
@@ -68,12 +75,23 @@ def main() -> int:
         if "delete-forward" not in f:
             print("FAIL: C-h k did not name the command bound to C-d"); ok = False
 
-        # C-h m -- describe the mode.
+        # C-h m -- describe the mode. describe-mode renders the mode keymap, the
+        # global keymap and then (fmt-bindings cx-keymap), so the C-x bindings
+        # sit at the bottom of the *Help* buffer -- below the fold while *Help*
+        # is just a split. Give it the whole frame so the tail is visible:
+        # C-x o moves into *Help*, C-x 1 makes it the only window.
         ctrl("h"); time.sleep(0.2); qmp_type("m"); time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("o"); time.sleep(0.5)  # focus *Help*
+        ctrl("x"); time.sleep(0.2); qmp_type("1"); time.sleep(0.8)  # *Help* fills frame
         f = flat(font, dump)
         print(f"  C-h m: {f!r}")
         if "REPL" not in f:
             print("FAIL: C-h m did not describe the REPL mode"); ok = False
+        # describe-mode also renders (fmt-bindings cx-keymap): the C-x prefix
+        # bindings, each described as "C-x ...". Assert one shows up so the
+        # cx-keymap coverage that C-h b lost (pushed below the fold) lives here.
+        if "C-x" not in f:
+            print("FAIL: C-h m did not render the cx-keymap (C-x) bindings"); ok = False
 
         if ok:
             print("PASS: 27.8 self-documenting help (C-h b/k/m) verified")

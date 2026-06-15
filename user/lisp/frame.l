@@ -74,11 +74,6 @@ the buffer, read-string turns text into a form, eval runs it."
 ;; C-x prefix state: nil normally, t after a C-x.
 (setq pending-cx nil)
 
-;; The alist of (buffer . file path) for buffers visiting a file. The buffer's
-;; major-mode now decides what RET means -- "evaluate" in repl-mode, "insert a
-;; newline" in fundamental/text-mode -- so dispatch no longer needs a flag here.
-(setq file-of nil)
-
 (defun new-repl ()
   "Turn the selected window's buffer into a FRESH REPL buffer in repl-mode."
   (let ((b (make-buffer "*repl*")))
@@ -543,27 +538,28 @@ the very lambda the machine runs -- which you can redefine."
     (show-help txt)))
 
 (defun describe-bindings ()
-  "C-h b: every key binding, in a *Help* window -- read from the live keymaps."
+  "C-h b: every key binding (current mode's keymap + the global maps)."
   (show-help (string-concat
     "=== Key bindings ===\n\n"
+    "-- " (mode-line-name-of (buffer-mode (current-buffer))) " mode --\n"
+    (fmt-bindings (mode-keymap (buffer-mode (current-buffer))))
+    "\n-- global --\n"
     (fmt-bindings global-keymap)
     (fmt-bindings cx-keymap)
     (fmt-bindings help-keymap)
     "\nC-x      prefix\nC-h      prefix (help)\nC-g      quit\n"
-    "M-x      run a command by name\nRET      evaluate (REPL) / newline (file)\n")))
+    "M-x      run a command by name\nRET      mode-defined (eval / newline)\n")))
 
 (defun describe-mode ()
-  "C-h m: describe the selected buffer's mode and the keys that work in it."
-  (show-help (string-concat
-    ;; `editing-p` is gone -- a buffer is a REPL when its major-mode IS
-    ;; repl-mode. (Task 8 makes this fully mode-aware; here we just preserve the
-    ;; old two-branch wording with the equivalent mode test.)
-    (if (not (eq (buffer-mode (current-buffer)) 'repl-mode))
-        "=== File buffer ===\n\nText self-inserts; RET inserts a newline.\nC-x C-s saves to disk.\n\n"
-      "=== REPL ===\n\nRET evaluates the input; the value prints below.\nUp/Down walk the input history.\n\n")
-    "Key bindings:\n\n"
-    (fmt-bindings global-keymap)
-    (fmt-bindings cx-keymap))))
+  "C-h m: describe the selected buffer's mode (its doc + the keys it adds)."
+  (let ((m (buffer-mode (current-buffer))))
+    (show-help (string-concat
+      "=== " (mode-line-name-of m) " mode ===\n\n"
+      (mode-doc m) "\n\n"
+      "Mode keys:\n\n" (fmt-bindings (mode-keymap m))
+      "\nGlobal keys:\n\n"
+      (fmt-bindings global-keymap)
+      (fmt-bindings cx-keymap)))))
 
 (defun describe-binding (b prefix)
   (if b

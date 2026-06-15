@@ -17,7 +17,7 @@ import tempfile
 import time
 
 sys.path.insert(0, "tools")
-from lm_harness import Qemu, qmp_type, qmp_screendump
+from lm_harness import Qemu, qmp, qmp_type, qmp_screendump
 
 import re as _re
 _hdr = open("src/font_aa.h").read()
@@ -131,6 +131,15 @@ def inv_row(font, w, data, row, ncols=60):
     return "".join(inv_cell(font, w, data, c, row) for c in range(ncols)).rstrip()
 
 
+def ctrl(letter):
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": letter}}}]})
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": letter}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}}]})
+
+
 def main() -> int:
     font = load_font()
     dump = os.path.join(tempfile.gettempdir(), "myosv2-frame-check.ppm")
@@ -142,6 +151,7 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame.l did not load"); return 1
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
         # Type at the graphical REPL like a human would.
         qmp_type("(+ 1 2)\n")
@@ -165,8 +175,11 @@ def main() -> int:
             print(f"  row {i}: {t!r}")
 
         ok = True
-        if not lines[0].startswith("MyOSv2 Graphical Lisp Machine"):
-            print("FAIL: banner missing"); ok = False
+        # After C-x r the window is a fresh REPL filling the frame from the top,
+        # so its first prompt is row 0 (the old boot banner is gone -- the frame
+        # now boots into *scratch*, and repl-here clears the buffer to a prompt).
+        if not lines[0].startswith("lisp> "):
+            print("FAIL: fresh REPL prompt not at top of window"); ok = False
         prompt_rows = [t for t in lines if t.startswith("lisp> ")]
         if not any(t.startswith("lisp> (+ 1 2)") for t in lines):
             print("FAIL: typed input not on screen"); ok = False
