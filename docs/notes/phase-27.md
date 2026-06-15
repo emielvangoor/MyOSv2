@@ -96,3 +96,12 @@ leaves stale trailing bytes. New files and same-or-longer saves are correct;
 a truncate (or unlink-then-creat) is the follow-up. Vertical (C-p/C-n) motion
 in a file buffer is also still TODO -- C-f/C-b traverse newlines, so every
 position is reachable, just not by line.
+
+**Follow-up fixes from live use.** C-b/C-f (and the Left/Right arrows) were
+first wired only for file buffers; they now also move point within the REPL
+input, clamped at the prompt (`repl-start`) so you can't back into the prompt
+text, and backspace now keys off `point` (not just "is there input") so it
+deletes the char before the cursor and never eats the prompt. And `make
+run-gui` no longer passes `zoom-to-fit` to cocoa: with it on, QEMU opened a
+small default window and scaled the guest *down* into it (the persistent
+"tiny window"); without it the window opens at the scanout's native size.

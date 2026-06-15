@@ -165,10 +165,12 @@ run: $(TARGET) $(DISK)
 # Run WITH a display window (the graphical Lisp machine, Phase 25): the same
 # flags minus -display none. Serial stays in the terminal; the QEMU window
 # shows the scanout and grabs keyboard+tablet input when focused.
-# zoom-to-fit scales the 1280x720 scanout to the window -- drag it as big as
-# you like (or full-screen). Override on other hosts, e.g.:
+# We do NOT pass zoom-to-fit: with it on, cocoa opens a small default window
+# and scales the guest DOWN into it (the "tiny window" bug); without it the
+# window opens at the scanout's native size (2560x1440, see src/gfx.h). Add
+# full-screen=on if you want it to fill the display. Override on other hosts:
 #   make run-gui QEMU_DISPLAY=gtk,zoom-to-fit=on
-QEMU_DISPLAY ?= cocoa,zoom-to-fit=on
+QEMU_DISPLAY ?= cocoa
 run-gui: DISK_IMG = $(DISK)
 run-gui: $(TARGET) $(DISK)
 	$(QEMU) $(filter-out -display none,$(QEMU_FLAGS)) -display $(QEMU_DISPLAY) $(QEMU_NET_RUN)

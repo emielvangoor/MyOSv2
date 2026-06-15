@@ -110,10 +110,12 @@ is two CTRL events, so this dispatches on the whole event, not a bare char."
      (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
            ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
            ((= (cadr ev) 98)                             ; C-b / Left: back a char
-            (if (and (editing-p) (> (point) 0)) (goto-char (- (point) 1)) nil))
+            ;; In the REPL, stop at the prompt (repl-start); in a file buffer,
+            ;; at the start of the buffer.
+            (let ((lo (if (editing-p) 0 repl-start)))
+              (if (> (point) lo) (goto-char (- (point) 1)) nil)))
            ((= (cadr ev) 102)                            ; C-f / Right: forward
-            (if (and (editing-p) (< (point) (buffer-length)))
-                (goto-char (+ (point) 1)) nil))
+            (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
            ((= (cadr ev) 112)                            ; C-p / Up: history (REPL)
             (if (editing-p) nil (repl-history-prev)))
            ((= (cadr ev) 110)                            ; C-n / Down: history (REPL)
@@ -127,9 +129,9 @@ is two CTRL events, so this dispatches on the whole event, not a bare char."
        (let ((ch (cadr ev)))
          (cond
            ((= ch 10) (repl-eval))                        ; RET: evaluate
-           ((= ch 8)                                      ; backspace
-            (if (> (buffer-length) repl-start) (delete-char 1) nil))
-           (t (insert (string-from-char ch)))))))         ; self-insert
+           ((= ch 8)                                      ; backspace: char before
+            (if (> (point) repl-start) (delete-char 1) nil))  ; point, not the prompt
+           (t (insert (string-from-char ch)))))))         ; self-insert (at point)
     (t nil)))
 
 ;; ---- visiting files: open, edit, save (Phase 27.3) ----------------------
