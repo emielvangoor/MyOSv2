@@ -50,23 +50,25 @@ long do_syscall(struct trapframe *tf)
         } else { ret = -EBADF; }
         break;
     }
-    case SYS_OPEN: {                        // x0 = path, x1 = 1 -> create if missing
-        const char *path = (const char *)(uintptr_t)tf->x[0];
+    case SYS_OPENAT: {                      // x0=dirfd, x1=path, x2=flags, x3=mode
+        // dirfd is AT_FDCWD only (no per-process cwd/dirfd yet); paths resolve
+        // as the VFS does today. O_CREAT makes a missing file; O_TRUNC is not
+        // yet honored (the SFS can't shrink -- same as the old creat).
+        const char *path = (const char *)(uintptr_t)tf->x[1];
+        int flags = (int)tf->x[2];
         struct file **fds = sched_current_fds();
-        ret = -1;
-        if (fds) {
-            struct file *f = vfs_open(path);
-            if (!f && tf->x[1] == 1) {      // creat(): make it, then open it
-                vfs_create(path, VN_FILE);
-                f = vfs_open(path);
-            }
-            if (f) {
-                for (int i = 3; i < 16; i++) {
-                    if (!fds[i]) { fds[i] = f; ret = i; break; }
-                }
-                if (ret < 0) { vfs_close(f); }
-            }
+        if (!fds) { ret = -EBADF; break; }
+        struct file *f = vfs_open(path);
+        if (!f && (flags & O_CREAT)) {      // create it, then open it
+            vfs_create(path, VN_FILE);
+            f = vfs_open(path);
         }
+        if (!f) { ret = -ENOENT; break; }
+        ret = -EMFILE;
+        for (int i = 3; i < 16; i++) {
+            if (!fds[i]) { fds[i] = f; ret = i; break; }
+        }
+        if (ret < 0) { vfs_close(f); }
         break;
     }
     case SYS_READ: {                        // x0 = fd, x1 = buf, x2 = len

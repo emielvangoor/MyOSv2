@@ -738,7 +738,8 @@ static void fd_worker(void *a)
 {
     (void)a;
     struct trapframe tf;
-    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0;
     do_syscall(&tf);
     fd_res = (long)tf.x[0];
 }
@@ -759,7 +760,8 @@ static void fd_read_worker(void *a)
 {
     (void)a;
     struct trapframe tf;
-    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0;
     do_syscall(&tf);
     long fd = (long)tf.x[0];
     tf.x[8] = SYS_READ; tf.x[0] = (uint64_t)fd;
@@ -784,7 +786,8 @@ static void fd_miss_worker(void *a)
 {
     (void)a;
     struct trapframe tf;
-    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/nope";
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/nope"; tf.x[2] = 0;
     do_syscall(&tf);
     fd_miss = (long)tf.x[0];
 }
@@ -796,7 +799,7 @@ static void test_fd_open_missing(void)
     sched_init();
     thread_create(fd_miss_worker, 0, 1);
     while (fd_miss == 0) { yield(); }
-    KASSERT(fd_miss == -1);
+    KASSERT(fd_miss < 0);                 // -ENOENT now (Linux negative-errno)
 }
 
 static long fd_a, fd_b;
@@ -804,10 +807,12 @@ static void fd_reuse_worker(void *a)
 {
     (void)a;
     struct trapframe tf;
-    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0;
     do_syscall(&tf); fd_a = (long)tf.x[0];
     tf.x[8] = SYS_CLOSE; tf.x[0] = (uint64_t)fd_a; do_syscall(&tf);
-    tf.x[8] = SYS_OPEN; tf.x[0] = (uint64_t)(uintptr_t)"/hello.txt";
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0;
     do_syscall(&tf); fd_b = (long)tf.x[0];
 }
 static void test_fd_close_reuse(void)

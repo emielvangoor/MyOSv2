@@ -2,6 +2,13 @@
 #pragma once
 #include "exceptions.h"   // struct trapframe
 
+// openat() flags + special dirfd we honor (Linux/aarch64 values).
+#define AT_FDCWD   (-100)
+#define O_WRONLY   01
+#define O_RDWR     02
+#define O_CREAT    0100
+#define O_TRUNC    01000
+
 // Syscall numbers (the user passes one in x8). Phase 28 migrates this ABI to
 // Linux/aarch64 so unmodified musl binaries run. Step 1 (here): carve the
 // MyOSv2-ONLY syscalls -- the ones with no Linux equivalent -- into a private
@@ -21,9 +28,10 @@
 #define SYS_GETPID 172 //                 -> current thread id
 #define SYS_YIELD  124 // sched_yield     -> 0
 
+#define SYS_OPENAT 56  // x0=dirfd(AT_FDCWD), x1=path, x2=flags, x3=mode -> fd / -errno
+
 // --- still on old MyOSv2 numbers (migrate in later steps) ---
 #define SYS_SLEEP  3   // x0=ms           -> 0
-#define SYS_OPEN   6   // x0=path -> fd (>=3) or -1
 #define SYS_FORK   9   // -> child pid in parent, 0 in child
 #define SYS_READDIR 10 // x0=path, x1=index, x2=namebuf -> 0 (name) / -1 (done)
 #define SYS_EXEC   11  // x0=path -> replaces image; returns -1 only on failure
