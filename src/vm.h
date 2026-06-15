@@ -2,13 +2,16 @@
 #pragma once
 #include <stdint.h>
 
-// User virtual addresses (all in one 2 MiB region under a private L0 entry, so a
-// single L3 table covers code + stack + data).
-#define USER_CODE_VA   0x8000000000UL   // shared, read-only, EL0-executable
-#define USER_STACK_TOP 0x8000100000UL   // private stack grows down from here
+// User virtual addresses, all within l0[1]/l1[0] (the first 1 GiB of the clean
+// user region 0x80_0000_0000) -- well clear of l0[0], the shared kernel
+// identity map. Spread out (256 MiB apart) so a big program image (busybox,
+// eventually gcc) has room below the heap; still one L1 entry, so fork/destroy
+// page-table walking is unchanged.
+#define USER_CODE_VA   0x8000000000UL   // program image: up to 256 MiB
 #define USER_DATA_VA   0x8000180000UL   // one private data page (flat loader only)
-#define USER_HEAP_BASE 0x8000200000UL   // heap grows up from here (sbrk)
-#define USER_MMAP_BASE 0x8000400000UL   // mmap + shm mappings, bump up from here
+#define USER_HEAP_BASE 0x8010000000UL   // heap grows up from here (brk)
+#define USER_MMAP_BASE 0x8020000000UL   // mmap + shm mappings, bump up from here
+#define USER_STACK_TOP 0x8030000000UL   // private stack grows down from here
 
 struct addrspace {
     uint64_t *l0;        // top-level table (a PMM page); load into TTBR0_EL1
