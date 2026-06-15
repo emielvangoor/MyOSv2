@@ -108,6 +108,37 @@ long do_syscall(struct trapframe *tf)
     case SYS_GETPID:
         ret = sched_current_id();
         break;
+    case SYS_SET_TID_ADDRESS:                // x0 = clear-on-exit ptr (ignored)
+        ret = sched_current_id();            // single-threaded: just our TID
+        break;
+    case SYS_IOCTL:                          // x0=fd, x1=request, x2=arg
+        ret = -ENOTTY;                       // no real ttys -> musl uses buffered I/O
+        break;
+    case SYS_WRITEV: {                       // x0=fd, x1=struct iovec*, x2=iovcnt
+        uint64_t fd = tf->x[0];
+        const uint64_t *iov = (const uint64_t *)(uintptr_t)tf->x[1];  // {base,len} pairs
+        int n = (int)tf->x[2];
+        struct file **fds = sched_current_fds();
+        long total = 0;
+        for (int i = 0; i < n; i++) {
+            const char *base = (const char *)(uintptr_t)iov[i * 2];
+            uint64_t len = iov[i * 2 + 1];
+            long w;
+            if (fds && fd < 16 && fds[fd] && fds[fd]->sock) {
+                w = socket_write(fds[fd]->sock, base, (int)len);
+            } else if (fds && fd < 16 && fds[fd]) {
+                w = vfs_write(fds[fd], base, len);
+            } else if (fd == 1 || fd == 2) {
+                for (uint64_t j = 0; j < len; j++) { uart_putc(base[j]); }
+                w = (long)len;
+            } else { ret = total ? total : -EBADF; goto writev_done; }
+            if (w < 0) { if (!total) { total = w; } break; }
+            total += w;
+        }
+        ret = total;
+    writev_done:
+        break;
+    }
     case SYS_YIELD:
         yield();
         ret = 0;

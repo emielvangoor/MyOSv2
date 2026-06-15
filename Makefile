@@ -149,10 +149,16 @@ $(BUILD)/user/teapot.elf: user/teapot.c user/teapot_data.h $(TGL_OBJS) $(USER_CO
 	mkdir -p $(BUILD)/user
 	$(CC) $(USER_CFLAGS) $(TGL_INC) -T user/user.ld -o $@ $(USER_COMMON) user/teapot.c $(TGL_OBJS)
 
-# Build a musl program (real Linux binary) into the initrd.
+# Build a musl program (real Linux binary) into the initrd. We link it into the
+# CLEAN user VA range (0x80_0000_0000+, l0 index >= 1) instead of musl's default
+# 0x400000, which in our address space falls under l0[0] -- the shared kernel
+# identity map (block descriptors) -- where a user page can't be inserted.
+# (Running UNMODIFIED 0x400000 binaries would instead need block-splitting in
+# the loader; we recompile our own programs, so we just relink them high.)
+MUSL_TEXT := 0x8000000000
 $(BUILD)/user/%.elf: user/musl/%.c | $(BUILD)
 	mkdir -p $(BUILD)/user
-	$(MUSL_CC) -static -no-pie -Os -o $@ $<
+	$(MUSL_CC) -static -no-pie -Os -Wl,-Ttext-segment=$(MUSL_TEXT) -o $@ $<
 
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
 $(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS)

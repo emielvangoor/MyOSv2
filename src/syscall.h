@@ -29,6 +29,9 @@
 #define SYS_YIELD  124 // sched_yield     -> 0
 
 #define SYS_OPENAT 56  // x0=dirfd(AT_FDCWD), x1=path, x2=flags, x3=mode -> fd / -errno
+#define SYS_IOCTL  29  // x0=fd, x1=req, x2=arg -> -ENOTTY (no real ttys yet)
+#define SYS_WRITEV 66  // x0=fd, x1=struct iovec*, x2=iovcnt -> bytes / -errno
+#define SYS_SET_TID_ADDRESS 96  // x0=ptr (ignored; single-threaded) -> tid
 
 // --- still on old MyOSv2 numbers (migrate in later steps) ---
 #define SYS_SLEEP  3   // x0=ms           -> 0
