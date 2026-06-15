@@ -106,6 +106,24 @@ run-gui` no longer passes `zoom-to-fit` to cocoa: with it on, QEMU opened a
 small default window and scaled the guest *down* into it (the persistent
 "tiny window"); without it the window opens at the scanout's native size.
 
+## 27.5 — Basic Emacs editing keys
+
+The everyday motion/editing set, working in the REPL and file buffers alike:
+**C-a/C-e** to the start/end of the line, **C-b/C-f** and Left/Right by a char,
+**C-d** delete forward, **C-k** kill to end of line, **M-f/M-b** by word, **M-d**
+kill the word ahead. They are pure Lisp in `frame.l` on top of one new C
+primitive, `(char-at pos)` (the buffer scanner for `bol-pos`/`eol-pos`/word
+motion); deletion forward is `del-fwd` (move right N, delete N, since
+`delete-char` only deletes before point). In the REPL every command clamps to
+the prompt (`repl-start`) so it never reaches into the prompt text.
+
+Wiring these up exposed a latent bug: `repl-eval` did `(insert "\n")` at point,
+which is fine when point sits at the end of the input but **splices the result
+into the middle** once cursor motion leaves point elsewhere. Fixed by
+`(goto-char (buffer-length))` before appending the result and next prompt.
+Verified by `tools/keyedit_check.py`, which edits expressions into shape with
+these keys and checks the evaluated results (C-a+C-d -> 42, C-k -> 2, M-d -> 16).
+
 ## 27.4 — Windows scroll to keep point visible
 
 Buffers taller than their window simply ran off the bottom: the prompt and the

@@ -32,6 +32,10 @@ the buffer, read-string turns text into a form, eval runs it."
     (if (> (string-length src) 0)
         (setq repl-history (cons src repl-history)) nil)
     (setq repl-hist-idx -1)
+    ;; Point may be mid-input after cursor motion (C-a, C-b, ...); the result
+    ;; and next prompt must go at the END, below the input, not wherever the
+    ;; cursor happens to sit -- otherwise we splice them into the line.
+    (goto-char (buffer-length))
     (insert "\n")
     (let ((val (eval (read-string src))))
       (flush-output)                ; princ'd text lands HERE, before the value
@@ -79,6 +83,61 @@ everything else (RET included -> a newline) inserts at point."
     ((= ch 8) (if (> (point) 0) (delete-char 1) nil))    ; backspace
     (t (insert (string-from-char ch)))))                 ; incl. RET -> newline
 
+;; ---- basic Emacs motion + editing commands -----------------------------
+;; These act on the current buffer; in the REPL the lower bound is the prompt
+;; (repl-start), so motion and deletion never reach into the prompt text.
+
+(defun edit-lo ()
+  "Leftmost editable position: 0 in a file buffer, the prompt in the REPL."
+  (if (editing-p) 0 repl-start))
+
+(defun word-char-p (c)
+  (or (and (>= c 48) (<= c 57))          ; 0-9
+      (and (>= c 65) (<= c 90))          ; A-Z
+      (and (>= c 97) (<= c 122))))       ; a-z
+
+(defun bol-pos ()
+  "Start of the current line, clamped to the editable region (C-a)."
+  (let ((p (point)) (lo (edit-lo)))
+    (while (and (> p lo) (not (= (char-at (- p 1)) 10))) (setq p (- p 1)))
+    p))
+
+(defun eol-pos ()
+  "End of the current line: the next newline or end of buffer (C-e)."
+  (let ((p (point)) (n (buffer-length)))
+    (while (and (< p n) (not (= (char-at p) 10))) (setq p (+ p 1)))
+    p))
+
+(defun fwd-word-pos ()
+  "Just past the next word ahead of point (skip separators, span the word)."
+  (let ((p (point)) (n (buffer-length)))
+    (while (and (< p n) (not (word-char-p (char-at p)))) (setq p (+ p 1)))
+    (while (and (< p n) (word-char-p (char-at p))) (setq p (+ p 1)))
+    p))
+
+(defun bwd-word-pos ()
+  "Start of the word behind point (clamped to the editable region)."
+  (let ((p (point)) (lo (edit-lo)))
+    (while (and (> p lo) (not (word-char-p (char-at (- p 1))))) (setq p (- p 1)))
+    (while (and (> p lo) (word-char-p (char-at (- p 1)))) (setq p (- p 1)))
+    p))
+
+(defun del-fwd (k)
+  "Delete K characters AFTER point. delete-char only deletes BEFORE point, so
+move right K and delete K -- those K become the chars that were ahead."
+  (let ((avail (- (buffer-length) (point))))
+    (let ((k2 (if (< k avail) k avail)))
+      (if (> k2 0) (progn (goto-char (+ (point) k2)) (delete-char k2)) nil))))
+
+(defun kill-line ()
+  "C-k: kill to end of line; if already at the line end, eat the newline."
+  (let ((e (eol-pos)))
+    (if (> e (point)) (del-fwd (- e (point)))
+      (if (< (point) (buffer-length)) (del-fwd 1) nil))))
+
+(defun kill-word ()       ; M-d
+  (let ((e (fwd-word-pos))) (if (> e (point)) (del-fwd (- e (point))) nil)))
+
 (defun handle-cx (ev)
   "The C-x map: 2/3 split, 0 delete, o other-window, C-s save -- note C-x C-s
 is two CTRL events, so this dispatches on the whole event, not a bare char."
@@ -100,7 +159,11 @@ is two CTRL events, so this dispatches on the whole event, not a bare char."
     ((eq (car ev) 'mouse)
      (select-window-at (cadr ev) (caddr ev)))
     ((eq (car ev) 'meta)
-     (if (= (cadr ev) 120) (mb-start 'mx) nil))           ; M-x
+     (cond ((= (cadr ev) 120) (mb-start 'mx))             ; M-x
+           ((= (cadr ev) 100) (kill-word))                ; M-d: kill word ahead
+           ((= (cadr ev) 102) (goto-char (fwd-word-pos))) ; M-f: forward word
+           ((= (cadr ev) 98)  (goto-char (bwd-word-pos))) ; M-b: backward word
+           (t nil)))
     (pending-ch
      (setq pending-ch nil)
      (if (and (eq (car ev) 'char) (= (cadr ev) 102))      ; C-h f
@@ -116,6 +179,10 @@ is two CTRL events, so this dispatches on the whole event, not a bare char."
               (if (> (point) lo) (goto-char (- (point) 1)) nil)))
            ((= (cadr ev) 102)                            ; C-f / Right: forward
             (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
+           ((= (cadr ev) 97)  (goto-char (bol-pos)))     ; C-a: beginning of line
+           ((= (cadr ev) 101) (goto-char (eol-pos)))     ; C-e: end of line
+           ((= (cadr ev) 100) (del-fwd 1))               ; C-d: delete forward
+           ((= (cadr ev) 107) (kill-line))               ; C-k: kill to line end
            ((= (cadr ev) 112)                            ; C-p / Up: history (REPL)
             (if (editing-p) nil (repl-history-prev)))
            ((= (cadr ev) 110)                            ; C-n / Down: history (REPL)

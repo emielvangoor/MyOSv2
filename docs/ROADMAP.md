@@ -531,6 +531,10 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   nudges each window's `top_line` (window-start) so point stays visible, so the
   REPL and tall buffers scroll instead of running off the bottom. KTEST `rd:
   scroll follows point` + `tools/scroll_check.py`.
+- ✅ **27.5 — basic editing keys**: C-a/C-e, C-b/C-f, C-d, C-k, M-f/M-b, M-d
+  (pure Lisp over a new `(char-at)` primitive), clamped to the prompt in the
+  REPL. Fixed `repl-eval` to append at end-of-buffer (cursor motion could leave
+  point mid-input). `tools/keyedit_check.py`.
 
 ---
 

@@ -129,6 +129,13 @@ DEFGFX("delete-char", Gdelete_char, 1, 1) {
 DEFGFX("point", Gpoint, 0, 0) { (void)args; (void)env; return FIXNUM(cur()->point); }
 DEFGFX("buffer-length", Gbuflen, 0, 0) { (void)args; (void)env; return FIXNUM(rd_buf_len(cur())); }
 
+/* (char-at pos) -> the character code at POS, or -1 past the end. The eyes of
+ * the editing commands: line/word motion in frame.l scans the buffer with it. */
+DEFGFX("char-at", Gchar_at, 1, 1) {
+    (void)env;
+    return FIXNUM(rd_buf_char_at(cur(), (int)req_fixnum(CAR(args), "char-at: pos")));
+}
+
 DEFGFX("goto-char", Ggoto_char, 1, 1) {
     (void)env;
     rd_buf_set_point(cur(), (int)req_fixnum(CAR(args), "goto-char: expected a fixnum"));
@@ -596,6 +603,7 @@ void lm_gfx_register(void)
     register_Gmake_buffer(); register_Gset_buffer(); register_Gcurrent_buffer();
     register_Ginsert(); register_Gdelete_char();
     register_Gpoint(); register_Gbuflen(); register_Ggoto_char(); register_Gbufsub();
+    register_Gchar_at();
     register_Gsplit_below(); register_Gsplit_right();
     register_Gother_window(); register_Gdelete_window();
     register_Gset_face(); register_Gecho(); register_Gselect_at();
