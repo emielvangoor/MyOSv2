@@ -1,6 +1,18 @@
 // ulib.c -- user-space syscall stubs. Number in x8, args in x0..x2, result x0.
 #include "ulib.h"
 #include "syscalls.h"
+#include "errno.h"
+
+int errno;
+
+// Linux syscalls report errors as a negative errno in x0. Turn that into the
+// C convention (set errno, return -1) for the syscalls we've migrated; a normal
+// (non-negative, or far-negative pointer) result passes through unchanged.
+static long sysret(long r)
+{
+    if (r < 0 && r > -4096) { errno = (int)(-r); return -1; }
+    return r;
+}
 
 static long syscall3(long n, long a0, long a1, long a2)
 {
@@ -26,11 +38,11 @@ static long syscall5(long n, long a0, long a1, long a2, long a3, long a4)
     return x0;
 }
 
-long sys_write(int fd, const void *b, long n) { return syscall3(SYS_WRITE, fd, (long)b, n); }
-long sys_read(int fd, void *b, long n)        { return syscall3(SYS_READ, fd, (long)b, n); }
+long sys_write(int fd, const void *b, long n) { return sysret(syscall3(SYS_WRITE, fd, (long)b, n)); }
+long sys_read(int fd, void *b, long n)        { return sysret(syscall3(SYS_READ, fd, (long)b, n)); }
 long sys_open(const char *p)                  { return syscall3(SYS_OPEN, (long)p, 0, 0); }
 long sys_creat(const char *p)                 { return syscall3(SYS_OPEN, (long)p, 1, 0); }
-long sys_close(int fd)                        { return syscall3(SYS_CLOSE, fd, 0, 0); }
+long sys_close(int fd)                        { return sysret(syscall3(SYS_CLOSE, fd, 0, 0)); }
 void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }
 void sys_sleep(long ms)                       { syscall3(SYS_SLEEP, ms, 0, 0); }

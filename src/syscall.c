@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include "syscall.h"
+#include "errno.h"
 #include "uart.h"
 #include "sched.h"
 #include "console.h"
@@ -46,7 +47,7 @@ long do_syscall(struct trapframe *tf)
         } else if (fd == 1 || fd == 2) {    // bare stdout/stderr -> UART console
             for (uint64_t i = 0; i < len; i++) { uart_putc(s[i]); }
             ret = (long)len;
-        } else { ret = -1; }
+        } else { ret = -EBADF; }
         break;
     }
     case SYS_OPEN: {                        // x0 = path, x1 = 1 -> create if missing
@@ -84,7 +85,7 @@ long do_syscall(struct trapframe *tf)
             if (ch < 0) { ret = 0; break; }  // interrupted by a signal (EINTR)
             cb[0] = (char)ch;
             ret = 1;
-        } else { ret = -1; }
+        } else { ret = -EBADF; }
         break;
     }
     case SYS_READDIR: {                       // x0 = path, x1 = index, x2 = namebuf
@@ -99,7 +100,7 @@ long do_syscall(struct trapframe *tf)
         uint64_t fd = tf->x[0];
         struct file **fds = sched_current_fds();
         if (fds && fd < 16 && fds[fd]) { vfs_close(fds[fd]); fds[fd] = 0; ret = 0; }
-        else { ret = -1; }
+        else { ret = -EBADF; }
         break;
     }
     case SYS_GETPID:
@@ -113,7 +114,8 @@ long do_syscall(struct trapframe *tf)
         sleep_ms(tf->x[0]);
         ret = 0;
         break;
-    case SYS_EXIT:
+    case SYS_EXIT:                           // single thread; we're single-threaded
+    case SYS_EXIT_GROUP:                      // musl's exit() -> exit_group
         thread_exit((int)tf->x[0]);          // x0 = exit status; does not return
         ret = 0;
         break;

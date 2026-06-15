@@ -11,14 +11,19 @@
 // values for now; later steps give them their Linux numbers + semantics.
 #define MYOS_SYS_BASE 0x1000      // MyOSv2-private syscalls live at 0x1000+
 
-#define SYS_WRITE  0   // x0=fd, x1=ptr, x2=len -> bytes written
-#define SYS_GETPID 1   //                 -> current thread id
-#define SYS_YIELD  2   //                 -> 0
+// --- migrated to Linux/aarch64 numbers + negative-errno (step 2, "clean" set,
+//     identical arg registers to Linux) ---
+#define SYS_READ   63  // x0=fd, x1=buf, x2=len -> bytes read / -errno
+#define SYS_WRITE  64  // x0=fd, x1=ptr, x2=len -> bytes written / -errno
+#define SYS_CLOSE  57  // x0=fd -> 0 / -errno
+#define SYS_EXIT   93  // x0=status -> (does not return)
+#define SYS_EXIT_GROUP 94 // x0=status -> (does not return; musl's _Exit/exit)
+#define SYS_GETPID 172 //                 -> current thread id
+#define SYS_YIELD  124 // sched_yield     -> 0
+
+// --- still on old MyOSv2 numbers (migrate in later steps) ---
 #define SYS_SLEEP  3   // x0=ms           -> 0
-#define SYS_EXIT   4   //                 -> (does not return)
 #define SYS_OPEN   6   // x0=path -> fd (>=3) or -1
-#define SYS_READ   7   // x0=fd, x1=buf, x2=len -> bytes read
-#define SYS_CLOSE  8   // x0=fd -> 0
 #define SYS_FORK   9   // -> child pid in parent, 0 in child
 #define SYS_READDIR 10 // x0=path, x1=index, x2=namebuf -> 0 (name) / -1 (done)
 #define SYS_EXEC   11  // x0=path -> replaces image; returns -1 only on failure

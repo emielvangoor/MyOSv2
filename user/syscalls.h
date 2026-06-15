@@ -4,14 +4,15 @@
 #pragma once
 #define MYOS_SYS_BASE 0x1000
 
-#define SYS_WRITE  0
-#define SYS_GETPID 1
-#define SYS_YIELD  2
+#define SYS_READ   63
+#define SYS_WRITE  64
+#define SYS_CLOSE  57
+#define SYS_EXIT   93
+#define SYS_EXIT_GROUP 94
+#define SYS_GETPID 172
+#define SYS_YIELD  124
 #define SYS_SLEEP  3
-#define SYS_EXIT   4
 #define SYS_OPEN   6
-#define SYS_READ   7
-#define SYS_CLOSE  8
 #define SYS_FORK   9
 #define SYS_READDIR 10
 #define SYS_EXEC   11
