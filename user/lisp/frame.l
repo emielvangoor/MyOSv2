@@ -235,13 +235,6 @@ so forget help-buf and let show-help re-split next time."
     (list 'char 98  'describe-bindings     "C-h b  list key bindings")
     (list 'char 109 'describe-mode         "C-h m  describe mode")))
 
-(defun key-lookup (ev km)
-  "The binding for EV (a (kind code ...) event) in keymap KM, or nil."
-  (cond ((null km) nil)
-        ((and (eq (nth 0 (car km)) (car ev)) (= (nth 1 (car km)) (cadr ev)))
-         (car km))
-        (t (key-lookup ev (cdr km)))))
-
 (defun run-key (ev km)
   "If EV is bound in KM, run its command and return t; otherwise nil."
   (let ((b (key-lookup ev km)))

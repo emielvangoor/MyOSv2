@@ -50,6 +50,7 @@ extern unsigned char busybox_elf[]; extern unsigned int busybox_elf_len; // preb
 // The embedded Lisp source (from user/lisp/*.l, via build/lisp_blob.c).
 extern unsigned char bootstrap_l[]; extern unsigned int bootstrap_l_len;
 extern unsigned char system_l[];    extern unsigned int system_l_len;
+extern unsigned char modes_l[];     extern unsigned int modes_l_len;
 extern unsigned char frame_l[];     extern unsigned int frame_l_len;
 
 // Write an embedded program into the filesystem at `path`.
@@ -108,5 +109,6 @@ void initrd_unpack(void)
     vfs_create("/lib", VN_DIR);
     add_prog("/lib/bootstrap.l", bootstrap_l, (uint64_t)bootstrap_l_len);
     add_prog("/lib/system.l",    system_l,    (uint64_t)system_l_len);
+    add_prog("/lib/modes.l",     modes_l,     (uint64_t)modes_l_len);
     add_prog("/lib/frame.l",     frame_l,     (uint64_t)frame_l_len);
 }

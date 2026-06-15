@@ -200,6 +200,7 @@ int umain(int argc, char **argv)
      * (Both placed under /lib by the initrd.) */
     lm_eval_all_str("(load \"/lib/bootstrap.l\")");
     lm_eval_all_str("(load \"/lib/system.l\")");
+    lm_eval_all_str("(load \"/lib/modes.l\")");
 
     if (argc >= 2 && streq(argv[1], "-frame")) {
         /* The graphical machine: load the frame library and hand control to
