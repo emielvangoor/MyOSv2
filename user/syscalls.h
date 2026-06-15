@@ -15,8 +15,10 @@
 #define SYS_BRK    214
 #define SYS_MUNMAP 215
 #define SYS_MMAP   222
+#define SYS_CLONE  220
+#define SYS_EXECVE 221
+#define SYS_WAIT4  260
 #define SYS_SLEEP  3
-#define SYS_FORK   9
 
 // openat() flags + dirfd (Linux/aarch64 values).
 #define AT_FDCWD   (-100)
@@ -25,8 +27,6 @@
 #define O_CREAT    0100
 #define O_TRUNC    01000
 #define SYS_READDIR 10
-#define SYS_EXEC   11
-#define SYS_WAIT   12
 #define SYS_PIPE   18
 #define SYS_DUP2   19
 #define SYS_KILL   20

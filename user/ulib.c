@@ -46,9 +46,14 @@ long sys_close(int fd)                        { return sysret(syscall3(SYS_CLOSE
 void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }
 void sys_sleep(long ms)                       { syscall3(SYS_SLEEP, ms, 0, 0); }
-long sys_fork(void)                           { return syscall3(SYS_FORK, 0, 0, 0); }
-long sys_exec(const char *p, char *const argv[]) { return syscall3(SYS_EXEC, (long)p, (long)argv, 0); }
-long sys_wait(int *status)                    { return syscall3(SYS_WAIT, (long)status, 0, 0); }
+long sys_fork(void)                           { return syscall3(SYS_CLONE, 17 /*SIGCHLD*/, 0, 0); }
+long sys_exec(const char *p, char *const argv[]) { return syscall3(SYS_EXECVE, (long)p, (long)argv, 0); }
+long sys_wait(int *status)                    {           // decode Linux status -> raw
+    int st = 0;
+    long pid = syscall5(SYS_WAIT4, -1, (long)&st, 0, 0, 0);
+    if (status) { *status = (st >> 8) & 0xff; }          // native callers want the raw code
+    return pid;
+}
 void *sys_sbrk(long incr)                     {           // sbrk over Linux brk
     long cur = syscall3(SYS_BRK, 0, 0, 0);                // query current break
     if (incr == 0) { return (void *)cur; }

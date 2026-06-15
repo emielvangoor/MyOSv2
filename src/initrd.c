@@ -43,6 +43,7 @@ extern unsigned char fptest_elf[];  extern unsigned int fptest_elf_len;
 extern unsigned char teapot_elf[];  extern unsigned int teapot_elf_len;
 extern unsigned char mhello_elf[];  extern unsigned int mhello_elf_len;  // musl
 extern unsigned char mmalloc_elf[]; extern unsigned int mmalloc_elf_len; // musl
+extern unsigned char mfork_elf[];   extern unsigned int mfork_elf_len;   // musl
 
 // The embedded Lisp source (from user/lisp/*.l, via build/lisp_blob.c).
 extern unsigned char bootstrap_l[]; extern unsigned int bootstrap_l_len;
@@ -96,6 +97,7 @@ void initrd_unpack(void)
     add_prog("/bin/teapot", teapot_elf, (uint64_t)teapot_elf_len);
     add_prog("/bin/mhello", mhello_elf, (uint64_t)mhello_elf_len);  // real musl binary
     add_prog("/bin/mmalloc", mmalloc_elf, (uint64_t)mmalloc_elf_len);
+    add_prog("/bin/mfork", mfork_elf, (uint64_t)mfork_elf_len);
 
     // The Lisp standard library (bootstrap.l = the language, system.l = the
     // shell), loaded by /bin/lisp at startup.

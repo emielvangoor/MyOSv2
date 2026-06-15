@@ -152,15 +152,28 @@ long do_syscall(struct trapframe *tf)
         thread_exit((int)tf->x[0]);          // x0 = exit status; does not return
         ret = 0;
         break;
-    case SYS_FORK:
+    case SYS_CLONE:                          // x0=flags, x1=child_stack, ...
+        // The fork-equivalent only (flags=SIGCHLD, no CLONE_VM): musl's fork()
+        // and our own fork() both arrive here. Thread clones (CLONE_VM, a child
+        // stack) are out of scope until a program needs them.
+        if (tf->x[0] & 0x00000100UL /* CLONE_VM */) { ret = -ENOSYS; break; }
         ret = sched_fork(tf);                // child pid (parent); child gets 0
         break;
-    case SYS_EXEC:                           // x0 = path, x1 = argv (NULL-terminated)
+    case SYS_EXECVE:                         // x0=path, x1=argv, x2=envp (envp ignored)
         ret = proc_exec(tf, (const char *)(uintptr_t)tf->x[0],
                             (char *const *)(uintptr_t)tf->x[1]);
         break;                               // on success tf is rewritten to the new image
-    case SYS_WAIT:                           // x0 = int *status
-        ret = sched_wait((int *)(uintptr_t)tf->x[0]);
+    case SYS_WAIT4: {                        // x0=pid, x1=int* status, x2=options, x3=rusage
+        int raw = 0;
+        long pid = sched_wait(&raw);         // reap any child (pid ignored); raw code
+        if (pid >= 0 && tf->x[1]) {          // encode Linux-style: WIFEXITED, code<<8
+            *(int *)(uintptr_t)tf->x[1] = (raw & 0xff) << 8;
+        }
+        ret = pid;
+        break;
+    }
+    case SYS_RT_SIGPROCMASK:                 // x0=how, x1=set, x2=oldset, x3=sigsetsize
+        ret = 0;                             // no per-process signal mask yet -> no-op
         break;
     case SYS_BRK: {                          // x0 = new break (0 = query)
         // Linux brk: set the break to x0 and return the resulting break; a 0

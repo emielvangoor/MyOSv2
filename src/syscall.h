@@ -32,16 +32,18 @@
 #define SYS_IOCTL  29  // x0=fd, x1=req, x2=arg -> -ENOTTY (no real ttys yet)
 #define SYS_WRITEV 66  // x0=fd, x1=struct iovec*, x2=iovcnt -> bytes / -errno
 #define SYS_SET_TID_ADDRESS 96  // x0=ptr (ignored; single-threaded) -> tid
+#define SYS_RT_SIGPROCMASK 135  // no per-process signal mask yet -> 0 (no-op)
 #define SYS_BRK    214 // x0=new break (0=query) -> resulting break
 #define SYS_MUNMAP 215 // x0=va, x1=len -> 0 / -errno
 #define SYS_MMAP   222 // x0=addr,x1=len,... (anonymous) -> base VA / -ENOMEM
 
+#define SYS_CLONE  220 // x0=flags(SIGCHLD), x1=child_stack -> child pid / 0 in child
+#define SYS_EXECVE 221 // x0=path, x1=argv, x2=envp -> replaces image; -errno on fail
+#define SYS_WAIT4  260 // x0=pid, x1=int* status, x2=options, x3=rusage -> pid / -errno
+
 // --- still on old MyOSv2 numbers (migrate in later steps) ---
 #define SYS_SLEEP  3   // x0=ms           -> 0
-#define SYS_FORK   9   // -> child pid in parent, 0 in child
 #define SYS_READDIR 10 // x0=path, x1=index, x2=namebuf -> 0 (name) / -1 (done)
-#define SYS_EXEC   11  // x0=path -> replaces image; returns -1 only on failure
-#define SYS_WAIT   12  // x0=int* status -> reaped child pid, or -1 if no children
 #define SYS_PIPE   18  // x0=int fd[2] -> fills {readfd, writefd}; 0 / -1
 #define SYS_DUP2   19  // x0=old, x1=new -> new (or -1)
 #define SYS_KILL   20  // x0=pid, x1=sig -> 0 / -1
