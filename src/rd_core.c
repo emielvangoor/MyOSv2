@@ -13,7 +13,8 @@
 // ---- tiny freestanding helpers ------------------------------------------
 
 static int rd_slen(const char *s) { int n = 0; while (s[n]) { n++; } return n; }
-static void rd_scpy(char *d, const char *s, int cap)
+// Bounded string copy; declared in rd.h so tests can call it directly.
+void rd_scpy(char *d, const char *s, int cap)
 {
     int i = 0;
     while (s[i] && i < cap - 1) { d[i] = s[i]; i++; }
@@ -31,6 +32,7 @@ static void rd_scpy(char *d, const char *s, int cap)
 void rd_buf_init(struct rd_buffer *b, const char *name, char *store, int cap)
 {
     rd_scpy(b->name, name, (int)sizeof(b->name));
+    b->mode_line[0] = 0;            // no mode name until set-mode-line-name
     b->text = store; b->cap = cap;
     b->gap_start = 0; b->gap_end = cap;
     b->point = 0;
@@ -326,6 +328,18 @@ modeline:;
     const char *nm = b ? b->name : "?";
     for (int i = 0; nm[i] && n < (int)sizeof(ml) - 2; i++) { ml[n++] = nm[i]; }
     ml[n++] = ' ';
+    // mode_line is set from Lisp by (set-mode-line-name) when a buffer
+    // enters a major mode; paint "  (Name)" after the buffer name so the
+    // active mode is visible in the mode line without querying Lisp.
+    if (b && b->mode_line[0]) {
+        if (n < (int)sizeof(ml) - 1) { ml[n++] = ' '; }
+        if (n < (int)sizeof(ml) - 1) { ml[n++] = '('; }
+        for (int i = 0; b->mode_line[i] && n < (int)sizeof(ml) - 3; i++) {
+            ml[n++] = b->mode_line[i];
+        }
+        if (n < (int)sizeof(ml) - 2) { ml[n++] = ')'; }
+        if (n < (int)sizeof(ml) - 1) { ml[n++] = ' '; }
+    }
     while (n < w->w && n < (int)sizeof(ml) - 1) { ml[n++] = '-'; }
     ml[n] = 0;
     for (int col = 0; col < w->w; col++) {
