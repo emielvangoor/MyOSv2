@@ -181,6 +181,13 @@ photograph itself: `(screenshot "/shot.ppm")`.
   **process groups** (`setpgid`, `kill -pgid`) so the frame's Ctrl-C
   reaches the program doing the work, not just the wrapper that forked it.
   ![the Utah teapot spinning in a buffer while ping streams into the REPL](docs/images/phase-26-teapot.png)
+- **Interactive input in the buffer** — a program run from the frame reads its
+  **stdin from the frame's own keyboard**, not the serial port: what you type
+  echoes into the buffer and feeds the program, **RET** sends a line, **C-d**
+  is end-of-input, **C-c** still kills the whole job. So `(run "wc")` is a live
+  filter you type into and end with C-d — the terminal, finally complete inside
+  the frame (a forked child gets its fd 0 from a pipe the event loop drives).
+  ![typing into a running wc inside the frame, ended with C-d](docs/images/phase-27-interactive-stdin.png)
 - **M-x + describe-function, vertico-style** — the echo area grows into a
   live-narrowing command palette over the image's own symbol table; `C-h f`
   shows a function's *living source* in a `*Help*` window, ready to redefine.

@@ -211,30 +211,44 @@ Switch with Ctrl-Alt-F1..F4 or (switch-seat n). Returns the child's pid."
 ;; comint is a later refinement.)
 
 (defun stream-thunk (thunk)
-  "Run THUNK in a forked child with fd 1 -> a pipe, and stream everything it
-writes into the current buffer, redisplaying per chunk; C-c sends the child
-SIGINT. The general mechanism behind EVERY command in the frame: single
-programs and whole pipelines alike."
-  (let ((p (pipe)))
+  "Run THUNK in a forked child wired to TWO pipes -- the child's fd 1 streams
+into the current buffer (output), and the frame's keyboard streams into the
+child's fd 0 (input). The terminal, finally complete inside the frame: while
+the child runs, what you type is echoed into the buffer AND fed to its stdin,
+RET sends a newline, C-d closes the input (EOF), and C-c interrupts the whole
+job. The general mechanism behind EVERY command in the frame: single programs
+and whole pipelines alike.
+
+Before this, a frame child inherited the frame's fd 0 -- the serial console
+nobody was typing on -- so anything that READ stdin (wc, a prompt) hung. Now
+the input comes from the very keyboard you are using."
+  (let ((out (pipe))                ; child stdout -> (car out), read by us
+        (inp (pipe)))               ; child stdin  <- (cdr inp), written by us
     (let ((pid (fork)))
       (if (= pid 0)
           (progn (setpgid 0 0)               ; become a JOB leader: programs we
                                              ; fork inherit the group, so one
                                              ; group-kill interrupts them all
                  (setq in-pipeline t)        ; descendants run raw
-                 (dup2 (cdr p) 1)
-                 (close (car p)) (close (cdr p))
+                 (dup2 (cdr out) 1)          ; our stdout is the output pipe
+                 (dup2 (car inp) 0)          ; our stdin is the input pipe
+                 (close (car out)) (close (cdr out))
+                 (close (car inp)) (close (cdr inp))
                  (let ((v (funcall thunk)))
                    (exit (if (numberp v) v 0))))
         (progn
           (setpgid pid pid)                  ; parent sets it TOO (the classic
                                              ; shell double-set: no race if C-c
                                              ; lands before the child runs)
-          (close (cdr p))
-          (let ((running t))
+          (close (cdr out))                  ; we only READ the child's output
+          (close (car inp))                  ; and only WRITE its input
+          ;; sin = is our stdin write end still open? C-d closes it early; if
+          ;; the child exits first we close it after the loop. Closing twice
+          ;; would be a bug, so we track it.
+          (let ((running t) (sin t))
             (while running
-              (if (poll-fd (car p) 50)
-                  (let ((chunk (fd-read (car p) 1024)))
+              (if (poll-fd (car out) 50)
+                  (let ((chunk (fd-read (car out) 1024)))
                     (if chunk
                         (progn (insert chunk) (redisplay))
                       (setq running nil)))
@@ -253,9 +267,22 @@ programs and whole pipelines alike."
                    ;; it, still streaming. SIGINT to -pid reaches them all.
                    (kill (- 0 pid) 2)
                    (echo "C-c: interrupted"))
-                  (t nil)))))
-          (close (car p))
-          (cdr (wait)))))))
+                  ((and (eq (car ev) 'ctrl) (= (cadr ev) 100))  ; C-d: EOF
+                   ;; Close our write end: the child's next read on fd 0 then
+                   ;; returns 0 bytes -- the Unix end-of-input convention that
+                   ;; lets a filter like wc know the input is done.
+                   (if sin (progn (close (cdr inp)) (setq sin nil)) nil))
+                  ((eq (car ev) 'char)
+                   ;; A typed character: echo it into the buffer (a terminal
+                   ;; shows what you type) AND forward the byte to the child's
+                   ;; stdin. RET arrives as char 10, so Enter sends a newline.
+                   (let ((ch (cadr ev)))
+                     (insert (string-from-char ch)) (redisplay)
+                     (if sin (fd-write (cdr inp) (string-from-char ch)) nil)))
+                  (t nil))))
+            (close (car out))
+            (if sin (close (cdr inp)) nil)   ; child exited before C-d
+            (cdr (wait))))))))
 
 (defun run-prog (path argv)
   "Frame edition: stream output into the buffer -- unless we ARE a pipeline

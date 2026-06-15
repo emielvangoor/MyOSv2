@@ -507,6 +507,23 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
 
 ---
 
+## Phase 27 — Deepening the Lisp machine  🚧 IN PROGRESS
+
+Closing the gaps that kept the graphical frame tethered to the serial console.
+**Notes:** `docs/notes/phase-27.md`.
+
+- ✅ **27.1 — interactive stdin**: `stream-thunk` gains a second pipe so a
+  program run from the frame reads its fd 0 from the frame KEYBOARD, not the
+  serial port -- typed chars echo into the buffer and feed the child, RET
+  sends a line, C-d is EOF, C-c still group-kills the job. Pure Lisp
+  (`frame.l`); verified by `tools/stdin_check.py` (type into a live `wc`).
+- ⬜ **27.2 — line editing / in-buffer comint**: cooked input (backspace edits
+  the line instead of sending char-8), input history.
+- ⬜ **27.3 — editable file buffers**: `find-file`, edit a buffer, save back to
+  disk -- the larger Emacs-machine step.
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
