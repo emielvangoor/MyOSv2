@@ -23,6 +23,11 @@ import re as _re
 _hdr = open("src/font_aa.h").read()
 CELL_W = int(_re.search(r"#define FONT_AA_W (\d+)", _hdr).group(1))
 CELL_H = int(_re.search(r"#define FONT_AA_H (\d+)", _hdr).group(1))
+# Scanout size, parsed from the kernel header so checks track the resolution
+# (bumped to 2x = 2560x1440 for HiDPI) without hand-editing every script.
+_gfxh = open("src/gfx.h").read()
+GFX_W = int(_re.search(r"#define GFX_W (\d+)", _gfxh).group(1))
+GFX_H = int(_re.search(r"#define GFX_H (\d+)", _gfxh).group(1))
 FG = (0xD5, 0xC4, 0xA1)          # rd_core default face
 BG = (0x1D, 0x20, 0x21)
 
@@ -114,7 +119,7 @@ def main() -> int:
             qmp_screendump(dump)
             time.sleep(0.5)
             w, h, data = read_ppm(dump)
-            if (w, h) != (1280, 720):
+            if (w, h) != (GFX_W, GFX_H):
                 print(f"FAIL: unexpected scanout {w}x{h}"); return 1
             lines = [row_text(font, w, data, r) for r in range(10)]
             if any(t == "t" for t in lines):

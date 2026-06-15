@@ -21,7 +21,7 @@ import time
 
 sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp, qmp_type, qmp_screendump
-from frame_check import read_ppm, CELL_H
+from frame_check import read_ppm, CELL_H, GFX_H
 
 
 def qmp_ctrl(letter):
@@ -35,7 +35,7 @@ def qmp_ctrl(letter):
 
 # (teapot) splits below: the surface lands in the bottom window, whose top
 # edge is where the top window's 50% share of the rows ends (echo line off).
-_ROWS = 720 // CELL_H
+_ROWS = GFX_H // CELL_H
 SURF_Y = ((_ROWS - 1) * 50 // 100) * CELL_H
 SURF_W, SURF_H = 480, 300          # sample comfortably inside the canvas
 

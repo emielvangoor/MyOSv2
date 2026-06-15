@@ -7,8 +7,12 @@
 #pragma once
 #include <stdint.h>
 
-#define GFX_W 1280
-#define GFX_H 720
+// 2x a 1280x720 logical layout: the SAME 128x36 character grid (with the 20x40
+// font) but at twice the pixel density, so the QEMU window opens at a usable
+// size on a Retina display instead of half-size. The display is dumb RAM, so
+// "resolution" here is just how big a framebuffer the guest renders into.
+#define GFX_W 2560
+#define GFX_H 1440
 
 void gfx_init(void);                     // find + reset + queues (called by kmain)
 int  gfx_present(void);

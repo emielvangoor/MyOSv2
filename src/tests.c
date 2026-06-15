@@ -1502,7 +1502,7 @@ static void test_gpu_present(void)
     pmm_init(); kheap_init();
     gfx_init();
     KASSERT(gfx_present());
-    KASSERT(gfx_width() == 1280 && gfx_height() == 720);
+    KASSERT(gfx_width() == 2560 && gfx_height() == 1440);
 }
 
 static void test_gpu_scanout(void)

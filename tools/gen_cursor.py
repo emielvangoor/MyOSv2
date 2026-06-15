@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 ARROW = [(0.00, 0.00), (0.00, 0.857), (0.324, 0.679), (0.529, 1.000),
          (0.765, 0.939), (0.559, 0.625), (1.000, 0.625)]
 
-W, H = 17, 28          # on-screen size (within the 64x64 plane)
+W, H = 34, 56          # on-screen size (within the 64x64 plane); 2x for HiDPI
 SS = 8                 # supersampling factor
 
 

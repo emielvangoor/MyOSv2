@@ -21,6 +21,8 @@
 
 #define NBUFS 8
 #define BUF_CAP 8192
+#define SHOT_MAX_W 2560        /* widest scanout the screenshot row buffer holds;
+                                  keep >= GFX_W in src/gfx.h */
 
 static struct rd_frame frame;
 static struct rd_cell front_grid[160 * 45], back_grid[160 * 45];
@@ -504,13 +506,23 @@ DEFGFX("screenshot", Gscreenshot, 1, 1) {
     if (!frame_ready) { return Qnil; }
     long fd = sys_creat(path);          /* open, creating it if missing */
     if (fd < 0) { return Qnil; }
-    char hdr[32];
-    int n = 0;
-    const char *p6 = "P6\n1280 720\n255\n";
-    while (p6[n]) { hdr[n] = p6[n]; n++; }
+    /* Build the header from the ACTUAL framebuffer size, not a constant: the
+     * resolution is a compile-time knob (2x for HiDPI), and a header that
+     * disagrees with the pixels writes a corrupt PPM. */
+    char hdr[40], num[16];
+    int n = 0, k;
+    hdr[n++] = 'P'; hdr[n++] = '6'; hdr[n++] = '\n';
+    itoa10((long)gi.w, num); for (k = 0; num[k]; k++) { hdr[n++] = num[k]; }
+    hdr[n++] = ' ';
+    itoa10((long)gi.h, num); for (k = 0; num[k]; k++) { hdr[n++] = num[k]; }
+    hdr[n++] = '\n';
+    hdr[n++] = '2'; hdr[n++] = '5'; hdr[n++] = '5'; hdr[n++] = '\n';
     sys_write((int)fd, hdr, n);
-    /* One pixel row at a time: 0x00RRGGBB words -> R,G,B bytes. */
-    static unsigned char row[1280 * 3];
+    /* One pixel row at a time: 0x00RRGGBB words -> R,G,B bytes. The row buffer
+     * must hold the WIDEST scanout (SHOT_MAX_W tracks GFX_W in src/gfx.h);
+     * guard rather than overflow if a future bump outgrows it. */
+    static unsigned char row[SHOT_MAX_W * 3];
+    if (gi.w > SHOT_MAX_W) { sys_close((int)fd); return Qnil; }
     uint32_t *fb = gi.fb;
     for (unsigned y = 0; y < gi.h; y++) {
         for (unsigned x = 0; x < gi.w; x++) {
