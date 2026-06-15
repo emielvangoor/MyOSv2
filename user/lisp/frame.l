@@ -775,12 +775,20 @@ the current buffer, where the person at the frame can actually see it."
 ;; surface buffers with live renderers (the teapot!) keep repainting.
 (setq animate nil)
 
+(defun make-surface (name w h)
+  "Make a surface (pixel-canvas) buffer in surface-mode. The Lisp face of the
+make-surface-buffer C primitive: it allocates the shm canvas; we put the buffer
+in surface-mode so keys are inert and the mode line reads (Surface)."
+  (let ((b (make-surface-buffer name w h)))
+    (if b (set-major-mode b 'surface-mode) nil)
+    b))
+
 (defun teapot ()
   "The Utah teapot, spinning in a buffer: split the window, give the new
 half a surface canvas, and run /bin/teapot (TinyGL) into it."
   (split-below)
   (other-window)
-  (let ((sb (make-surface-buffer "*teapot*" 480 360)))
+  (let ((sb (make-surface "*teapot*" 480 360)))
     (set-buffer sb)
     (other-window)
     (setq animate t)
