@@ -577,6 +577,9 @@ the input comes from the very keyboard you are using."
                                              ; group-kill interrupts them all
                  (setq in-pipeline t)        ; descendants run raw
                  (dup2 (cdr out) 1)          ; our stdout is the output pipe
+                 (dup2 (cdr out) 2)          ; and stderr too, so errors/usage
+                                             ; land in the buffer, not the serial
+                                             ; port (busybox prints help to fd 2)
                  (dup2 (car inp) 0)          ; our stdin is the input pipe
                  (close (car out)) (close (cdr out))
                  (close (car inp)) (close (cdr inp))
