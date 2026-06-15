@@ -827,6 +827,47 @@ static void test_fd_close_reuse(void)
     KASSERT(fd_a == fd_b);
 }
 
+// getdents64: open a directory fd and read packed linux_dirent64 records.
+static uint8_t gd_buf[512];
+static long gd_n;
+static int gd_count, gd_found_two;
+static void gd_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/"; tf.x[2] = 0;
+    do_syscall(&tf);
+    long fd = (long)tf.x[0];
+    tf.x[8] = SYS_GETDENTS64; tf.x[0] = (uint64_t)fd;
+    tf.x[1] = (uint64_t)(uintptr_t)gd_buf; tf.x[2] = sizeof(gd_buf);
+    do_syscall(&tf);
+    gd_n = (long)tf.x[0];
+    // Walk the packed records: each one's d_reclen (u16 @16) is the stride.
+    long off = 0;
+    while (off + 19 <= gd_n) {
+        const char *nm = (const char *)(gd_buf + off + 19);
+        if (nm[0] == 't' && nm[1] == 'w' && nm[2] == 'o' && nm[3] == 0) { gd_found_two = 1; }
+        gd_count++;
+        off += *(uint16_t *)(gd_buf + off + 16);
+    }
+}
+static void test_getdents64_lists(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/one", VN_FILE);
+    vfs_create("/two", VN_FILE);
+    vfs_create("/three", VN_FILE);
+    gd_n = -1; gd_count = 0; gd_found_two = 0;
+    sched_init();
+    thread_create(gd_worker, 0, 1);
+    while (gd_n == -1) { yield(); }
+    KASSERT(gd_n > 0);
+    KASSERT(gd_count == 3);          // all three entries packed into the buffer
+    KASSERT(gd_found_two);           // d_name round-trips correctly
+}
+
 // --- Copy-on-write (page-level) ---
 
 static void test_cow_clone_shares_pages(void)
@@ -2646,6 +2687,7 @@ static const struct ktest tests[] = {
     { "fd: read syscall",                 test_fd_read_syscall },
     { "fd: open missing -> -1",           test_fd_open_missing },
     { "fd: close then reuse",             test_fd_close_reuse },
+    { "getdents64: lists directory",      test_getdents64_lists },
     { "cow: clone shares pages",          test_cow_clone_shares_pages },
     { "cow: clone refcount 2",            test_cow_clone_refcount },
     { "cow: fault copies page",           test_cow_fault_copies },

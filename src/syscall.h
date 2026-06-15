@@ -33,6 +33,7 @@
 #define SYS_WRITEV 66  // x0=fd, x1=struct iovec*, x2=iovcnt -> bytes / -errno
 #define SYS_SET_TID_ADDRESS 96  // x0=ptr (ignored; single-threaded) -> tid
 #define SYS_RT_SIGPROCMASK 135  // no per-process signal mask yet -> 0 (no-op)
+#define SYS_GETDENTS64 61 // x0=fd, x1=buf, x2=count -> bytes of dirents / 0 (end)
 #define SYS_LSEEK  62  // x0=fd, x1=offset, x2=whence -> new offset / -errno
 #define SYS_UNAME  160 // x0=struct utsname* -> 0 (reports Linux/aarch64)
 #define SYS_GETUID  174 // -> 0 (single-user: root)

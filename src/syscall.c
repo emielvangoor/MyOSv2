@@ -234,6 +234,56 @@ long do_syscall(struct trapframe *tf)
         ret = 0;
         break;
     }
+    case SYS_GETDENTS64: {                   // x0=fd, x1=buf, x2=count -> bytes / 0 (end)
+        // Linux reads a directory by repeatedly calling getdents64 on an open
+        // dirfd: each call packs as many variable-length `struct linux_dirent64`
+        // records as fit into the user buffer and returns the byte count; a
+        // return of 0 means end-of-directory. The kernel must remember where it
+        // left off -- we reuse the open file's `off` as the readdir index (it's
+        // meaningless as a byte offset on a directory anyway). busybox `ls`
+        // drives this. The on-disk record layout (packed, then 8-byte aligned so
+        // each next record's u64 fields stay aligned):
+        //   d_ino   u64 @0   d_off  s64 @8   d_reclen u16 @16
+        //   d_type  u8  @18   d_name[] @19 (NUL-terminated)
+        uint64_t fd = tf->x[0];
+        uint8_t *ubuf = (uint8_t *)(uintptr_t)tf->x[1];
+        uint64_t cap = tf->x[2];
+        struct file **fds = sched_current_fds();
+        if (!fds || fd >= 16 || !fds[fd] || !fds[fd]->vnode) { ret = -EBADF; break; }
+        struct vnode *dir = fds[fd]->vnode;
+        if (dir->type != VN_DIR) { ret = -ENOTDIR; break; }
+
+        uint64_t used = 0;
+        char name[256];
+        while (vfs_readdir(dir, (int)fds[fd]->off, name) == 0) {
+            // Length of this name, then the 8-byte-aligned record size.
+            uint64_t nlen = 0;
+            while (name[nlen] && nlen < 255) { nlen++; }
+            uint64_t reclen = (19 + nlen + 1 + 7) & ~(uint64_t)7;
+            if (used + reclen > cap) { break; }   // buffer full: stop, keep `off`
+
+            // Resolve the child's type for d_type so `ls` can colorize/recurse
+            // without a stat() per entry (DT_DIR=4, DT_REG=8, DT_UNKNOWN=0).
+            uint8_t dtype = 0;
+            struct vnode *child = dir->ops->lookup ? dir->ops->lookup(dir, name) : 0;
+            if (child) { dtype = (child->type == VN_DIR) ? 4 : 8; }
+
+            uint8_t *rec = ubuf + used;
+            *(uint64_t *)(rec + 0)  = (uint64_t)(fds[fd]->off + 1);  // d_ino (synthetic, nonzero)
+            *(int64_t  *)(rec + 8)  = (int64_t)(fds[fd]->off + 1);   // d_off (next index)
+            *(uint16_t *)(rec + 16) = (uint16_t)reclen;              // d_reclen
+            *(uint8_t  *)(rec + 18) = dtype;                         // d_type
+            for (uint64_t i = 0; i < nlen; i++) { rec[19 + i] = (uint8_t)name[i]; }
+            rec[19 + nlen] = 0;                                      // NUL terminator
+            // Zero the alignment padding so we never leak kernel bytes.
+            for (uint64_t i = 19 + nlen + 1; i < reclen; i++) { rec[i] = 0; }
+
+            used += reclen;
+            fds[fd]->off++;
+        }
+        ret = (long)used;   // 0 once readdir is exhausted -> end-of-directory
+        break;
+    }
     case SYS_BRK: {                          // x0 = new break (0 = query)
         // Linux brk: set the break to x0 and return the resulting break; a 0
         // (or out-of-range) request just returns the current one. as_sbrk is
