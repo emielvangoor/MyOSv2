@@ -189,6 +189,22 @@ long do_syscall(struct trapframe *tf)
     case SYS_RT_SIGPROCMASK:                 // x0=how, x1=set, x2=oldset, x3=sigsetsize
         ret = 0;                             // no per-process signal mask yet -> no-op
         break;
+    case SYS_GETUID: case SYS_GETEUID:       // single-user system: everyone is root
+    case SYS_GETGID: case SYS_GETEGID:
+        ret = 0;
+        break;
+    case SYS_UNAME: {                        // x0 = struct utsname* (6 x 65-byte fields)
+        char *u = (char *)(uintptr_t)tf->x[0];
+        for (int i = 0; i < 6 * 65; i++) { u[i] = 0; }
+        const char *f[6] = { "Linux", "myosv2", "6.0.0-myosv2",
+                             "#1 MyOSv2", "aarch64", "(none)" };
+        for (int k = 0; k < 6; k++) {
+            const char *s = f[k]; char *d = u + k * 65;
+            for (int j = 0; s[j] && j < 64; j++) { d[j] = s[j]; }
+        }
+        ret = 0;
+        break;
+    }
     case SYS_LSEEK: {                        // x0=fd, x1=offset, x2=whence
         uint64_t fd = tf->x[0];
         long off = (long)tf->x[1];

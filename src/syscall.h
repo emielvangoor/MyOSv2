@@ -34,6 +34,11 @@
 #define SYS_SET_TID_ADDRESS 96  // x0=ptr (ignored; single-threaded) -> tid
 #define SYS_RT_SIGPROCMASK 135  // no per-process signal mask yet -> 0 (no-op)
 #define SYS_LSEEK  62  // x0=fd, x1=offset, x2=whence -> new offset / -errno
+#define SYS_UNAME  160 // x0=struct utsname* -> 0 (reports Linux/aarch64)
+#define SYS_GETUID  174 // -> 0 (single-user: root)
+#define SYS_GETEUID 175 // -> 0
+#define SYS_GETGID  176 // -> 0
+#define SYS_GETEGID 177 // -> 0
 #define SYS_NEWFSTATAT 79 // x0=dirfd, x1=path, x2=statbuf, x3=flags -> 0 / -errno
 #define SYS_FSTAT  80  // x0=fd, x1=statbuf -> 0 / -errno
 #define SYS_BRK    214 // x0=new break (0=query) -> resulting break
