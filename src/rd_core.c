@@ -206,6 +206,19 @@ void rd_set_buffer(struct rd_frame *f, struct rd_buffer *b)
     f->selected->top_line = 0;
 }
 
+// Collapse the window tree to a single window showing the selected buffer --
+// Emacs's C-x 1 (delete-other-windows). The pool is just reused: free every
+// node, then re-grow a lone root carrying the selected buffer + scroll.
+void rd_delete_other(struct rd_frame *f)
+{
+    struct rd_buffer *b = f->selected->buf;
+    int top = f->selected->top_line;
+    for (int i = 0; i < RD_MAX_WIN; i++) { f->wins[i].used = 0; }
+    f->root = f->selected = win_alloc(f);
+    f->root->buf = b;
+    f->root->top_line = top;
+}
+
 void rd_echo(struct rd_frame *f, const char *s)
 {
     rd_scpy(f->echo, s, (int)sizeof(f->echo));

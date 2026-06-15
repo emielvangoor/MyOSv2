@@ -545,6 +545,10 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   (`global`/`cx`/`help-keymap`, `key-lookup`/`run-key`) so dispatch and help
   share one source; **C-h b** lists bindings, **C-h k** shows a key's command
   and living source, **C-h m** describes the mode. `tools/helpkeys_check.py`.
+- ✅ **27.9 — buffer/window management**: **C-x 1** (`delete-other-windows`,
+  new `rd_delete_other`) restores a single full window; **C-x C-b**
+  (`list-buffers`) over a new `(buffer-list)` primitive. KTEST `rd: delete
+  other windows` + `tools/bufferlist_check.py`.
 
 ---
 

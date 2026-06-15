@@ -1358,6 +1358,21 @@ static void test_rd_scroll_follows_point(void)
     KASSERT(rdf.selected->top_line == 0);
 }
 
+static void test_rd_delete_other(void)
+{
+    // C-x 1: collapse the window tree to the selected window, keeping its
+    // buffer; the tree becomes a single leaf that is both root and selected.
+    rd_fresh();
+    rd_split(&rdf, 0);                 // two windows
+    rd_other_window(&rdf);             // select the second
+    rd_set_buffer(&rdf, &rdb2);        // give it the other buffer
+    rd_delete_other(&rdf);
+    KASSERT(rdf.root == rdf.selected); // one window, root == selected
+    KASSERT(rdf.selected->leaf);
+    KASSERT(rdf.selected->buf == &rdb2);   // the selected buffer survived
+    rd_layout(&rdf);                   // and it lays out cleanly
+}
+
 static void test_rd_split_below(void)
 {
     rd_fresh();
@@ -2679,6 +2694,7 @@ static const struct ktest tests[] = {
     { "rd: gap buffer insert/delete/read", test_rd_gap_buffer },
     { "rd: single window layout",         test_rd_single_window_layout },
     { "rd: scroll follows point",         test_rd_scroll_follows_point },
+    { "rd: delete other windows",         test_rd_delete_other },
     { "rd: split below + other window",   test_rd_split_below },
     { "rd: split right",                  test_rd_split_right },
     { "rd: damage confined to edit",      test_rd_damage_minimal },

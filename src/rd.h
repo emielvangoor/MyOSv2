@@ -90,6 +90,7 @@ void rd_frame_init(struct rd_frame *f, int px_w, int px_h,
                    struct rd_buffer *initial);
 struct rd_win *rd_split(struct rd_frame *f, int vertical);  // selected leaf -> 2
 int  rd_win_delete(struct rd_frame *f);                     // remove selected
+void rd_delete_other(struct rd_frame *f);                   // C-x 1: selected fills frame
 void rd_other_window(struct rd_frame *f);                   // cycle selection
 void rd_set_buffer(struct rd_frame *f, struct rd_buffer *b);
 void rd_echo(struct rd_frame *f, const char *s);            // resets selection

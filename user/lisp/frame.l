@@ -206,12 +206,21 @@ move right K and delete K -- those K become the chars that were ahead."
     (list 'meta 98  'cmd-backward-word     "M-b    backward word")
     (list 'meta 100 'kill-word             "M-d    kill word")))
 
+(defun cmd-delete-other-windows ()
+  "C-x 1: the selected window fills the frame again. Any *Help* window is gone,
+so forget help-buf and let show-help re-split next time."
+  (delete-other-windows)
+  (setq help-buf nil)
+  (redisplay))
+
 (setq cx-keymap
   (list
+    (list 'char 49  'cmd-delete-other-windows "C-x 1  delete other windows")
     (list 'char 50  'split-repl-below "C-x 2  split below (new REPL)")
     (list 'char 51  'split-repl-right "C-x 3  split right (new REPL)")
     (list 'char 48  'delete-window    "C-x 0  delete window")
     (list 'char 111 'other-window     "C-x o  other window")
+    (list 'ctrl 98  'list-buffers     "C-x C-b  list buffers")
     (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")))
 
 (setq help-keymap
@@ -414,6 +423,17 @@ the very lambda the machine runs -- which you can redefine."
   (let ((s ""))
     (foreach (lambda (b) (setq s (string-concat s (nth 3 b) "\n"))) km)
     s))
+
+(defun list-buffers ()
+  "C-x C-b: every live buffer in a *Help* window, the current one marked '*'."
+  (let ((here (current-buffer))
+        (txt "=== Buffers ===\n\n"))
+    (foreach (lambda (e)
+               (setq txt (string-concat txt
+                 (if (= (car e) here) "* " "  ")
+                 (prin1-to-string (car e)) "  " (cdr e) "\n")))
+             (buffer-list))
+    (show-help txt)))
 
 (defun describe-bindings ()
   "C-h b: every key binding, in a *Help* window -- read from the live keymaps."

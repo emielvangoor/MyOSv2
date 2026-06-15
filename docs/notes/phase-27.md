@@ -173,6 +173,19 @@ source is inspectable.
 of truth: the help can never drift from what the keys actually do. Verified by
 `tools/helpkeys_check.py`.
 
+## 27.9 — Buffer list (C-x C-b) and full window (C-x 1)
+
+Two staples for managing the windows that pile up from help popups, find-file
+and splits. **C-x 1** (`delete-other-windows`) makes the selected window fill
+the frame again -- the answer to "I lost the full interface" after splits
+accumulate; a new `rd_delete_other` in rd_core reuses the window pool to
+re-grow a lone root carrying the selected buffer. **C-x C-b** (`list-buffers`)
+shows every live buffer in a *Help* window with the current one marked, built
+on a new `(buffer-list)` primitive that returns `(handle . name)` for each used
+buffer slot. `cmd-delete-other-windows` also forgets `help-buf` so `show-help`
+re-splits cleanly afterward. KTEST `rd: delete other windows` +
+`tools/bufferlist_check.py`.
+
 ## 27.4 — Windows scroll to keep point visible
 
 Buffers taller than their window simply ran off the bottom: the prompt and the

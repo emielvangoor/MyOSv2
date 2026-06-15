@@ -252,6 +252,20 @@ DEFGFX("split-below", Gsplit_below, 0, 0) { (void)args; (void)env; return rd_spl
 DEFGFX("split-right", Gsplit_right, 0, 0) { (void)args; (void)env; return rd_split(&frame, 1) ? Qt : Qnil; }
 DEFGFX("other-window", Gother_window, 0, 0) { (void)args; (void)env; rd_other_window(&frame); return Qt; }
 DEFGFX("delete-window", Gdelete_window, 0, 0) { (void)args; (void)env; return rd_win_delete(&frame) == 0 ? Qt : Qnil; }
+DEFGFX("delete-other-windows", Gdelete_other, 0, 0) { (void)args; (void)env; rd_delete_other(&frame); return Qt; }
+
+/* (buffer-list) -> a list of (handle . name) for every live buffer. The data
+ * behind C-x C-b and any future switch-to-buffer; built newest-handle-last. */
+DEFGFX("buffer-list", Gbuffer_list, 0, 0) {
+    (void)args; (void)env;
+    Lobj out = Qnil;
+    for (int i = NBUFS - 1; i >= 0; i--) {
+        if (buf_used[i]) {
+            out = make_cons(make_cons(FIXNUM(i), make_string(bufs[i].name)), out);
+        }
+    }
+    return out;
+}
 
 /* (set-face id fg bg) -- colors as 0x00RRGGBB fixnums. */
 DEFGFX("set-face", Gset_face, 3, 3) {
@@ -606,6 +620,7 @@ void lm_gfx_register(void)
     register_Gchar_at();
     register_Gsplit_below(); register_Gsplit_right();
     register_Gother_window(); register_Gdelete_window();
+    register_Gdelete_other(); register_Gbuffer_list();
     register_Gset_face(); register_Gecho(); register_Gselect_at();
     register_Gredisplay(); register_Gread_event();
     register_Gread_event_nb(); register_Gpoll_fd();
