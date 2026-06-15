@@ -123,8 +123,8 @@ everything else (RET included -> a newline) inserts at point."
 ;; (repl-start), so motion and deletion never reach into the prompt text.
 
 (defun edit-lo ()
-  "Leftmost editable position: 0 in a file buffer, the prompt in the REPL."
-  (if (editing-p) 0 (cur-start)))
+  "Leftmost editable position: the prompt in a REPL, else 0."
+  (if (eq (buffer-mode (current-buffer)) 'repl-mode) (cur-start) 0))
 
 (defun word-char-p (c)
   (or (and (>= c 48) (<= c 57))          ; 0-9
@@ -172,6 +172,111 @@ move right K and delete K -- those K become the chars that were ahead."
 
 (defun kill-word ()       ; M-d
   (let ((e (fwd-word-pos))) (if (> e (point)) (del-fwd (- e (point))) nil)))
+
+;; ---- the major modes (the MODEL is in modes.l; definitions live here) ----
+;; Each mode names handler functions that touch the buffer (insert, prompt,
+;; eval). The descriptor order is
+;;   (parent keymap on-self-insert on-return setup-fn doc mode-line-name).
+;; Hierarchy (behavior axis): special-mode is the inert root; surface-mode and
+;; fundamental-mode are its two children. "Graphics is the substrate" lives on
+;; the RENDERING axis (rd_core paints pixels for all buffers), not here.
+;;   special-mode
+;;     surface-mode          (a pixel canvas; ignores typing)
+;;     fundamental-mode      (adds text self-insert / RET)
+;;       text / repl / lisp-interaction
+
+(defun ignore-char (ch) ch)              ; inert: a key in the canvas does nothing
+(defun ignore-ret () nil)
+(register-mode 'special-mode
+  (list nil nil 'ignore-char 'ignore-ret nil
+        "Special: an inert displayed buffer. Typing does nothing; ctrl/meta keys
+fall through to the global keymap (so C-x o etc. still work)."
+        "Special"))
+
+(register-mode 'surface-mode
+  (list 'special-mode nil nil nil nil
+        "Surface: a pixel canvas an external renderer (e.g. the teapot) draws
+into. Keys do nothing -- it is not text."
+        "Surface"))
+
+(defun fundamental-self-insert (ch) (insert (string-from-char ch)))
+(defun fundamental-return () (insert "\n"))
+(register-mode 'fundamental-mode
+  (list 'special-mode nil 'fundamental-self-insert 'fundamental-return nil
+        "Fundamental mode: text self-inserts; RET inserts a newline."
+        "Fundamental"))
+
+(register-mode 'text-mode
+  (list 'fundamental-mode nil nil nil nil
+        "Text mode: plain text editing. C-x C-s saves to the visited file."
+        "Text"))
+
+(defun repl-self-insert (ch) (insert (string-from-char ch)))
+(defun repl-return () (repl-eval))
+(defun repl-setup () (goto-char (buffer-length)) (prompt))
+(setq repl-keymap
+  (list
+    (list 'ctrl 112 'cmd-history-prev "C-p    previous input (history)")
+    (list 'ctrl 110 'cmd-history-next "C-n    next input (history)")))
+(register-mode 'repl-mode
+  (list 'fundamental-mode repl-keymap 'repl-self-insert 'repl-return 'repl-setup
+        "REPL mode: RET evaluates the input; C-p/C-n walk the input history."
+        "REPL"))
+
+(defun scratch-setup ()
+  (insert ";; *scratch* -- type a Lisp form and press C-j to evaluate it.\n\n"))
+(setq lisp-interaction-keymap
+  (list (list 'ctrl 106 'eval-last-sexp "C-j    eval the form before point")))
+(register-mode 'lisp-interaction-mode
+  (list 'fundamental-mode lisp-interaction-keymap nil nil 'scratch-setup
+        "Lisp Interaction: RET=newline; C-j evaluates the form before point."
+        "Lisp Interaction"))
+
+(defun set-major-mode (buf mode-sym)
+  "Make BUF use MODE-SYM: record it (buffer-local), select it, paint the mode
+line, and run the mode's setup-fn."
+  (buffer-local-set buf 'major-mode mode-sym)
+  (set-buffer buf)
+  (set-mode-line-name (mode-line-name-of mode-sym))
+  ;; this Lisp has no funcall: (eval (list s)) calls the setup fn named by symbol s
+  (let ((s (mode-setup-fn mode-sym))) (if s (eval (list s)) nil))
+  mode-sym)
+
+;; ---- lisp-interaction: evaluate the form before point (C-j) ----
+(defun sexp-ws-p (c) (or (= c 32) (= c 10) (= c 9)))   ; space/newline/tab
+
+(defun last-sexp-start (p)
+  "Scan left from P over one balanced form; return its start position."
+  (let ((q (- p 1)) (lo (edit-lo)))
+    (while (and (> q lo) (sexp-ws-p (char-at q))) (setq q (- q 1)))  ; trailing ws
+    (if (and (>= q 0) (= (char-at q) 41))            ; ')' -> match parens back
+        (let ((depth 0) (done nil))
+          (while (not done)
+            (let ((c (char-at q)))
+              ;; ')' deepens; the '(' that brings depth back to 0 is the matching opener
+              (cond ((= c 41) (setq depth (+ depth 1)))
+                    ((= c 40) (setq depth (- depth 1))))
+              (cond ((and (= c 40) (= depth 0)) (setq done t))
+                    ((<= q lo) (setq done t))
+                    (t (setq q (- q 1))))))
+          q)
+      (progn                                          ; an atom: back over it
+        (while (and (> q lo)
+                    (not (sexp-ws-p (char-at (- q 1))))
+                    (not (= (char-at (- q 1)) 40)))
+          (setq q (- q 1)))
+        q))))
+
+(defun eval-last-sexp ()
+  "C-j in lisp-interaction-mode: eval the form before point; insert its value."
+  (let ((start (last-sexp-start (point))) (end (point)))
+    (let ((src (buffer-substring start end)))
+      (goto-char end)
+      (insert "\n")
+      (let ((val (eval (read-string src))))
+        (flush-output)
+        (insert (prin1-to-string val))
+        (insert "\n")))))
 
 ;; ---- keymaps as DATA (the self-documenting heart) -----------------------
 ;; A binding is (kind code command description). dispatch looks a key up in a
