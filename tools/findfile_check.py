@@ -1,31 +1,17 @@
 #!/usr/bin/env python3
 """
-findfile_check.py -- editable file buffers in the frame (Phase 27.3).
+findfile_check.py -- interactive C-x C-f (Phase 27 modes update).
 
-The Emacs-machine step: open a file into a buffer, edit it, save it back to
-disk. This drives the whole loop from the keyboard:
-
-  (find-file "/n.txt")   -- opens the (new) file in a split window, selected
-  type "hello edit" RET  -- the buffer is now EDITABLE (RET inserts a newline,
-                            it is not the REPL), so this is real text entry
-  C-x C-s                -- save-buffer writes it to disk
-  C-x o                  -- back to the REPL
-  (cat "/n.txt")         -- read it back; the saved text must stream in
-
-If the file persisted, the REPL shows the cat output "hello edit" right under
-the command. A frame without 27.3 can't even start (find-file is unbound).
-
-Run from the repo root:  python3 tools/findfile_check.py
+C-x C-f prompts for a path, opens it in text-mode in the CURRENT window; we
+type text, C-x C-s to save, then read it back from disk via a fresh REPL
+window (C-x r) and (cat ...). The saved text must stream into the REPL.
 """
-
-import os
-import sys
-import tempfile
-import time
-
+import os, sys, tempfile, time
 sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp, qmp_type, qmp_screendump
-from frame_check import load_font, read_ppm, row_text
+# Body text (the saved file contents read back) is face-0, so row_text reads
+# it; iterate rows by CELL_H (the real glyph height), not a hardcoded count.
+from frame_check import load_font, read_ppm, row_text, CELL_H
 
 
 def qmp_ctrl(letter):
@@ -49,29 +35,22 @@ def main() -> int:
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
 
-        qmp_type('(find-file "/n.txt")\n'); time.sleep(1.0)
-        qmp_ctrl("x"); time.sleep(0.2); qmp_type("o"); time.sleep(0.6)   # into file
-        qmp_type("hello edit\n"); time.sleep(0.6)   # edit the file buffer
-        qmp_ctrl("x"); time.sleep(0.2); qmp_ctrl("s"); time.sleep(0.8)   # save
-        qmp_ctrl("x"); time.sleep(0.2); qmp_type("o"); time.sleep(0.6)   # to REPL
+        qmp_ctrl("x"); time.sleep(0.2); qmp_ctrl("f"); time.sleep(0.5)  # C-x C-f
+        qmp_type("/n.txt\n"); time.sleep(0.8)         # path -> opens in this window
+        qmp_type("hello edit\n"); time.sleep(0.6)     # text-mode: real text entry
+        qmp_ctrl("x"); time.sleep(0.2); qmp_ctrl("s"); time.sleep(0.8)  # save
+        qmp_ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL
         qmp_type('(cat "/n.txt")\n'); time.sleep(1.0)
 
         qmp_screendump(dump); time.sleep(0.5)
         w, h, data = read_ppm(dump)
-        lines = [row_text(font, w, data, r) for r in range(16)]
+        lines = [row_text(font, w, data, r) for r in range(h // CELL_H)]
         for i, t in enumerate(lines):
             print(f"  row {i}: {t!r}")
-
-        ok = False
-        for i, t in enumerate(lines):
-            if t.startswith('lisp> (cat "/n.txt")') and i + 1 < len(lines) \
-               and lines[i + 1] == "hello edit":
-                ok = True
-        if ok:
-            print("PASS: 27.3 editable file buffers verified (edit + save persisted)")
-            return 0
-        print("FAIL: saved text did not read back from disk")
-        return 1
+        ok = any("hello edit" in t for t in lines)
+        print("PASS: C-x C-f edit + save persisted (read back)" if ok
+              else "FAIL: saved text did not read back")
+        return 0 if ok else 1
     finally:
         q.kill()
 

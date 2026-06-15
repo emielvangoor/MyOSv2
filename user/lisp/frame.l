@@ -311,6 +311,7 @@ so forget help-buf and let show-help re-split next time."
     (list 'char 111 'other-window     "C-x o  other window")
     (list 'char 98  'switch-to-buffer "C-x b  switch to buffer")
     (list 'ctrl 98  'list-buffers     "C-x C-b  list buffers")
+    (list 'ctrl 102 'cmd-find-file    "C-x C-f  find file")
     (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")
     (list 'char 114 'repl-here       "C-x r    open a REPL in this window")))
 
@@ -374,32 +375,29 @@ the whole event, not a bare char."
 
 ;; ---- visiting files: open, edit, save (Phase 27.3) ----------------------
 
-(defun find-file (path)
-  "Open PATH in a split window below; the file shows there and the buffer
-remembers its path (so C-x C-s knows where to write). A missing file starts
-empty. We return selection to the REPL before finishing -- like (teapot) --
-so the REPL's own 'print the value and re-prompt' lands in the REPL, not in
-the file buffer. Switch to the file with C-x o to start editing."
-  (split-below)
-  (other-window)                           ; into the new (bottom) window
+(defun find-file-here (path)
+  "Open PATH in text-mode in the CURRENT window. A missing file starts empty.
+The buffer remembers PATH (buffer-local file-path) so C-x C-s knows where to
+write."
   (let ((b (make-buffer path)))
-    (set-buffer b)                         ; show the file there
-    (setq file-of (cons (cons b path) file-of))
+    (set-major-mode b 'text-mode)                     ; selects b, mode line (Text)
+    (buffer-local-set b 'file-path path)
     (let ((fd (open path)))
       (if (>= fd 0)
           (progn
             (let ((chunk (fd-read fd 1024)))
               (while chunk (insert chunk) (setq chunk (fd-read fd 1024))))
             (close fd))
-        nil))                              ; nonexistent: a fresh empty buffer
+        nil))                                         ; nonexistent -> empty buffer
     (goto-char 0)
-    (other-window)                         ; back to the REPL (see docstring)
     (redisplay)
     b))
 
+(defun cmd-find-file () (mb-start 'find-file))         ; C-x C-f
+
 (defun save-buffer ()
   "Write the current buffer back to the file it is visiting (C-x C-s)."
-  (let ((path (cdr (assoc (current-buffer) file-of))))
+  (let ((path (buffer-local-get (current-buffer) 'file-path nil)))
     (if path
         (let ((fd (creat path)))
           (if (>= fd 0)
@@ -432,7 +430,9 @@ the file buffer. Switch to the file with C-x o to start editing."
 ;; one candidate). M-x/describe complete over command symbols; switch-to-buffer
 ;; completes over (handle . name) buffer entries.
 (defun mb-source ()
-  (if (eq mb-action 'switch) (buffer-list) (command-symbols)))
+  (cond ((eq mb-action 'switch) (buffer-list))
+        ((eq mb-action 'find-file) nil)               ; free-text path entry
+        (t (command-symbols))))
 
 (defun mb-label (c)
   (if (eq mb-action 'switch) (cdr c) (symbol-name c)))
@@ -474,6 +474,7 @@ drives the face-2 bar)."
         (txt (string-concat
               (cond ((eq mb-action 'mx) "M-x ")
                     ((eq mb-action 'switch) "Buffer: ")
+                    ((eq mb-action 'find-file) "Find file: ")
                     (t "Describe: "))
               mb-input)))
     (if (> n 0)
@@ -586,17 +587,20 @@ uses, so it is always accurate."
 
 (defun mb-commit ()
   (let ((sel (if mb-matches (nth mb-sel mb-matches) nil))
-        (action mb-action))
+        (action mb-action)
+        (input mb-input))
     (mb-stop)
     (cond
-      ((eq action 'switch)                    ; sel is (handle . name)
+      ((eq action 'switch)
        (if sel (progn (set-buffer (car sel)) (redisplay)) (echo "no such buffer")))
+      ((eq action 'find-file)                          ; the typed text IS the path
+       (find-file-here input))
       ((eq action 'mx)
-       (let ((sym (if sel sel (read-string mb-input))))
+       (let ((sym (if sel sel (read-string input))))
          (let ((val (eval (list sym))))
            (flush-output) (insert (prin1-to-string val)) (insert "\n") (prompt))))
       ((eq action 'describe)
-       (show-help (describe-function-text (if sel sel (read-string mb-input))))))))
+       (show-help (describe-function-text (if sel sel (read-string input))))))))
 
 (defun mb-dispatch (ev)
   "The minibuffer keymap -- live data, like everything else here."
