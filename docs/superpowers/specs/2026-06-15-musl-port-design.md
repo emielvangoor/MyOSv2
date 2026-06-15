@@ -31,6 +31,16 @@ separate per-process mode.
   `AT_ENTRY`, `AT_NULL`). Native `crt0` reads it the Linux way; musl's `_start`
   reads it natively, unchanged.
 
+## Status
+
+- ✅ **B-SP1** — the migration. Linux initial stack (auxv); MyOSv2-private
+  syscalls at `0x1000+`; clean syscalls (`read`/`write`/`close`/`exit`/
+  `getpid`/`yield`) + `openat` on Linux numbers + negative-errno; `errno` infra.
+- ✅ **B-SP2** — **a static musl `hello` runs and prints** (`set_tid_address`,
+  `ioctl`→`ENOTTY`, `writev`; programs linked into the clean user VA range).
+- ⬜ **B-SP3** — files & processes depth (next).
+- ⬜ **B-SP4** — busybox.
+
 ## Decomposition (each its own spec → plan → build)
 
 - **B-SP1 — the migration.** Kernel dispatch + `ulib` move to Linux numbers,
