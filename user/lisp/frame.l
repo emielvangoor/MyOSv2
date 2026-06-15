@@ -62,14 +62,33 @@ the buffer, read-string turns text into a form, eval runs it."
 ;; C-x prefix state: nil normally, t after a C-x.
 (setq pending-cx nil)
 
-(defun handle-cx (ch)
-  "The C-x map: 2/3 split, 0 delete, o other-window -- the Emacs chords."
+;; The REPL's buffer handle, and the alist of (buffer . file path) for buffers
+;; visiting a file. editing-p tells dispatch which keymap to use: the same RET
+;; means "evaluate" in the REPL and "insert a newline" in a file buffer.
+(setq repl-buf 0)
+(setq file-of nil)
+
+(defun editing-p ()
+  "t when the selected buffer is a plain editable buffer, not the REPL."
+  (not (= (current-buffer) repl-buf)))
+
+(defun edit-key (ch)
+  "Self-insert editing for a file buffer: backspace deletes before point,
+everything else (RET included -> a newline) inserts at point."
+  (cond
+    ((= ch 8) (if (> (point) 0) (delete-char 1) nil))    ; backspace
+    (t (insert (string-from-char ch)))))                 ; incl. RET -> newline
+
+(defun handle-cx (ev)
+  "The C-x map: 2/3 split, 0 delete, o other-window, C-s save -- note C-x C-s
+is two CTRL events, so this dispatches on the whole event, not a bare char."
   (setq pending-cx nil)
   (cond
-    ((= ch 50) (split-below))          ; C-x 2
-    ((= ch 51) (split-right))          ; C-x 3
-    ((= ch 48) (delete-window))        ; C-x 0
-    ((= ch 111) (other-window))        ; C-x o
+    ((and (eq (car ev) 'char) (= (cadr ev) 50)) (split-below))    ; C-x 2
+    ((and (eq (car ev) 'char) (= (cadr ev) 51)) (split-right))    ; C-x 3
+    ((and (eq (car ev) 'char) (= (cadr ev) 48)) (delete-window))  ; C-x 0
+    ((and (eq (car ev) 'char) (= (cadr ev) 111)) (other-window))  ; C-x o
+    ((and (eq (car ev) 'ctrl) (= (cadr ev) 115)) (save-buffer))   ; C-x C-s
     (t (echo "unbound C-x key"))))
 
 (defun dispatch (ev)
@@ -77,6 +96,7 @@ the buffer, read-string turns text into a form, eval runs it."
   (cond
     ((null ev) nil)
     (mb-action (mb-dispatch ev))                          ; minibuffer owns input
+    (pending-cx (handle-cx ev))                           ; C-x <key> (char OR ctrl)
     ((eq (car ev) 'mouse)
      (select-window-at (cadr ev) (caddr ev)))
     ((eq (car ev) 'meta)
@@ -89,20 +109,65 @@ the buffer, read-string turns text into a form, eval runs it."
     ((eq (car ev) 'ctrl)
      (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
            ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
-           ((= (cadr ev) 112) (repl-history-prev))       ; C-p / Up: older
-           ((= (cadr ev) 110) (repl-history-next))       ; C-n / Down: newer
+           ((= (cadr ev) 98)                             ; C-b / Left: back a char
+            (if (and (editing-p) (> (point) 0)) (goto-char (- (point) 1)) nil))
+           ((= (cadr ev) 102)                            ; C-f / Right: forward
+            (if (and (editing-p) (< (point) (buffer-length)))
+                (goto-char (+ (point) 1)) nil))
+           ((= (cadr ev) 112)                            ; C-p / Up: history (REPL)
+            (if (editing-p) nil (repl-history-prev)))
+           ((= (cadr ev) 110)                            ; C-n / Down: history (REPL)
+            (if (editing-p) nil (repl-history-next)))
            ((= (cadr ev) 103) (setq pending-cx nil)      ; C-g: never mind
                               (echo "quit"))
            (t nil)))
     ((eq (car ev) 'char)
-     (let ((ch (cadr ev)))
-       (cond
-         (pending-cx (handle-cx ch))
-         ((= ch 10) (repl-eval))                          ; RET
-         ((= ch 8)                                        ; backspace
-          (if (> (buffer-length) repl-start) (delete-char 1) nil))
-         (t (insert (string-from-char ch))))))            ; self-insert
+     (if (editing-p)
+         (edit-key (cadr ev))                             ; file buffer: plain edit
+       (let ((ch (cadr ev)))
+         (cond
+           ((= ch 10) (repl-eval))                        ; RET: evaluate
+           ((= ch 8)                                      ; backspace
+            (if (> (buffer-length) repl-start) (delete-char 1) nil))
+           (t (insert (string-from-char ch)))))))         ; self-insert
     (t nil)))
+
+;; ---- visiting files: open, edit, save (Phase 27.3) ----------------------
+
+(defun find-file (path)
+  "Open PATH in a split window below; the file shows there and the buffer
+remembers its path (so C-x C-s knows where to write). A missing file starts
+empty. We return selection to the REPL before finishing -- like (teapot) --
+so the REPL's own 'print the value and re-prompt' lands in the REPL, not in
+the file buffer. Switch to the file with C-x o to start editing."
+  (split-below)
+  (other-window)                           ; into the new (bottom) window
+  (let ((b (make-buffer path)))
+    (set-buffer b)                         ; show the file there
+    (setq file-of (cons (cons b path) file-of))
+    (let ((fd (open path)))
+      (if (>= fd 0)
+          (progn
+            (let ((chunk (fd-read fd 1024)))
+              (while chunk (insert chunk) (setq chunk (fd-read fd 1024))))
+            (close fd))
+        nil))                              ; nonexistent: a fresh empty buffer
+    (goto-char 0)
+    (other-window)                         ; back to the REPL (see docstring)
+    (redisplay)
+    b))
+
+(defun save-buffer ()
+  "Write the current buffer back to the file it is visiting (C-x C-s)."
+  (let ((path (cdr (assoc (current-buffer) file-of))))
+    (if path
+        (let ((fd (creat path)))
+          (if (>= fd 0)
+              (progn (fd-write fd (buffer-substring 0 (buffer-length)))
+                     (close fd)
+                     (echo (string-concat "saved " path)))
+            (echo "save failed")))
+      (echo "no file for this buffer"))))
 
 ;; ---- the minibuffer: vertico-style command selection -------------------
 ;;
@@ -359,6 +424,7 @@ the current buffer, where the person at the frame can actually see it."
   "Acquire the screen and greet. Returns nil when there is no display."
   (if (frame-init)
       (progn
+        (setq repl-buf (current-buffer))   ; the REPL is whatever frame-init selected
         (insert "MyOSv2 Graphical Lisp Machine\n")
         (insert "C-x 2/3 split  C-x 0 delete  C-x o next  mouse-1 select\n\n")
         (prompt)

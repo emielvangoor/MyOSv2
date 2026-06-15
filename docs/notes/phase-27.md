@@ -66,3 +66,33 @@ and walks them with **Up/Down**, which the kernel already cooks into C-p/C-n.
 swaps the text after the prompt for a recalled form, ready to re-run or edit.
 `tools/history_check.py` evaluates `(+ 1 2)` then `(* 2 5)`, presses Up twice
 back to `(+ 1 2)`, and RET re-evaluates it to `3`.
+
+## 27.3 — Editable file buffers
+
+The Emacs-machine step: open a file into a buffer, edit it, save it back to
+disk -- all from the keyboard. `(find-file "/path")` splits a window, reads the
+file into a fresh buffer (a missing path starts empty), records the buffer's
+path in the `file-of` alist, and -- like `(teapot)` -- returns selection to the
+REPL so the REPL's own "print the value and re-prompt" lands in the REPL, not
+the new buffer (the bug the first cut hit: trailing inserts corrupting the
+prompt). Switch into the file with **C-x o**.
+
+For that to work, dispatch had to learn that **not every buffer is the REPL**.
+A new C primitive `(current-buffer)` returns the selected window's handle;
+`editing-p` compares it to `repl-buf`. In a file buffer the keymap is plain
+editing -- RET inserts a newline (it does not evaluate), backspace deletes
+before point, characters self-insert -- while **C-b/C-f** (and the Left/Right
+arrows, newly cooked to them) move point. **C-x C-s** (`save-buffer`) writes the
+buffer back via `creat` + `fd-write`; note C-x C-s is two CTRL events, so the
+C-x map now dispatches on the whole event, not a bare char.
+
+`tools/findfile_check.py` drives the full loop: find-file a new path, C-x o,
+type `hello edit`, C-x C-s, C-x o back, then `(cat "/n.txt")` -- and the saved
+text streams back from disk. See `docs/images/phase-27-editable-buffer.png`.
+
+**Known limitation.** There is no truncate syscall yet, so `save-buffer` writes
+from offset 0 without shortening the file -- re-saving to a *shorter* length
+leaves stale trailing bytes. New files and same-or-longer saves are correct;
+a truncate (or unlink-then-creat) is the follow-up. Vertical (C-p/C-n) motion
+in a file buffer is also still TODO -- C-f/C-b traverse newlines, so every
+position is reachable, just not by line.

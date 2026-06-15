@@ -507,7 +507,7 @@ multiplexer. **Spec:** `docs/superpowers/specs/2026-06-10-graphical-lisp-machine
 
 ---
 
-## Phase 27 — Deepening the Lisp machine  🚧 IN PROGRESS
+## Phase 27 — Deepening the Lisp machine  ✅ DONE (27.1–27.3)
 
 Closing the gaps that kept the graphical frame tethered to the serial console.
 **Notes:** `docs/notes/phase-27.md`.
@@ -521,8 +521,12 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   input -- backspace edits the buffered line, RET delivers it, C-d is EOF;
   and the REPL keeps an Up/Down history of submitted forms. Verified by
   `tools/lineedit_check.py` and `tools/history_check.py`.
-- ⬜ **27.3 — editable file buffers**: `find-file`, edit a buffer, save back to
-  disk -- the larger Emacs-machine step.
+- ✅ **27.3 — editable file buffers**: `(find-file)` opens a file in a split
+  window; a new `(current-buffer)` primitive lets dispatch run a plain-editing
+  keymap in non-REPL buffers (RET = newline, C-b/C-f + arrows move point);
+  `(save-buffer)` / C-x C-s writes back via creat+fd-write. Verified by
+  `tools/findfile_check.py` (edit + save round-trips through disk). Follow-ups:
+  a truncate syscall (re-saving shorter files) and by-line C-p/C-n motion.
 
 ---
 

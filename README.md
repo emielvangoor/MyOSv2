@@ -188,6 +188,11 @@ photograph itself: `(screenshot "/shot.ppm")`.
   filter you type into and end with C-d — the terminal, finally complete inside
   the frame (a forked child gets its fd 0 from a pipe the event loop drives).
   ![typing into a running wc inside the frame, ended with C-d](docs/images/phase-27-interactive-stdin.png)
+- **Editable file buffers** — `(find-file "/path")` opens a file in a split
+  window; switch in with `C-x o` and it's a real editor (RET inserts a newline,
+  arrows/`C-b`/`C-f` move point, backspace deletes), and **`C-x C-s`** saves it
+  back to disk. The Emacs-machine loop — open, edit, save — closed.
+  ![editing a file in a buffer, saved with C-x C-s](docs/images/phase-27-editable-buffer.png)
 - **M-x + describe-function, vertico-style** — the echo area grows into a
   live-narrowing command palette over the image's own symbol table; `C-h f`
   shows a function's *living source* in a `*Help*` window, ready to redefine.

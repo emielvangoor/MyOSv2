@@ -104,6 +104,14 @@ DEFGFX("set-buffer", Gset_buffer, 1, 1) {
     return CAR(args);
 }
 
+/* (current-buffer) -> the handle of the SELECTED window's buffer. Lisp needs
+ * this to tell the REPL apart from an editable file buffer: the same keystroke
+ * means "evaluate" in one and "insert a newline" in the other. */
+DEFGFX("current-buffer", Gcurrent_buffer, 0, 0) {
+    (void)args; (void)env;
+    return FIXNUM((int)(frame.selected->buf - bufs));
+}
+
 /* (insert "str") -> insert at point in the selected window's buffer. */
 DEFGFX("insert", Ginsert, 1, 1) {
     (void)env;
@@ -328,9 +336,16 @@ static Lobj cook_event(struct input_event *evp)
             ck_alt = (ev.value != 0); return 0;
         }
         if (ev.value == 1 && (ev.code == 103 || ev.code == 108)) {
-            /* arrows: cook Up/Down into C-p / C-n -- vertico's navigation. */
+            /* arrows: cook Up/Down into C-p / C-n -- vertico's navigation
+             * and REPL history. */
             return make_cons(intern("ctrl"),
                    make_cons(FIXNUM(ev.code == 103 ? 'p' : 'n'), Qnil));
+        }
+        if (ev.value == 1 && (ev.code == 105 || ev.code == 106)) {
+            /* Left/Right -> C-b / C-f: move point a char when editing a buffer
+             * (Emacs's backward-char / forward-char). */
+            return make_cons(intern("ctrl"),
+                   make_cons(FIXNUM(ev.code == 105 ? 'b' : 'f'), Qnil));
         }
         if (ev.code == 272) {                            /* BTN_LEFT */
             if (ev.value == 1) {
@@ -578,7 +593,7 @@ DEFGFX("frame-output", Gframe_output, 0, 0) {
 void lm_gfx_register(void)
 {
     register_Gframe_init();
-    register_Gmake_buffer(); register_Gset_buffer();
+    register_Gmake_buffer(); register_Gset_buffer(); register_Gcurrent_buffer();
     register_Ginsert(); register_Gdelete_char();
     register_Gpoint(); register_Gbuflen(); register_Ggoto_char(); register_Gbufsub();
     register_Gsplit_below(); register_Gsplit_right();
