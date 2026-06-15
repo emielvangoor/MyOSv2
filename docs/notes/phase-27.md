@@ -186,6 +186,19 @@ buffer slot. `cmd-delete-other-windows` also forgets `help-buf` so `show-help`
 re-splits cleanly afterward. KTEST `rd: delete other windows` +
 `tools/bufferlist_check.py`.
 
+## 27.10 — C-x b switch-to-buffer (completion)
+
+The companion to C-x C-b: pick a buffer by name and show it in the current
+window. This generalized the vertico minibuffer to complete over more than
+command symbols -- each action now supplies a `mb-source` (the candidate list)
+and `mb-label` (a candidate's display/match string). M-x and describe complete
+over command symbols (`symbol-name`); `switch-to-buffer` ('switch action)
+completes over `(buffer-list)` entries, labelled by name, and commits by
+`set-buffer` on the chosen handle. The prompt shows "Buffer:" and the same
+live-narrowing + scrolling as M-x. Verified by `tools/bufswitch_check.py`:
+give a file buffer content, hide it with C-x 1, then C-x b back to it by name
+and its content reappears.
+
 ## 27.4 — Windows scroll to keep point visible
 
 Buffers taller than their window simply ran off the bottom: the prompt and the

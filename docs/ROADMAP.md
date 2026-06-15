@@ -549,6 +549,10 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   new `rd_delete_other`) restores a single full window; **C-x C-b**
   (`list-buffers`) over a new `(buffer-list)` primitive. KTEST `rd: delete
   other windows` + `tools/bufferlist_check.py`.
+- ✅ **27.10 — C-x b switch-to-buffer**: the vertico minibuffer generalized to
+  complete over any candidates (`mb-source`/`mb-label`); switch-to-buffer
+  completes over buffer names and shows the pick in the window.
+  `tools/bufswitch_check.py`.
 
 ---
 

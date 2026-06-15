@@ -213,6 +213,10 @@ so forget help-buf and let show-help re-split next time."
   (setq help-buf nil)
   (redisplay))
 
+(defun switch-to-buffer ()
+  "C-x b: pick a buffer by name in the minibuffer and show it here."
+  (mb-start 'switch))
+
 (setq cx-keymap
   (list
     (list 'char 49  'cmd-delete-other-windows "C-x 1  delete other windows")
@@ -220,6 +224,7 @@ so forget help-buf and let show-help re-split next time."
     (list 'char 51  'split-repl-right "C-x 3  split right (new REPL)")
     (list 'char 48  'delete-window    "C-x 0  delete window")
     (list 'char 111 'other-window     "C-x o  other window")
+    (list 'char 98  'switch-to-buffer "C-x b  switch to buffer")
     (list 'ctrl 98  'list-buffers     "C-x C-b  list buffers")
     (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")))
 
@@ -335,13 +340,23 @@ the file buffer. Switch to the file with C-x o to start editing."
   "Every symbol whose function slot holds something runnable."
   (filter (lambda (s) (function-info s)) (all-symbols)))
 
+;; The minibuffer is generic over its candidates: each action supplies a
+;; SOURCE (the full candidate list) and a LABEL (the display/match string for
+;; one candidate). M-x/describe complete over command symbols; switch-to-buffer
+;; completes over (handle . name) buffer entries.
+(defun mb-source ()
+  (if (eq mb-action 'switch) (buffer-list) (command-symbols)))
+
+(defun mb-label (c)
+  (if (eq mb-action 'switch) (cdr c) (symbol-name c)))
+
 (defun mb-filter ()
-  "Narrow the candidates to those containing mb-input."
+  "Narrow the action's candidates to those whose label contains mb-input."
   (setq mb-matches
-        (filter (lambda (s)
+        (filter (lambda (c)
                   (or (= (string-length mb-input) 0)
-                      (string-search mb-input (symbol-name s))))
-                (command-symbols)))
+                      (string-search mb-input (mb-label c))))
+                (mb-source)))
   (setq mb-sel 0)
   (setq mb-top 0))
 
@@ -369,11 +384,15 @@ behavior, the same minimal-scroll rule the buffer uses for point."
 slice of candidates (mb-top onward), the selected one highlighted (echo-select
 drives the face-2 bar)."
   (let ((n (length mb-matches))
-        (txt (string-concat (if (eq mb-action 'mx) "M-x " "Describe: ") mb-input)))
+        (txt (string-concat
+              (cond ((eq mb-action 'mx) "M-x ")
+                    ((eq mb-action 'switch) "Buffer: ")
+                    (t "Describe: "))
+              mb-input)))
     (if (> n 0)
         (setq txt (string-concat txt "  " (prin1-to-string (+ mb-sel 1))
                                  "/" (prin1-to-string n))) nil)
-    (foreach (lambda (s) (setq txt (string-concat txt "\n  " (symbol-name s))))
+    (foreach (lambda (c) (setq txt (string-concat txt "\n  " (mb-label c))))
              (take mb-rows (nthcdr mb-top mb-matches)))
     (echo txt)
     (echo-select (+ (- mb-sel mb-top) 1))))
@@ -476,16 +495,18 @@ uses, so it is always accurate."
       (t (describe-binding (key-lookup ev global-keymap) "")))))
 
 (defun mb-commit ()
-  (let ((sym (if mb-matches (nth mb-sel mb-matches)
-               (read-string mb-input)))
+  (let ((sel (if mb-matches (nth mb-sel mb-matches) nil))
         (action mb-action))
     (mb-stop)
     (cond
-      ((eq action 'mx) (let ((val (eval (list sym))))
-                          (flush-output)
-                          (insert (prin1-to-string val))
-                          (insert "\n") (prompt)))
-      ((eq action 'describe) (show-help (describe-function-text sym))))))
+      ((eq action 'switch)                    ; sel is (handle . name)
+       (if sel (progn (set-buffer (car sel)) (redisplay)) (echo "no such buffer")))
+      ((eq action 'mx)
+       (let ((sym (if sel sel (read-string mb-input))))
+         (let ((val (eval (list sym))))
+           (flush-output) (insert (prin1-to-string val)) (insert "\n") (prompt))))
+      ((eq action 'describe)
+       (show-help (describe-function-text (if sel sel (read-string mb-input))))))))
 
 (defun mb-dispatch (ev)
   "The minibuffer keymap -- live data, like everything else here."
@@ -501,7 +522,7 @@ uses, so it is always accurate."
          ((= ch 10) (mb-commit))                           ; RET
          ((= ch 9)                                         ; TAB: adopt selection
           (if mb-matches
-              (progn (setq mb-input (symbol-name (nth mb-sel mb-matches)))
+              (progn (setq mb-input (mb-label (nth mb-sel mb-matches)))
                      (mb-filter) (mb-render))
             nil))
          ((= ch 8)                                         ; backspace
