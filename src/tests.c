@@ -1341,6 +1341,23 @@ static void test_rd_single_window_layout(void)
     KASSERT(rd_cell_at(&rdf, 0, 1)->ch == ' ');    // ...but never wrapped
 }
 
+static void test_rd_scroll_follows_point(void)
+{
+    // Emacs-style scrolling: a buffer taller than its window must scroll so
+    // point stays visible (top_line is the window-start the layout advances).
+    rd_fresh();
+    for (int i = 0; i < 20; i++) { rd_buf_insert(&rdb, "x\n"); }  // 20 lines
+    rd_buf_set_point(&rdb, rd_buf_len(&rdb));     // point at the end (line 20)
+    rd_layout(&rdf);
+    int text_rows = rdf.selected->h - 1;          // last window row is modeline
+    KASSERT(rdf.selected->top_line == 20 - text_rows + 1);  // scrolled to show end
+    KASSERT(rdf.selected->top_line > 0);                    // it really scrolled
+    // Move point back to the top of the buffer: the window scrolls back.
+    rd_buf_set_point(&rdb, 0);
+    rd_layout(&rdf);
+    KASSERT(rdf.selected->top_line == 0);
+}
+
 static void test_rd_split_below(void)
 {
     rd_fresh();
@@ -2661,6 +2678,7 @@ static const struct ktest tests[] = {
     { "syscall: input_read drains event", test_syscall_input_read },
     { "rd: gap buffer insert/delete/read", test_rd_gap_buffer },
     { "rd: single window layout",         test_rd_single_window_layout },
+    { "rd: scroll follows point",         test_rd_scroll_follows_point },
     { "rd: split below + other window",   test_rd_split_below },
     { "rd: split right",                  test_rd_split_right },
     { "rd: damage confined to edit",      test_rd_damage_minimal },

@@ -105,3 +105,19 @@ deletes the char before the cursor and never eats the prompt. And `make
 run-gui` no longer passes `zoom-to-fit` to cocoa: with it on, QEMU opened a
 small default window and scaled the guest *down* into it (the persistent
 "tiny window"); without it the window opens at the scanout's native size.
+
+## 27.4 — Windows scroll to keep point visible
+
+Buffers taller than their window simply ran off the bottom: the prompt and the
+latest output scrolled out of sight with no way to follow them. The machinery
+was already there -- each window has a `top_line` (Emacs's *window-start*), and
+layout renders lines `[top_line, top_line + text_rows)` -- but nothing ever
+moved it. The fix, in `layout_leaf`, is the Emacs scroll rule: count point's
+line, then nudge `top_line` minimally to bring it back on screen --
+`top_line = point_line - text_rows + 1` when point fell below the bottom, or
+`= point_line` when it rose above the top. Minimal scrolling means a REPL whose
+output grows downward stays pinned to the bottom (point is always the last
+line), while moving point up scrolls up by exactly the overflow. KTEST `rd:
+scroll follows point` (a 20-line buffer in a ~6-row window scrolls to the end,
+then back to 0 when point returns home) plus `tools/scroll_check.py` (50 lines
+at the REPL; the banner scrolls off, line 49 and a fresh prompt stay visible).

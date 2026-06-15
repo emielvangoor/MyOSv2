@@ -527,6 +527,10 @@ Closing the gaps that kept the graphical frame tethered to the serial console.
   `(save-buffer)` / C-x C-s writes back via creat+fd-write. Verified by
   `tools/findfile_check.py` (edit + save round-trips through disk). Follow-ups:
   a truncate syscall (re-saving shorter files) and by-line C-p/C-n motion.
+- ✅ **27.4 — scrolling**: windows follow point the Emacs way -- `layout_leaf`
+  nudges each window's `top_line` (window-start) so point stays visible, so the
+  REPL and tall buffers scroll instead of running off the bottom. KTEST `rd:
+  scroll follows point` + `tools/scroll_check.py`.
 
 ---
 

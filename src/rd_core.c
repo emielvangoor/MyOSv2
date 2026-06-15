@@ -257,6 +257,24 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
         goto modeline;
     }
 
+    // Scroll the Emacs way: keep point on screen by nudging the window's
+    // start line (top_line == Emacs's window-start). The machinery existed;
+    // this is what actually moves it. We scroll minimally -- just enough to
+    // bring point's line back into [top_line, top_line + text_rows) -- so a
+    // REPL whose output grows downward stays pinned to the bottom, and moving
+    // point up past the top scrolls up by the overflow.
+    if (b) {
+        int point_line = 0;
+        for (int p = 0; p < b->point; p++) {
+            if (rd_buf_char_at(b, p) == '\n') { point_line++; }
+        }
+        if (w->top_line > point_line) { w->top_line = point_line; }
+        if (point_line >= w->top_line + text_rows) {
+            w->top_line = point_line - text_rows + 1;
+        }
+        if (w->top_line < 0) { w->top_line = 0; }
+    }
+
     // Walk the buffer line by line; render lines [top_line, top_line+rows).
     int pos = 0, line = 0, len = b ? rd_buf_len(b) : 0;
     for (int row = 0; row < text_rows; row++) {
