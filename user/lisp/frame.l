@@ -8,31 +8,22 @@
 ;;;
 ;;; Loaded by `lisp -frame` after bootstrap.l and system.l.
 
-;; REPL state, kept PER BUFFER so each split window is an independent REPL:
-;;   repl-bufs   -- handles that are REPLs (vs file/editable buffers)
-;;   repl-starts -- alist (handle . input-start), where the prompt left off
+;; REPL state, kept PER BUFFER so each split window is an independent REPL.
+;; "Being a REPL" is no longer a list-membership flag: a buffer is a REPL when
+;; its major-mode is repl-mode (see modes.l). Where each REPL's prompt left off
+;; is the buffer-local `repl-start` (read/written via cur-start/set-cur-start).
 ;; Input history is shared across REPLs (one command history), newest-first;
 ;; repl-hist-idx is the position being shown (-1 = the live line).
-(setq repl-bufs nil)
-(setq repl-starts nil)
 (setq repl-history nil)
 (setq repl-hist-idx -1)
 
-(defun in-list (x lst)                 ; numeric membership (handles are fixnums)
-  (cond ((null lst) nil) ((= x (car lst)) t) (t (in-list x (cdr lst)))))
-
-(defun repl-buf-p (b) (in-list b repl-bufs))
-
 (defun cur-start ()
   "Where the SELECTED buffer's REPL input begins (0 if it has no prompt yet)."
-  (let ((e (assoc (current-buffer) repl-starts)))
-    (if e (cdr e) 0)))
+  (buffer-local-get (current-buffer) 'repl-start 0))
 
 (defun set-cur-start (pos)
-  "Record the current buffer's input start, replacing any previous entry."
-  (let ((b (current-buffer)))
-    (setq repl-starts (cons (cons b pos)
-                            (filter (lambda (e) (not (= (car e) b))) repl-starts)))))
+  "Record the current buffer's input start."
+  (buffer-local-set (current-buffer) 'repl-start pos))
 
 (defun prompt ()
   "Show a fresh prompt and remember where input starts (in THIS buffer)."
@@ -83,24 +74,15 @@ the buffer, read-string turns text into a form, eval runs it."
 ;; C-x prefix state: nil normally, t after a C-x.
 (setq pending-cx nil)
 
-;; The alist of (buffer . file path) for buffers visiting a file. editing-p
-;; tells dispatch which keymap to use: the same RET means "evaluate" in a REPL
-;; buffer and "insert a newline" in a file buffer.
+;; The alist of (buffer . file path) for buffers visiting a file. The buffer's
+;; major-mode now decides what RET means -- "evaluate" in repl-mode, "insert a
+;; newline" in fundamental/text-mode -- so dispatch no longer needs a flag here.
 (setq file-of nil)
 
-(defun editing-p ()
-  "t when the selected buffer is a plain editable buffer, not a REPL."
-  (not (repl-buf-p (current-buffer))))
-
 (defun new-repl ()
-  "Turn the selected window's buffer into a FRESH REPL: a new buffer, marked as
-a REPL, with its own prompt. The split commands use this so each window is an
-independent REPL instead of mirroring one shared buffer."
+  "Turn the selected window's buffer into a FRESH REPL buffer in repl-mode."
   (let ((b (make-buffer "*repl*")))
-    (set-buffer b)
-    (setq repl-bufs (cons b repl-bufs))
-    (goto-char 0)
-    (prompt)
+    (set-major-mode b 'repl-mode)                         ; prompts via repl-setup
     b))
 
 (defun split-repl-below ()
@@ -110,13 +92,6 @@ independent REPL instead of mirroring one shared buffer."
 (defun split-repl-right ()
   "C-x 3: split side by side, fresh REPL in the new (right) window."
   (split-right) (other-window) (new-repl) (redisplay))
-
-(defun edit-key (ch)
-  "Self-insert editing for a file buffer: backspace deletes before point,
-everything else (RET included -> a newline) inserts at point."
-  (cond
-    ((= ch 8) (if (> (point) 0) (delete-char 1) nil))    ; backspace
-    (t (insert (string-from-char ch)))))                 ; incl. RET -> newline
 
 ;; ---- basic Emacs motion + editing commands -----------------------------
 ;; These act on the current buffer; in the REPL the lower bound is the prompt
@@ -293,8 +268,8 @@ line, and run the mode's setup-fn."
 (defun cmd-delete-forward () (del-fwd 1))
 (defun cmd-forward-word () (goto-char (fwd-word-pos)))
 (defun cmd-backward-word () (goto-char (bwd-word-pos)))
-(defun cmd-history-prev () (if (editing-p) nil (repl-history-prev)))
-(defun cmd-history-next () (if (editing-p) nil (repl-history-next)))
+(defun cmd-history-prev () (repl-history-prev))
+(defun cmd-history-next () (repl-history-next))
 (defun cmd-describe-function () (mb-start 'describe))
 
 (setq global-keymap
@@ -351,36 +326,44 @@ the whole event, not a bare char."
   (setq pending-cx nil)
   (if (run-key ev cx-keymap) nil (echo "unbound C-x key")))
 
+(defun run-mode-or-global (ev)
+  "Run EV via the current mode's keymap chain, else the global keymap."
+  (let ((b (mode-key-lookup (buffer-mode (current-buffer)) ev)))
+    (if b (progn (eval (list (nth 2 b))) t)
+      (if (run-key ev global-keymap) t (progn (echo "unbound key") nil)))))
+
+(defun mode-backspace (m)
+  "Backspace in mode M: in a REPL never past the prompt; else one char."
+  (if (eq m 'repl-mode)
+      (if (> (point) (cur-start)) (delete-char 1) nil)
+    (if (> (point) 0) (delete-char 1) nil)))
+
 (defun dispatch (ev)
-  "Route one cooked input event. The keymap is a cond -- live data."
+  "Route one cooked input event through the selected buffer's major mode."
   (cond
     ((null ev) nil)
     (mb-action (mb-dispatch ev))                          ; minibuffer owns input
-    (pending-cx (handle-cx ev))                           ; C-x <key> (char OR ctrl)
+    (pending-cx (handle-cx ev))                           ; C-x <key>
     ((eq (car ev) 'mouse)
      (select-window-at (cadr ev) (caddr ev)))
     ((eq (car ev) 'meta)
-     (if (= (cadr ev) 120) (mb-start 'mx)                 ; M-x (a prefix of its own)
-       (run-key ev global-keymap)))                       ; M-f/M-b/M-d, ...
+     (if (= (cadr ev) 120) (mb-start 'mx)                 ; M-x
+       (run-mode-or-global ev)))
     (pending-ch
      (setq pending-ch nil)
-     (if (run-key ev help-keymap) nil (echo "unbound C-h key")))  ; C-h f/k/b/m
+     (if (run-key ev help-keymap) nil (echo "unbound C-h key")))
     ((eq (car ev) 'ctrl)
-     (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
-           ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
-           ((= (cadr ev) 103) (setq pending-cx nil)      ; C-g: never mind
+     (cond ((= (cadr ev) 120) (setq pending-cx t))        ; C-x: await suffix
+           ((= (cadr ev) 104) (setq pending-ch t))        ; C-h: await suffix
+           ((= (cadr ev) 103) (setq pending-cx nil)       ; C-g: quit
                               (echo "quit"))
-           (t (run-key ev global-keymap))))              ; C-a/C-e/C-b/C-f/...
-
+           (t (run-mode-or-global ev))))                  ; mode keymap then global
     ((eq (car ev) 'char)
-     (if (editing-p)
-         (edit-key (cadr ev))                             ; file buffer: plain edit
-       (let ((ch (cadr ev)))
-         (cond
-           ((= ch 10) (repl-eval))                        ; RET: evaluate
-           ((= ch 8)                                      ; backspace: char before
-            (if (> (point) (cur-start)) (delete-char 1) nil)) ; point, not the prompt
-           (t (insert (string-from-char ch)))))))         ; self-insert (at point)
+     (let ((m (buffer-mode (current-buffer))) (ch (cadr ev)))
+       (cond
+         ((= ch 10) (eval (list (mode-return-fn m))))     ; RET: mode decides
+         ((= ch 8) (mode-backspace m))                    ; backspace
+         (t (eval (list (mode-self-insert-fn m) ch))))))  ; printable: mode decides
     (t nil)))
 
 ;; ---- visiting files: open, edit, save (Phase 27.3) ----------------------
@@ -565,7 +548,10 @@ the very lambda the machine runs -- which you can redefine."
 (defun describe-mode ()
   "C-h m: describe the selected buffer's mode and the keys that work in it."
   (show-help (string-concat
-    (if (editing-p)
+    ;; `editing-p` is gone -- a buffer is a REPL when its major-mode IS
+    ;; repl-mode. (Task 8 makes this fully mode-aware; here we just preserve the
+    ;; old two-branch wording with the equivalent mode test.)
+    (if (not (eq (buffer-mode (current-buffer)) 'repl-mode))
         "=== File buffer ===\n\nText self-inserts; RET inserts a newline.\nC-x C-s saves to disk.\n\n"
       "=== REPL ===\n\nRET evaluates the input; the value prints below.\nUp/Down walk the input history.\n\n")
     "Key bindings:\n\n"
@@ -772,10 +758,9 @@ the current buffer, where the person at the frame can actually see it."
   "Acquire the screen and greet. Returns nil when there is no display."
   (if (frame-init)
       (progn
-        (setq repl-bufs (list (current-buffer)))  ; the first REPL is frame-init's buffer
         (insert "MyOSv2 Graphical Lisp Machine\n")
         (insert "C-x 2/3 split  C-x 0 delete  C-x o next  mouse-1 select\n\n")
-        (prompt)
+        (set-major-mode (current-buffer) 'repl-mode)       ; prompts at end
         (echo "ready")
         (redisplay)
         t)
