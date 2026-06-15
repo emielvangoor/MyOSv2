@@ -33,6 +33,13 @@ PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http ht
 LISP_FILES  := bootstrap system frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
+
+# Real Linux binaries, built with the musl cross-compiler (-static -no-pie so
+# the loader needs no relocations) and embedded in the initrd alongside the
+# native programs. The whole point of Phase 28: these run on the migrated ABI.
+MUSL_CC     := aarch64-linux-musl-gcc
+MUSL_PROGS  := mhello
+MUSL_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(MUSL_PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
 # AArch64 default 64 KiB, so PT_LOAD vaddrs/offsets are page-aligned and small.
 # No -mgeneral-regs-only here (unlike CFLAGS): the FPU is enabled and its
@@ -142,10 +149,15 @@ $(BUILD)/user/teapot.elf: user/teapot.c user/teapot_data.h $(TGL_OBJS) $(USER_CO
 	mkdir -p $(BUILD)/user
 	$(CC) $(USER_CFLAGS) $(TGL_INC) -T user/user.ld -o $@ $(USER_COMMON) user/teapot.c $(TGL_OBJS)
 
+# Build a musl program (real Linux binary) into the initrd.
+$(BUILD)/user/%.elf: user/musl/%.c | $(BUILD)
+	mkdir -p $(BUILD)/user
+	$(MUSL_CC) -static -no-pie -Os -o $@ $<
+
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
-$(BUILD)/user_blob.c: $(USER_ELFS)
+$(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS)
 	cd $(BUILD)/user && : > ../user_blob.c && \
-	  for p in $(PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
+	  for p in $(PROGS) $(MUSL_PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@

@@ -17,6 +17,7 @@
 #include "kheap.h"
 #include "sched.h"
 #include "syscall.h"
+#include "errno.h"
 #include "vm.h"
 #include "vfs.h"
 #include "ramfs.h"
@@ -436,7 +437,7 @@ static void test_syscall_unknown(void)
     struct trapframe tf;
     tf.x[8] = 999;
     do_syscall(&tf);
-    KASSERT(tf.x[0] == (uint64_t)-1);
+    KASSERT((long)tf.x[0] == -ENOSYS);   // Linux convention for an unknown call
 }
 
 static void test_syscall_yield(void)

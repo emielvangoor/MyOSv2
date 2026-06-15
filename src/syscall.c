@@ -413,7 +413,12 @@ long do_syscall(struct trapframe *tf)
         ret = 0;
         break;
     default:
-        ret = -1;                            // unknown syscall
+        // Unknown syscall: report it (so a musl binary tells us what it needs)
+        // and return -ENOSYS, the Linux convention. The old -1 was ambiguous.
+        kprintf("  [syscall] unhandled #%lu (x0=%lx x1=%lx x2=%lx)\n",
+                (unsigned long)num, (unsigned long)tf->x[0],
+                (unsigned long)tf->x[1], (unsigned long)tf->x[2]);
+        ret = -ENOSYS;
         break;
     }
 
