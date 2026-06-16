@@ -513,7 +513,13 @@ long do_syscall(struct trapframe *tf)
         ret = (long)n;
         break;
     }
-    case SYS_KILL:                           // x0 = pid, x1 = sig
+    case SYS_KILL:                           // x0 = pid, x1 = sig  (legacy MyOSv2 number 20)
+        ret = sched_kill((int)tf->x[0], (int)tf->x[1]);
+        break;
+    case SYS_KILL_LINUX:
+        // Real Linux/aarch64 kill number (129) used by busybox + musl binaries.
+        // Native MyOSv2 programs still call SYS_KILL (20) -- both map to the same
+        // sched_kill() logic so there is no duplication at the implementation level.
         ret = sched_kill((int)tf->x[0], (int)tf->x[1]);
         break;
     case SYS_SIGNAL: {                        // x0 = sig, x1 = handler, x2 = trampoline
@@ -677,9 +683,74 @@ long do_syscall(struct trapframe *tf)
         }
         break;
     }
-    case SYS_SETPGID:                        // x0 = pid (0=self), x1 = pgid (0=own)
+    case SYS_SETPGID:                        // x0 = pid (0=self), x1 = pgid (0=own)  [legacy #44]
         ret = sched_setpgid((int)tf->x[0], (int)tf->x[1]);
         break;
+    case SYS_SETPGID_LINUX:
+        // Real Linux/aarch64 setpgid number (154). Same rationale as SYS_KILL_LINUX:
+        // musl-linked programs arrive here; native programs use the legacy number.
+        // Both call through to sched_setpgid() unchanged.
+        ret = sched_setpgid((int)tf->x[0], (int)tf->x[1]);
+        break;
+    case SYS_GETPPID: {
+        // Return the parent's pid. If there is no parent (the idle/boot thread, or
+        // a thread that outlived its parent) return 1, mimicking init adoption --
+        // the same convention Linux uses when a reparented process calls getppid().
+        struct thread *t = sched_current();
+        ret = (t && t->parent) ? t->parent->id : 1;
+        break;
+    }
+    case SYS_FCNTL: {
+        // File-descriptor control. We do not maintain per-fd open-mode flags yet,
+        // so we return the most permissive plausible value for each query command:
+        //   F_GETFD  -> 0 (FD_CLOEXEC not set; we don't track cloexec)
+        //   F_SETFD  -> 0 (accepted, ignored)
+        //   F_GETFL  -> O_RDWR (2): busybox probes fds to decide blocking vs. non-blocking;
+        //              O_RDWR is the safest answer -- it implies no O_NONBLOCK bit.
+        //   F_SETFL  -> 0 (accepted, ignored; we are always blocking)
+        //   unknown  -> 0 (lenient no-op; prevents ENOSYS from breaking shell scripts)
+        int cmd = (int)tf->x[1];
+        switch (cmd) {
+        case F_GETFD: ret = 0; break;
+        case F_SETFD: ret = 0; break;
+        case F_GETFL: ret = 2; break;   // O_RDWR
+        case F_SETFL: ret = 0; break;
+        default:      ret = 0; break;
+        }
+        break;
+    }
+    case SYS_CLOCK_GETTIME: {
+        // POSIX clock_gettime(clockid, timespec*). We support only one clock
+        // (CLOCK_REALTIME and CLOCK_MONOTONIC are both sourced from timer_ticks()
+        // which counts milliseconds since boot). The clockid argument is ignored --
+        // all clocks tell the same uptime. A NULL pointer is safe to ignore too
+        // (though no sane caller should pass one).
+        // tv_sec  = ticks / 1000      (whole seconds)
+        // tv_nsec = (ticks % 1000) * 1000000  (remaining ms -> nanoseconds)
+        long *ts = (long *)(uintptr_t)tf->x[1];
+        if (ts) {
+            uint64_t ms = timer_ticks();
+            ts[0] = (long)(ms / 1000);
+            ts[1] = (long)((ms % 1000) * 1000000UL);
+        }
+        ret = 0;
+        break;
+    }
+    case SYS_GETTIMEOFDAY: {
+        // Legacy BSD/POSIX gettimeofday(timeval*, tz*). The timezone argument is
+        // ignored (POSIX says it may be NULL and recommends that anyway). Same
+        // time source as CLOCK_GETTIME: timer_ticks() in milliseconds.
+        // tv_sec  = ticks / 1000
+        // tv_usec = (ticks % 1000) * 1000  (remaining ms -> microseconds)
+        long *tv = (long *)(uintptr_t)tf->x[0];
+        if (tv) {
+            uint64_t ms = timer_ticks();
+            tv[0] = (long)(ms / 1000);
+            tv[1] = (long)((ms % 1000) * 1000UL);
+        }
+        ret = 0;
+        break;
+    }
     case SYS_SEAT_SWITCH: {                   // x0 = seat number (1-based)
         int n = (int)tf->x[0];
         if (seat_switch(n) != 0) { ret = -1; break; }

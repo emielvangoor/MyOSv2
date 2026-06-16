@@ -52,6 +52,28 @@
 #define SYS_EXECVE 221 // x0=path, x1=argv, x2=envp -> replaces image; -errno on fail
 #define SYS_WAIT4  260 // x0=pid, x1=int* status, x2=options, x3=rusage -> pid / -errno
 
+// --- real Linux/aarch64 numbers added for busybox + musl compatibility ---
+// busybox and other musl-linked binaries use the numbers from
+// <asm-generic/unistd.h>; our native MyOSv2 programs use lower custom numbers
+// for the same operations. Both sets must coexist: the low numbers are what
+// /bin/sh (native) and our own test helpers call; the real numbers are what
+// busybox's libc emits. Both paths call the same kernel logic.
+#define SYS_FCNTL          25   // x0=fd, x1=cmd, x2=arg  (file-descriptor control)
+#define SYS_CLOCK_GETTIME  113  // x0=clockid (ignored), x1=struct timespec*  -> 0
+#define SYS_KILL_LINUX     129  // real aarch64 kill -- legacy SYS_KILL=20 kept for native
+#define SYS_SETPGID_LINUX  154  // real aarch64 setpgid  -- legacy SYS_SETPGID=44 kept
+#define SYS_GETTIMEOFDAY   169  // x0=struct timeval*, x1=tz (ignored)  -> 0
+#define SYS_GETPPID        173  // -> parent pid (or 1 if no parent)
+
+// fcntl(2) command codes (asm-generic values, same as Linux).
+// FD_CLOEXEC is not tracked yet -- F_GETFD/F_SETFD are accepted as no-ops,
+// F_GETFL always returns O_RDWR (2) which is sufficient for busybox's probes.
+#define F_DUPFD 0
+#define F_GETFD 1
+#define F_SETFD 2
+#define F_GETFL 3
+#define F_SETFL 4
+
 // --- still on old MyOSv2 numbers (migrate in later steps) ---
 #define SYS_SLEEP  3   // x0=ms           -> 0
 #define SYS_READDIR 10 // x0=path, x1=index, x2=namebuf -> 0 (name) / -1 (done)

@@ -2898,6 +2898,57 @@ static void test_lm_error_goes_to_cur_out(void)
     KASSERT(lm_strhas_(buf, "nosuchvariable"));
 }
 
+// --- Busybox/musl syscalls: getppid, fcntl, clock_gettime (Phase BB2) ---
+//
+// These three KTESTs are written BEFORE the handler implementations so they go
+// red first (all return -ENOSYS) and then green once the cases are added to
+// do_syscall(). That is the test-first discipline we follow.
+//
+// Trapframe init idiom: field-by-field assignment, identical to test_ioctl_tcgets_is_tty
+// above. We never use `struct trapframe tf = {0}` in this freestanding kernel because
+// GCC lowers that to a __aeabi_memset / memset call that cannot link without libc.
+
+static void test_getppid_returns_parent(void)
+{
+    // SYS_GETPPID (173) must return >= 0. In the KTEST harness sched_current()
+    // may be the idle/boot thread (id 0) with no parent; in that case the
+    // handler returns 1 (init pid) as a safe sentinel. Either way >= 0 is correct.
+    struct trapframe tf;
+    tf.x[8] = SYS_GETPPID;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] >= 0);
+}
+
+static void test_fcntl_getfl_rdwr(void)
+{
+    // F_GETFL (3) on any open fd must return the open-mode flags.  We have no
+    // per-fd flags table yet, so we return O_RDWR (2) for everything -- the
+    // minimal answer that lets busybox probe a file-descriptor and carry on.
+    struct trapframe tf;
+    tf.x[8] = SYS_FCNTL;
+    tf.x[0] = 0;          // fd 0 (stdin)
+    tf.x[1] = F_GETFL;    // get file-status flags
+    tf.x[2] = 0;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 2);   // O_RDWR
+}
+
+static void test_clock_gettime_ok(void)
+{
+    // SYS_CLOCK_GETTIME (113): x0=clockid (ignored), x1=struct timespec*.
+    // We accept any clock id and fill tv_sec from timer_ticks()/1000,
+    // tv_nsec from the remainder. The return value must be 0 (success).
+    long ts[2];
+    ts[0] = 0; ts[1] = 0;
+    struct trapframe tf;
+    tf.x[8] = SYS_CLOCK_GETTIME;
+    tf.x[0] = 1;                              // CLOCK_MONOTONIC (ignored by us)
+    tf.x[1] = (uint64_t)(uintptr_t)ts;        // -> struct timespec {tv_sec, tv_nsec}
+    tf.x[2] = 0;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);             // must succeed
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "lm: arithmetic",                  test_lm_arithmetic },
@@ -2940,6 +2991,9 @@ static const struct ktest tests[] = {
     { "syscall: sleep blocks N ticks",    test_syscall_sleep_blocks },
     { "syscall: exit ends thread",        test_syscall_exit_ends_thread },
     { "ioctl: TCGETS is a tty",           test_ioctl_tcgets_is_tty },
+    { "syscall: getppid",                 test_getppid_returns_parent },
+    { "syscall: fcntl F_GETFL",           test_fcntl_getfl_rdwr },
+    { "syscall: clock_gettime",           test_clock_gettime_ok },
     { "vm: user data is private",         test_as_data_is_private },
     { "vm: image maps code",              test_as_image_maps_code },
     { "vm: kernel map is shared",         test_as_kernel_shared },
