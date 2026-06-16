@@ -531,6 +531,27 @@ static void test_syscall_exit_ends_thread(void)
     KASSERT(sc_exit_log[0] == 'B');
 }
 
+// ioctl: terminal requests -- the gate that makes ash go interactive.
+// musl's isatty(fd) calls ioctl(fd, TCGETS, &termios_buf); a return of 0
+// means the fd is a terminal. Without that, ash treats stdin as a pipe and
+// runs non-interactively (no prompt). We verify both sides:
+//   - TCGETS on fd 0 succeeds (-> isatty(0) == true)
+//   - An unknown request still returns -ENOTTY (musl falls back gracefully)
+static void test_ioctl_tcgets_is_tty(void)
+{
+    pmm_init(); kheap_init();
+    // Stack buffer for the kernel to write the termios struct into; the exact
+    // contents do not matter for isatty() -- only the zero return does.
+    char termios_buf[64];
+    struct trapframe tf;
+    tf.x[8] = SYS_IOCTL; tf.x[0] = 0; tf.x[1] = TCGETS; tf.x[2] = (uint64_t)(uintptr_t)termios_buf;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);                 // success -> isatty(0) true
+    tf.x[8] = SYS_IOCTL; tf.x[0] = 0; tf.x[1] = 0xDEAD; tf.x[2] = 0;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == -ENOTTY);           // unknown request still ENOTTY
+}
+
 // --- Per-process address spaces (isolation at the page-table level) ---
 
 static void test_as_data_is_private(void)
@@ -2918,6 +2939,7 @@ static const struct ktest tests[] = {
     { "syscall: getpid returns id",       test_syscall_getpid },
     { "syscall: sleep blocks N ticks",    test_syscall_sleep_blocks },
     { "syscall: exit ends thread",        test_syscall_exit_ends_thread },
+    { "ioctl: TCGETS is a tty",           test_ioctl_tcgets_is_tty },
     { "vm: user data is private",         test_as_data_is_private },
     { "vm: image maps code",              test_as_image_maps_code },
     { "vm: kernel map is shared",         test_as_kernel_shared },

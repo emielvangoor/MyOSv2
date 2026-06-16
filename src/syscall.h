@@ -83,6 +83,18 @@
 #define SYS_GFX_FLUSH   (MYOS_SYS_BASE + 8)  // x0=x,x1=y,x2=w,x3=h -> 0 / -1
 #define SYS_SEAT_SWITCH (MYOS_SYS_BASE + 9)  // x0=seat (1-based) -> 0 / -1
 
+// Terminal ioctls (asm-generic values) -- enough for isatty()/line editing.
+// musl's isatty() calls ioctl(fd, TCGETS, &termios); a 0 return means the fd
+// is a terminal. ash then uses TCSETS* to switch to raw (no-echo) mode, and
+// TIOCGWINSZ / TIOCGPGRP for window size and foreground process group.
+#define TCGETS      0x5401
+#define TCSETS      0x5402
+#define TCSETSW     0x5403
+#define TCSETSF     0x5404
+#define TIOCGWINSZ  0x5413
+#define TIOCGPGRP   0x540F
+#define TIOCSPGRP   0x5410
+
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.
 long do_syscall(struct trapframe *tf);

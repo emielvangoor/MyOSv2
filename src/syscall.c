@@ -174,9 +174,86 @@ long do_syscall(struct trapframe *tf)
     case SYS_SET_TID_ADDRESS:                // x0 = clear-on-exit ptr (ignored)
         ret = sched_current_id();            // single-threaded: just our TID
         break;
-    case SYS_IOCTL:                          // x0=fd, x1=request, x2=arg
-        ret = -ENOTTY;                       // no real ttys -> musl uses buffered I/O
+    case SYS_IOCTL: {                        // x0=fd, x1=request, x2=arg
+        // ioctl is the POSIX escape hatch for device-specific control. The most
+        // important callers are musl's isatty() (TCGETS -> 0 means "fd is a tty",
+        // which makes ash go interactive and print a prompt) and ash's own line
+        // editor (TCSETS* to enter raw mode, TIOCGWINSZ for terminal dimensions,
+        // TIOCGPGRP/TIOCSPGRP for job-control bookkeeping).
+        //
+        // Our UART is char-at-a-time by nature (each SYS_READ blocks in
+        // console_getc() until one character arrives via IRQ), so all the
+        // "switch to raw" TCSETS* are accepted as no-ops -- the tty is already
+        // effectively raw. The cosmetic termios values we fill in for TCGETS
+        // advertise ICANON+ECHO so a naive caller sees a "cooked" terminal, but
+        // the actual I/O path does not change.
+        unsigned req = (unsigned)tf->x[1];
+        void *arg = (void *)(uintptr_t)tf->x[2];
+        switch (req) {
+        case TCGETS:
+            // musl's isatty(fd) does: ioctl(fd, TCGETS, &termios); return !err;
+            // Returning 0 here is what flips ash from non-interactive to
+            // interactive (prompt + line editing). We fill in a plausible termios
+            // so callers that inspect the flags aren't surprised, but the exact
+            // values are cosmetic -- only the 0 return matters.
+            if (arg) {
+                // asm-generic termios layout (musl / Linux AArch64):
+                //   c_iflag u32, c_oflag u32, c_cflag u32, c_lflag u32,
+                //   c_line u8, c_cc[19] u8 x19, c_ispeed u32, c_ospeed u32
+                // Total: 36 bytes. We zero everything then set the two flags
+                // ash cares about before it flips to raw mode.
+                struct termios {
+                    unsigned int  c_iflag, c_oflag, c_cflag, c_lflag;
+                    unsigned char c_line, c_cc[19];
+                    unsigned int  c_ispeed, c_ospeed;
+                } t;
+                // Zero every field -- we are in a freestanding kernel (no memset
+                // available here), so clear by field assignment.
+                t.c_iflag = 0; t.c_oflag = 0; t.c_cflag = 0; t.c_lflag = 0;
+                t.c_line  = 0; t.c_ispeed = 0; t.c_ospeed = 0;
+                for (int i = 0; i < 19; i++) { t.c_cc[i] = 0; }
+                // Advertise canonical mode + echo: the most benign defaults.
+                // ash replaces these immediately via TCSETS when it goes raw.
+                t.c_lflag = 0x0002 /*ICANON*/ | 0x0008 /*ECHO*/;
+                *(struct termios *)arg = t;
+            }
+            ret = 0; break;
+        case TCSETS: case TCSETSW: case TCSETSF:
+            // ash drives its own line-editing on top of our char-at-a-time UART,
+            // so we accept all three TCSETS variants as no-ops. No state to store.
+            ret = 0; break;
+        case TIOCGWINSZ:
+            // Window size: 24 rows x 80 columns is a safe default.
+            // struct winsize layout: rows u16, cols u16, xpix u16, ypix u16.
+            if (arg) {
+                unsigned short *ws = (unsigned short *)arg;
+                ws[0] = 24; ws[1] = 80; ws[2] = 0; ws[3] = 0;
+            }
+            ret = 0; break;
+        case TIOCGPGRP:
+            // Return the foreground process group of the terminal. For our
+            // single-process (or simple-fork) model, the current thread's pgid
+            // is the right answer. sched_current() may be NULL in the KTEST
+            // harness (before sched_init), so fall back to 1.
+            if (arg) {
+                struct thread *ct = sched_current();
+                *(int *)arg = ct ? ct->pgid : 1;
+            }
+            ret = 0; break;
+        case TIOCSPGRP:
+            // ash calls this to register itself as the terminal's foreground
+            // group after a fork. We have no kernel-side terminal foreground-
+            // group table yet; accepting it as a no-op is sufficient for ash
+            // to proceed without an error.
+            ret = 0; break;
+        default:
+            // Unknown ioctl: return -ENOTTY (POSIX "not a typewriter"). musl
+            // treats this as "not a tty" and falls back to buffered I/O, which
+            // is a safe degradation for any fd that isn't the UART.
+            ret = -ENOTTY; break;
+        }
         break;
+    }
     case SYS_WRITEV: {                       // x0=fd, x1=struct iovec*, x2=iovcnt
         uint64_t fd = tf->x[0];
         const uint64_t *iov = (const uint64_t *)(uintptr_t)tf->x[1];  // {base,len} pairs
