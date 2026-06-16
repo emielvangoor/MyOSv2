@@ -219,7 +219,8 @@ $(BUILD)/user/teapot.elf: user/teapot.c user/teapot_data.h $(TGL_OBJS) $(USER_CO
 	$(CC) $(USER_CFLAGS) $(TGL_INC) -T user/user.ld -o $@ $(USER_COMMON) user/teapot.c $(TGL_OBJS)
 
 # Build a musl program (real Linux binary) for the ext2 disk image. We link it
-# into the CLEAN user VA range (0x80_0000_0000+, l0 index >= 1) instead of musl's default
+# into the CLEAN user VA range (0x80_0000_0000+, l0 index >= 1) instead of musl's
+# default
 # 0x400000, which in our address space falls under l0[0] -- the shared kernel
 # identity map (block descriptors) -- where a user page can't be inserted.
 # (Running UNMODIFIED 0x400000 binaries would instead need block-splitting in
@@ -280,7 +281,9 @@ $(BUILD)/user/libtcc1.a: $(TCC1_OBJS)
 # VM/address-space self-tests load (as_create()/as_create_elf() in src/tests.c)
 # to exercise the loader without a disk. The real userland is staged onto the
 # ext2 disk image (see the disk.img recipe); production loading reads ELFs from
-# disk via as_create_elf(). xxd run from build/user names the symbol `sh_elf`.
+# disk via as_create_elf(). xxd run from build/user derives the C symbol from the
+# filename (non-alphanumerics -> '_'), so sh.elf -> `sh_elf`/`sh_elf_len` -- the
+# exact externs in src/vm.c and src/tests.c. Renaming the file breaks those.
 $(BUILD)/user_blob.c: $(BUILD)/user/sh.elf
 	cd $(BUILD)/user && : > ../user_blob.c && xxd -i sh.elf >> ../user_blob.c
 
