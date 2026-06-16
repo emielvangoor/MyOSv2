@@ -27,17 +27,21 @@ GUEST_PORT = 7777
 HOST_PORT = 17777
 QMP_SOCK = f"/tmp/myosv2-qmp-{os.getpid()}.sock"
 
-# A private scratch disk per run, isolated from the user's persistent /disk so
-# concurrent runs never collide. /disk is now ext2 (not a zeroed SFS), so the
-# scratch is a COPY of the host-built ext2 image (build/disk.img): it mounts as
-# valid ext2 and ships /init.l, so the frame/serial checks boot the same way a
-# real run does. A zeroed truncate would fail the ext2 magic check and leave
-# /disk unmounted.
+# A private scratch disk per run, isolated from the user's persistent disk image
+# so concurrent runs never collide. The root filesystem is ext2, so the scratch
+# is a COPY of the host-built ext2 image (build/disk.img): it mounts as valid
+# ext2 and ships the userland + /init.l, so the frame/serial checks boot the same
+# way a real run does. A zeroed image would fail the ext2 magic check and the
+# kernel would halt with no root filesystem.
+# SCRATCH_DISK is a module-level constant computed once from os.getpid().  That
+# means it is stable for the entire lifetime of the Python process: every Qemu()
+# instance in the same process maps to the SAME path.  That is exactly what
+# persist_check.py relies on -- Boot 1 writes to SCRATCH_DISK, Boot 2 (fresh=False)
+# reads the same file without re-copying, so the written data survives.
 SCRATCH_DISK = f"/tmp/myosv2-test-disk-{os.getpid()}.img"
 _BUILT_DISK = "build/disk.img"
 if not os.path.exists(_BUILT_DISK):
     raise RuntimeError(f"{_BUILT_DISK} missing -- run `make` before the harness")
-shutil.copyfile(_BUILT_DISK, SCRATCH_DISK)
 
 QEMU_CMD = [
     "qemu-system-aarch64",
@@ -64,7 +68,19 @@ QEMU_CMD = [
 class Qemu:
     """A booted guest with an expect/send interface on its serial console."""
 
-    def __init__(self):
+    def __init__(self, fresh=True):
+        # fresh=True  (the default, preserving every existing caller's behaviour):
+        #   Copy the pristine built image onto SCRATCH_DISK before booting.  Each
+        #   test run starts from a known-good, unmodified ext2 root.
+        #
+        # fresh=False (persistence tests only):
+        #   Skip the copy and boot whatever is already at SCRATCH_DISK.  Because
+        #   SCRATCH_DISK is a module-level constant derived from os.getpid(), two
+        #   Qemu() instances in the SAME Python process share the SAME path, so
+        #   writes committed by Boot 1 are visible to Boot 2 -- that is exactly
+        #   what persist_check.py relies on to prove the ext2 root is persistent.
+        if fresh:
+            shutil.copyfile(_BUILT_DISK, SCRATCH_DISK)
         self.proc = subprocess.Popen(
             QEMU_CMD, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT)

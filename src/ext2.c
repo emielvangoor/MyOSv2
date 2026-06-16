@@ -1,15 +1,17 @@
 // ext2.c -- the ext2 read driver, behind the VFS vnode_ops.
 // =========================================================
 //
-// This is the sole consumer of block_read/block_write for /disk. It speaks the
-// ext2 on-disk format directly: a superblock describing the geometry, a table
-// of block-group descriptors, per-group inode tables, and inodes whose i_block[]
-// array maps file offsets to physical blocks (direct + indirect).
+// This is the sole consumer of block_read/block_write -- the root filesystem `/`
+// lives on the block device. It speaks the ext2 on-disk format directly: a
+// superblock describing the geometry, a table of block-group descriptors,
+// per-group inode tables, and inodes whose i_block[] array maps file offsets to
+// physical blocks (direct + indirect).
 //
 // WHY ext2 and not something homegrown: ext2 is exhaustively documented and --
 // decisively -- the host's e2fsprogs can BUILD and pre-populate an image
-// (`mke2fs -d build/rootfs`), so /disk arrives already containing /init.l and
-// the KTEST fixtures. The kernel only has to READ what the host laid down.
+// (`mke2fs -d build/rootfs`), so the root / arrives already containing the
+// userland (/bin, /lib, /usr), /init.l, and the KTEST fixtures -- the kernel
+// just mounts it and reads what the host laid down.
 //
 // Block size is 1024 bytes (forced with `mke2fs -b 1024`); the block device
 // speaks 512-byte sectors, so one ext2 block = 2 sectors. eb_read/eb_write do
@@ -995,7 +997,8 @@ const struct vnode_ops ext2_ops = {
 
 // Read + validate the superblock, cache it and the group-descriptor table, and
 // return a vnode for the root directory (inode 2). Returns NULL on a bad magic
-// (a blank/zeroed disk or a non-ext2 image) so kmain leaves /disk unmounted.
+// (a blank/zeroed disk or a non-ext2 image); since this is now the ROOT
+// filesystem, kmain treats that NULL as fatal and halts (no root => no boot).
 struct vnode *ext2_mount(void)
 {
     // The superblock sits at byte 1024 == ext2 block 1 (first_data_block for

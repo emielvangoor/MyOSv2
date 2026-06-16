@@ -47,13 +47,13 @@ tcc -static -nostdlib -Wl,-Ttext=0x8000000000 SRC.c /lib/mycrt.o -o OUT
 `/lib/mycrt.o` (from `user/musl/mycrt.S`) supplies `_start` and a `print`
 syscall wrapper. This freestanding path is now `(cc-bare "src.c" "out")`.
 
-Since Phase ext2-3 there is a **real musl libc sysroot** baked onto the ext2
-`/disk` at `/disk/usr/{include,lib}` (the Makefile `build/disk.img` rule stages
-the cross toolchain's headers + `crt1.o`/`crti.o`/`crtn.o`/`libc.a`, plus a
-host-built `libtcc1.a`). So `#include <stdio.h>` + `printf` now work on-device.
-The Lisp helper `(cc "src.c" "out")` links the hosted-libc line:
+There is a **real musl libc sysroot** installed on the ext2 root at
+`/usr/{include,lib}` (the Makefile `build/disk.img` rule stages the cross
+toolchain's headers + `crt1.o`/`crti.o`/`crtn.o`/`libc.a`, plus a host-built
+`libtcc1.a`). So `#include <stdio.h>` + `printf` work on-device. The Lisp helper
+`(cc "src.c" "out")` links the hosted-libc line:
 ```
-tcc -nostdlib -static -Wl,-Ttext=0x8000000000 -I/disk/usr/include \
-    /disk/usr/lib/crt1.o /disk/usr/lib/crti.o SRC.c \
-    -L/disk/usr/lib -lc /disk/usr/lib/libtcc1.a /disk/usr/lib/crtn.o -o OUT
+tcc -nostdlib -static -Wl,-Ttext=0x8000000000 -I/usr/include \
+    /usr/lib/crt1.o /usr/lib/crti.o SRC.c \
+    -L/usr/lib -lc /usr/lib/libtcc1.a /usr/lib/crtn.o -o OUT
 ```

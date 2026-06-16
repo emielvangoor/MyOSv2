@@ -21,7 +21,6 @@
 #include "vm.h"
 #include "vfs.h"
 #include "ramfs.h"
-#include "initrd.h"
 #include "proc.h"
 #include "elf.h"
 #include "shm.h"
@@ -743,15 +742,26 @@ static void test_vfs_lookup_relative(void)
     KASSERT(vfs_lookup("nope")    == 0);                        // still misses cleanly
 }
 
-static void test_initrd_unpacked(void)
+// Seed a fresh in-RAM filesystem for the VFS/syscall KTESTs: a ramfs root with
+// /hello.txt = "Hello, MyOSv2!\n". Replaces the old initrd_unpack() fixture now
+// that the real userland lives on the ext2 disk image, not embedded in the
+// kernel. Self-contained so these tests never depend on production seed code.
+static void fs_fresh(void)
+{
+    vfs_mount_root(ramfs_type());
+    struct vnode *vn = vfs_create("/hello.txt", VN_FILE);
+    struct file f = { .vnode = vn, .off = 0 };
+    vfs_write(&f, "Hello, MyOSv2!\n", 15);
+}
+
+static void test_seed_fs_provides_hello(void)
 {
     pmm_init(); kheap_init();
-    vfs_mount_root(ramfs_type());
-    initrd_unpack();
+    fs_fresh();
     struct file *f = vfs_open("/hello.txt");
     KASSERT(f != 0);
     char buf[16] = {0};
-    int n = vfs_read(f, buf, 14);
+    int n = vfs_read(f, buf, 14);             // 14 = the content, minus the trailing newline
     KASSERT(n == 14);
     KASSERT(bytes_eq(buf, "Hello, MyOSv2!\n", 14));
     vfs_close(f);
@@ -772,7 +782,7 @@ static void fd_worker(void *a)
 static void test_fd_open_returns_fd(void)
 {
     pmm_init(); kheap_init();
-    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fs_fresh();
     fd_res = -1;
     sched_init();
     thread_create(fd_worker, 0, 1);
@@ -798,7 +808,7 @@ static void fd_read_worker(void *a)
 static void test_fd_read_syscall(void)
 {
     pmm_init(); kheap_init();
-    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fs_fresh();
     fd_n = -1;
     sched_init();
     thread_create(fd_read_worker, 0, 1);
@@ -820,7 +830,7 @@ static void fd_miss_worker(void *a)
 static void test_fd_open_missing(void)
 {
     pmm_init(); kheap_init();
-    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fs_fresh();
     fd_miss = 0;
     sched_init();
     thread_create(fd_miss_worker, 0, 1);
@@ -844,7 +854,7 @@ static void fd_reuse_worker(void *a)
 static void test_fd_close_reuse(void)
 {
     pmm_init(); kheap_init();
-    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fs_fresh();
     fd_a = fd_b = -1;
     sched_init();
     thread_create(fd_reuse_worker, 0, 1);
@@ -1004,7 +1014,7 @@ static void rd_worker(void *a)
 static void test_syscall_readdir(void)
 {
     pmm_init(); kheap_init();
-    vfs_mount_root(ramfs_type()); initrd_unpack();
+    fs_fresh();
     rd_r0 = rd_r1 = -2;
     sched_init();
     thread_create(rd_worker, 0, 1);
@@ -2923,7 +2933,7 @@ static const struct ktest tests[] = {
     { "vfs: lookup missing -> null",      test_vfs_lookup_missing },
     { "vfs: nested directory",            test_vfs_nested_dir },
     { "vfs: relative path from root",     test_vfs_lookup_relative },
-    { "initrd: unpacks files",            test_initrd_unpacked },
+    { "fs: seed provides /hello.txt",     test_seed_fs_provides_hello },
     { "fd: open returns fd",              test_fd_open_returns_fd },
     { "fd: read syscall",                 test_fd_read_syscall },
     { "fd: open missing -> -1",           test_fd_open_missing },

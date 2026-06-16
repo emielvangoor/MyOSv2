@@ -17,32 +17,37 @@ LDFLAGS := -nostdlib -nostartfiles -T linker.ld -Wl,--gc-sections
 
 CSRC := $(wildcard src/*.c)
 ASRC := $(wildcard src/*.S)
-# user_blob.o = embedded user-program ELFs; lisp_blob.o = embedded .l source.
+# The full userland (every ELF + all Lisp .l library files) now lives on the
+# ext2 disk image (see the disk.img recipe); the kernel reads programs from disk
+# at runtime via as_create_elf() in proc.c / sched.c.  user_blob.o is the ONE
+# exception: it embeds ONLY sh.elf as a C byte array (sh_elf / sh_elf_len) so
+# the VM / address-space self-tests (src/tests.c, src/vm.c) can load a real ELF
+# without touching the disk.  It is pure test scaffolding, NOT runtime userland.
 OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
         $(patsubst src/%.S,$(BUILD)/%.o,$(ASRC)) \
-        $(BUILD)/user_blob.o \
-        $(BUILD)/lisp_blob.o
+        $(BUILD)/user_blob.o
 DEP  := $(OBJ:.o=.d)
 
-# User programs are separate ELF64 executables linked at USER_CODE_VA, each
-# embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
-# and unpacked into /bin by the initrd. The kernel's ELF loader maps their
-# segments at load/exec time.
+# User programs are separate ELF64 executables linked at USER_CODE_VA. They are
+# staged into $(BUILD)/rootfs/bin/ and baked onto the ext2 disk image (see the
+# disk.img recipe) -- they are NOT embedded in the kernel. The kernel's ELF
+# loader maps their segments at exec time, reading the ELF from disk.
 PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest teapot
-# The .l files embedded into the kernel and unpacked to /lib by the initrd.
+# The Lisp library: .l files copied into $(BUILD)/rootfs/lib/ and baked onto the
+# ext2 disk image; /bin/lisp loads them from /lib at startup.
 LISP_FILES  := bootstrap system modes fr-repl fr-edit fr-modes fr-keys fr-files fr-mini fr-help frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 
 # Real Linux binaries, built with the musl cross-compiler (-static -no-pie so
-# the loader needs no relocations) and embedded in the initrd alongside the
-# native programs. The whole point of Phase 28: these run on the migrated ABI.
+# the loader needs no relocations) and staged onto the ext2 disk image alongside
+# the native programs. The whole point of Phase 28: these run on the migrated ABI.
 MUSL_CC     := aarch64-linux-musl-gcc
 MUSL_PROGS  := mhello mmalloc mfork mfile
 MUSL_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(MUSL_PROGS))
 
-# Prebuilt static-musl binaries embedded in the initrd as-is (built from source
-# with CONFIG_STATIC + -Wl,-Ttext-segment=0x8000000000; see user/musl/*.bin).
+# Prebuilt static-musl binaries staged onto the ext2 disk image as-is (built from
+# source with CONFIG_STATIC + -Wl,-Ttext-segment=0x8000000000; see user/musl/*.bin).
 # busybox is the forcing function for the long syscall tail.
 PREBUILT_PROGS := busybox tcc
 PREBUILT_ELFS  := $(patsubst %,$(BUILD)/user/%.elf,$(PREBUILT_PROGS))
@@ -100,10 +105,11 @@ all: $(TARGET)
 $(BUILD):
 	mkdir -p $(BUILD)
 
-# The /disk filesystem is now a real ext2 image, built ON THE HOST with mke2fs's
-# `-d` (populate from a directory) so it ships pre-loaded with /init.l and the
-# KTEST fixtures -- the kernel only has to READ it (Phase 1 is read-only). One
-# ext2 block = 1024 bytes (forced -b 1024 => 2 disk sectors per block, matching
+# The ROOT filesystem is a real ext2 image, built ON THE HOST with mke2fs's
+# `-d` (populate from a directory) so it ships pre-loaded with the full userland
+# (/bin, /lib, /usr), /init.l, and the KTEST fixtures -- the kernel mounts it as
+# / and reads what the host laid down. One ext2 block = 1024 bytes (forced
+# -b 1024 => 2 disk sectors per block, matching
 # the driver). MKE2FS is overridable for other hosts.
 MKE2FS  ?= /opt/homebrew/share/android-commandlinetools/platform-tools/mke2fs
 DISK_MB := 64
@@ -121,17 +127,39 @@ MUSL_INC := $(firstword $(wildcard $(MUSL_SYSROOT)/usr/include $(MUSL_SYSROOT)/i
 # Resolve the static-link objects by name -- they may live in lib/ or lib64/.
 print-musl = $(shell $(MUSL_CC) -print-file-name=$(1))
 
-# Stage build/rootfs/ then bake it into an ext2 image. /init.l boots the frame;
-# the test/ fixtures are deterministic (known content + sizes) for the ext2:
-# read KTESTs -- big.bin is 16 KiB so it spans past the 12 direct blocks and
-# forces a single-indirect read. We also stage the musl sysroot under
-# /disk/usr/{include,lib}: cp -RL on the headers DEREFERENCES symlinks (our ext2
-# driver has no symlink support, so the image must hold only real files).
-$(BUILD)/disk.img: $(BUILD)/user/libtcc1.a | $(BUILD)
-	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test
+# Stage build/rootfs/ then bake it into an ext2 image. The staging dir becomes
+# the complete persistent root filesystem:
+#   /init.l         -- boot script: launches the Lisp frame
+#   /test/          -- deterministic fixtures for the ext2 read KTESTs (big.bin
+#                      is 16 KiB, forcing single-indirect block reads)
+#   /bin/           -- all userland ELFs; init == lisp == lm.elf (three names,
+#                      one binary: the kernel exec()s /bin/init at boot, the
+#                      shell runs /bin/lisp for a REPL, /bin/lm by legacy name)
+#   /lib/           -- Lisp source library (.l files) + mycrt.o (the minimal
+#                      C runtime tcc links user programs against)
+#   /hello.c /hellobare.c -- seed C sources; persist once edited on-device
+#   /usr/include/   -- musl headers (symlinks dereferenced: our ext2 driver has
+#                      no symlink support, so the image must hold real files)
+#   /usr/lib/       -- musl crt1/crti/crtn/libc.a + libtcc1.a (TCC's compiler-
+#                      support runtime; tcc-compiled programs need both)
+$(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
+                   $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
+	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test $(BUILD)/rootfs/bin $(BUILD)/rootfs/lib
 	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
 	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
 	yes 0123456789ABCDEF | head -c 16384 > $(BUILD)/rootfs/test/big.bin
+	# --- /bin: the userland ELFs (init == lisp == lm.elf) ---
+	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/init
+	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/lisp
+	for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do \
+	  cp $(BUILD)/user/$$p.elf $(BUILD)/rootfs/bin/$$p; done
+	# --- /lib: the Lisp library + the crt tcc links against ---
+	for f in $(LISP_FILES); do cp user/lisp/$$f.l $(BUILD)/rootfs/lib/$$f.l; done
+	cp $(BUILD)/user/mycrt.elf $(BUILD)/rootfs/lib/mycrt.o
+	# --- seed C sources; persist once edited on-device ---
+	printf '#include <stdio.h>\nint main(void){\n  printf("hello from tcc on myosv2: x=%%d s=%%s\\n", 42, "ok");\n  return 0;\n}\n' > $(BUILD)/rootfs/hello.c
+	printf 'void puts(const char *);\nint main(void){\n  puts("hello from tcc on myosv2\\n");\n  return 0;\n}\n' > $(BUILD)/rootfs/hellobare.c
+	# --- /usr: the musl sysroot (moved from /disk/usr to /usr) ---
 	mkdir -p $(BUILD)/rootfs/usr/include $(BUILD)/rootfs/usr/lib
 	cp -RL $(MUSL_INC)/* $(BUILD)/rootfs/usr/include/
 	cp $(call print-musl,crt1.o) $(call print-musl,crti.o) \
@@ -191,8 +219,9 @@ $(BUILD)/user/teapot.elf: user/teapot.c user/teapot_data.h $(TGL_OBJS) $(USER_CO
 	mkdir -p $(BUILD)/user
 	$(CC) $(USER_CFLAGS) $(TGL_INC) -T user/user.ld -o $@ $(USER_COMMON) user/teapot.c $(TGL_OBJS)
 
-# Build a musl program (real Linux binary) into the initrd. We link it into the
-# CLEAN user VA range (0x80_0000_0000+, l0 index >= 1) instead of musl's default
+# Build a musl program (real Linux binary) for the ext2 disk image. We link it
+# into the CLEAN user VA range (0x80_0000_0000+, l0 index >= 1) instead of musl's
+# default
 # 0x400000, which in our address space falls under l0[0] -- the shared kernel
 # identity map (block descriptors) -- where a user page can't be inserted.
 # (Running UNMODIFIED 0x400000 binaries would instead need block-splitting in
@@ -248,24 +277,18 @@ $(BUILD)/user/libtcc1/%.o: $(TCC_SRC)/lib/%.S | $(BUILD)
 $(BUILD)/user/libtcc1.a: $(TCC1_OBJS)
 	aarch64-linux-musl-ar rcs $@ $(TCC1_OBJS)
 
-# Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
-$(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf
-	cd $(BUILD)/user && : > ../user_blob.c && \
-	  for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS) mycrt; do xxd -i $$p.elf >> ../user_blob.c; done
+# The kernel embeds exactly ONE program ELF -- /bin/sh -- as a C byte array
+# (sh_elf / sh_elf_len). It is NOT runtime userland: it is a sample ELF the
+# VM/address-space self-tests load (as_create()/as_create_elf() in src/tests.c)
+# to exercise the loader without a disk. The real userland is staged onto the
+# ext2 disk image (see the disk.img recipe); production loading reads ELFs from
+# disk via as_create_elf(). xxd run from build/user derives the C symbol from the
+# filename (non-alphanumerics -> '_'), so sh.elf -> `sh_elf`/`sh_elf_len` -- the
+# exact externs in src/vm.c and src/tests.c. Renaming the file breaks those.
+$(BUILD)/user_blob.c: $(BUILD)/user/sh.elf
+	cd $(BUILD)/user && : > ../user_blob.c && xxd -i sh.elf >> ../user_blob.c
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Embed each Lisp source file as a C byte array (<name>_l / <name>_l_len). We copy
-# into build/lisp first and run xxd from there so the symbol names stay clean
-# (bootstrap_l, not user_lisp_bootstrap_l). The initrd writes these to /lib.
-$(BUILD)/lisp_blob.c: $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
-	mkdir -p $(BUILD)/lisp
-	cp $(patsubst %,user/lisp/%.l,$(LISP_FILES)) $(BUILD)/lisp/
-	cd $(BUILD)/lisp && : > ../lisp_blob.c && \
-	  for f in $(LISP_FILES); do xxd -i $$f.l >> ../lisp_blob.c; done
-
-$(BUILD)/lisp_blob.o: $(BUILD)/lisp_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJ) linker.ld
