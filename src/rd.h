@@ -38,6 +38,8 @@ struct rd_cell { unsigned char ch, face; };
 // at the gap is O(1); moving the gap is a memmove. The classic editor store.
 struct rd_buffer {
     char name[32];
+    char mode_line[24];             // mode name shown in the mode line ("" = none)
+    int  wrap;                      // line-wrap minor mode: 1 = wrap long lines, 0 = truncate (default)
     char *text;
     int  cap, gap_start, gap_end;
     int  point;                     // cursor position, in TEXT coordinates
@@ -75,6 +77,9 @@ struct rd_frame {
 };
 
 struct rd_rect { int x, y, w, h; };           // pixels
+
+// ---- helpers ----
+void rd_scpy(char *d, const char *s, int cap);   // bounded string copy (public for tests)
 
 // ---- buffers ----
 void rd_buf_init(struct rd_buffer *b, const char *name, char *store, int cap);

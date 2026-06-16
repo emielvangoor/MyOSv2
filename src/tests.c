@@ -1398,6 +1398,39 @@ static void test_rd_single_window_layout(void)
     KASSERT(rd_cell_at(&rdf, 0, 1)->ch == ' ');    // ...but never wrapped
 }
 
+static void test_rd_line_wrap(void)
+{
+    // With the line-wrap minor mode ON, a logical line longer than the window
+    // continues on the next screen row(s) instead of being clipped at the edge.
+    rd_fresh();
+    // Insert one logical line of 'x's, wider than the window (no newline).
+    int over = rdf.cols + 5;
+    for (int i = 0; i < over; i++) { rd_buf_insert(&rdb, "x"); }
+    rdb.wrap = 1;                                  // enable line-wrap minor mode
+    rd_layout(&rdf);
+    // Row 0 is filled to the window edge with 'x'...
+    KASSERT(rd_cell_at(&rdf, rdf.cols - 1, 0)->ch == 'x');
+    // ...and the overflow wrapped onto row 1 (vs. truncate, which blanks it).
+    KASSERT(rd_cell_at(&rdf, 0, 1)->ch == 'x');
+}
+
+static void test_rd_modeline_mode_name(void)
+{
+    rd_fresh();
+    rd_buf_insert(&rdb, "x");
+    // Simulate (set-mode-line-name "Lisp Interaction") on the shown buffer.
+    rd_scpy(rdb.mode_line, "Lisp Interaction", (int)sizeof(rdb.mode_line));
+    rd_layout(&rdf);
+    int ml = rdf.rows - 2;   // modeline = window's last row; rows-1 is the minibuffer
+    // The modeline must contain the mode name in parentheses: "(Lisp ...".
+    int found = 0;
+    for (int c = 0; c < rdf.cols - 1; c++) {
+        if (rd_cell_at(&rdf, c, ml)->ch == '(' &&
+            rd_cell_at(&rdf, c + 1, ml)->ch == 'L') { found = 1; }
+    }
+    KASSERT(found);
+}
+
 static void test_rd_scroll_follows_point(void)
 {
     // Emacs-style scrolling: a buffer taller than its window must scroll so
@@ -2751,6 +2784,8 @@ static const struct ktest tests[] = {
     { "syscall: input_read drains event", test_syscall_input_read },
     { "rd: gap buffer insert/delete/read", test_rd_gap_buffer },
     { "rd: single window layout",         test_rd_single_window_layout },
+    { "rd: line wrap",                    test_rd_line_wrap },
+    { "rd: modeline shows mode name",     test_rd_modeline_mode_name },
     { "rd: scroll follows point",         test_rd_scroll_follows_point },
     { "rd: delete other windows",         test_rd_delete_other },
     { "rd: split below + other window",   test_rd_split_below },

@@ -112,6 +112,26 @@ DEFGFX("current-buffer", Gcurrent_buffer, 0, 0) {
     return FIXNUM((int)(frame.selected->buf - bufs));
 }
 
+/* (set-mode-line-name "str") -> set the SELECTED window's buffer's mode-line
+ * name (the "(Mode)" shown in the mode line). Lisp's set-major-mode calls it. */
+DEFGFX("set-mode-line-name", Gset_mode_line_name, 1, 1) {
+    (void)env;
+    const char *s = req_string(CAR(args), "set-mode-line-name: expected a string");
+    struct rd_buffer *b = cur();
+    int i = 0;
+    for (; s[i] && i < (int)sizeof(b->mode_line) - 1; i++) { b->mode_line[i] = s[i]; }
+    b->mode_line[i] = 0;
+    return Qt;
+}
+
+/* (set-line-wrap n) -> set the SELECTED window's buffer's line-wrap minor
+ * mode. 0 = truncate long lines (default), non-0 = wrap onto the next row. */
+DEFGFX("set-line-wrap", Gset_line_wrap, 1, 1) {
+    (void)env;
+    cur()->wrap = req_fixnum(CAR(args), "set-line-wrap: expected a fixnum") ? 1 : 0;
+    return Qt;
+}
+
 /* (insert "str") -> insert at point in the selected window's buffer. */
 DEFGFX("insert", Ginsert, 1, 1) {
     (void)env;
@@ -615,6 +635,8 @@ void lm_gfx_register(void)
 {
     register_Gframe_init();
     register_Gmake_buffer(); register_Gset_buffer(); register_Gcurrent_buffer();
+    register_Gset_mode_line_name();
+    register_Gset_line_wrap();
     register_Ginsert(); register_Gdelete_char();
     register_Gpoint(); register_Gbuflen(); register_Ggoto_char(); register_Gbufsub();
     register_Gchar_at();

@@ -51,14 +51,19 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
+        # Open the file the Emacs way -- interactive C-x C-f opens it in the
+        # CURRENT window and the selection persists (unlike a (find-file-here)
+        # typed at the REPL, whose eval loop restores its own buffer). Then type
+        # content, switch the window AWAY to *scratch* (hiding /sw.txt), and
+        # finally C-x b back to it.
+        ctrl("x"); time.sleep(0.2); ctrl("f"); time.sleep(0.5)      # C-x C-f
+        qmp_type("/sw.txt\n"); time.sleep(0.8)                       # window -> /sw.txt
+        qmp_type("HELLO-SWITCH"); time.sleep(0.5)                    # content
+        ctrl("x"); time.sleep(0.2); qmp_type("b"); time.sleep(0.5)   # C-x b
+        qmp_type("scratch"); time.sleep(0.6)                         # filter to *scratch*
+        qmp_type("\n"); time.sleep(0.8)                              # -> the REPL, /sw.txt hidden
 
-        qmp_type('(find-file "/sw.txt")\n'); time.sleep(1.0)   # buffer /sw.txt
-        ctrl("x"); time.sleep(0.2); qmp_type("o"); time.sleep(0.5)   # into it
-        qmp_type("HELLO-SWITCH"); time.sleep(0.5)              # content
-        ctrl("x"); time.sleep(0.2); qmp_type("o"); time.sleep(0.5)   # back to REPL
-        ctrl("x"); time.sleep(0.2); qmp_type("1"); time.sleep(0.5)   # only the REPL
-
-        # Now switch the (single) window to /sw.txt by name.
+        # Now switch the (single) window back to /sw.txt by name.
         ctrl("x"); time.sleep(0.2); qmp_type("b"); time.sleep(0.5)   # C-x b
         qmp_type("sw"); time.sleep(0.6)                              # filter
         qmp_type("\n"); time.sleep(0.8)                             # commit

@@ -31,6 +31,15 @@ def qmp_arrow(which):
         "data": {"down": False, "key": {"type": "qcode", "data": which}}}]})
 
 
+def ctrl(letter):
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": letter}}}]})
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": letter}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}}]})
+
+
 def main() -> int:
     font = load_font()
     dump = os.path.join(tempfile.gettempdir(), "myosv2-history-check.ppm")
@@ -42,6 +51,7 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
         qmp_type("(+ 1 2)\n"); time.sleep(0.6)
         qmp_type("(* 2 5)\n"); time.sleep(0.6)

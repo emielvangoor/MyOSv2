@@ -1,22 +1,9 @@
 #!/usr/bin/env python3
-"""surface_check.py -- the teapot is a surface-mode buffer.
-
-The graphical-buffer arm of the major-mode system: open a REPL with C-x r,
-run (teapot) (a TinyGL 3D app that paints into a shared-memory canvas), and
-verify the *teapot* window's mode line reads "(Surface)". Surface buffers keep
-their shm-canvas mechanics; wrapping their creation in `make-surface` is what
-puts them in surface-mode so keys are inert and the mode line names the mode.
-
-Run from the repo root:  python3 tools/surface_check.py
-"""
-import os
-import sys
-import tempfile
-import time
-
+"""replmode_check.py -- C-x r opens a repl-mode window whose RET evaluates."""
+import os, sys, tempfile, time
 sys.path.insert(0, "tools")
 from lm_harness import Qemu, qmp, qmp_type, qmp_screendump
-from frame_check import load_font, read_ppm, row_text, inv_row, CELL_H
+from frame_check import load_font, read_ppm, row_text, inv_row, CELL_H, CELL_W
 
 
 def ctrl(letter):
@@ -30,7 +17,7 @@ def ctrl(letter):
 
 def main() -> int:
     font = load_font()
-    dump = os.path.join(tempfile.gettempdir(), "myosv2-surface-check.ppm")
+    dump = os.path.join(tempfile.gettempdir(), "myosv2-replmode-check.ppm")
     q = Qemu()
     try:
         if not q.expect(b"lisp> ", 30):
@@ -39,21 +26,19 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
-        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)   # C-x r: a REPL
-        qmp_type("(teapot)\n"); time.sleep(2.5)                       # open *teapot*
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)   # C-x r
+        qmp_type("(+ 2 3)\n"); time.sleep(0.8)                        # RET evaluates
         qmp_screendump(dump); time.sleep(0.5)
         w, h, data = read_ppm(dump)
         lines = [row_text(font, w, data, r) for r in range(h // CELL_H)]
-        # Mode lines render in the inverse-video face (face 1), which the normal
-        # row_text decoder cannot read; OCR every row with the inverse face too.
-        # The teapot opens in a split window, so scan all rows for "(Surface)".
+        # Mode lines are inverse-video, so OCR every row with the inverse face
+        # too; one of these rows holds "-- *repl*  (REPL) --".
         inv = [inv_row(font, w, data, r) for r in range(h // CELL_H)]
         for i, t in enumerate(lines):
             print(f"  row {i}: {t!r}   inv: {inv[i]!r}")
         ml = "".join(inv)
-        ok = "(Surface)" in ml
-        print("PASS: *teapot* is a surface-mode buffer" if ok
-              else "FAIL: (Surface) mode line not seen")
+        ok = "(REPL)" in ml and any(t.strip() == "5" for t in lines)
+        print("PASS: C-x r REPL evaluates (RET)" if ok else "FAIL")
         return 0 if ok else 1
     finally:
         q.kill()

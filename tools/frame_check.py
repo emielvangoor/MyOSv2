@@ -17,7 +17,7 @@ import tempfile
 import time
 
 sys.path.insert(0, "tools")
-from lm_harness import Qemu, qmp_type, qmp_screendump
+from lm_harness import Qemu, qmp, qmp_type, qmp_screendump
 
 import re as _re
 _hdr = open("src/font_aa.h").read()
@@ -94,6 +94,52 @@ def row_text(font, w, data, row, ncols=40):
     return "".join(cell_char(font, w, data, c, row) for c in range(ncols)).rstrip()
 
 
+# The mode line is painted in face 1 (inverse video: dark glyphs on a grey
+# bar), so the default light-on-dark OCR above (cell_char/row_text) can't read
+# it. Decode those rows with the inverse face colors instead. (fg/bg are face
+# 1's defaults from src/rd_core.c: fg=0x1D2021, bg=0x928374.)
+INV_FG = (0x1D, 0x20, 0x21)
+INV_BG = (0x92, 0x83, 0x74)
+
+
+def inv_cell(font, w, data, col, row):
+    bits = []
+    for gy in range(CELL_H):
+        y = row * CELL_H + gy
+        rb = 0
+        for gx in range(CELL_W):
+            x = col * CELL_W + gx
+            off = 3 * (y * w + x)
+            px = data[off:off + 3]
+            d_bg = sum(abs(px[i] - INV_BG[i]) for i in range(3))
+            d_fg = sum(abs(px[i] - INV_FG[i]) for i in range(3))
+            if d_fg < d_bg:
+                rb |= 1 << gx
+        bits.append(rb)
+    best, bs = "?", -1
+    mask = (1 << CELL_W) - 1
+    for ch, rows in font.items():
+        sc = sum(bin(~(bits[i] ^ rows[i]) & mask).count("1") for i in range(CELL_H))
+        if sc > bs:
+            best, bs = ch, sc
+    return best
+
+
+def inv_row(font, w, data, row, ncols=60):
+    # ncols=60 scans wider than body text (row_text's 40) to capture the full
+    # mode line, which spans the whole window width.
+    return "".join(inv_cell(font, w, data, c, row) for c in range(ncols)).rstrip()
+
+
+def ctrl(letter):
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": "ctrl"}}},
+        {"type": "key", "data": {"down": True, "key": {"type": "qcode", "data": letter}}}]})
+    qmp("input-send-event", {"events": [
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": letter}}},
+        {"type": "key", "data": {"down": False, "key": {"type": "qcode", "data": "ctrl"}}}]})
+
+
 def main() -> int:
     font = load_font()
     dump = os.path.join(tempfile.gettempdir(), "myosv2-frame-check.ppm")
@@ -105,6 +151,7 @@ def main() -> int:
         if not q.expect(b"frame.l loaded", 15):
             print("FAIL: frame.l did not load"); return 1
         time.sleep(1.0)
+        ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
         # Type at the graphical REPL like a human would.
         qmp_type("(+ 1 2)\n")
@@ -128,8 +175,11 @@ def main() -> int:
             print(f"  row {i}: {t!r}")
 
         ok = True
-        if not lines[0].startswith("MyOSv2 Graphical Lisp Machine"):
-            print("FAIL: banner missing"); ok = False
+        # After C-x r the window is a fresh REPL filling the frame from the top,
+        # so its first prompt is row 0 (the old boot banner is gone -- the frame
+        # now boots into *scratch*, and repl-here clears the buffer to a prompt).
+        if not lines[0].startswith("lisp> "):
+            print("FAIL: fresh REPL prompt not at top of window"); ok = False
         prompt_rows = [t for t in lines if t.startswith("lisp> ")]
         if not any(t.startswith("lisp> (+ 1 2)") for t in lines):
             print("FAIL: typed input not on screen"); ok = False

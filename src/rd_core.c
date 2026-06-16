@@ -13,7 +13,8 @@
 // ---- tiny freestanding helpers ------------------------------------------
 
 static int rd_slen(const char *s) { int n = 0; while (s[n]) { n++; } return n; }
-static void rd_scpy(char *d, const char *s, int cap)
+// Bounded string copy; declared in rd.h so tests can call it directly.
+void rd_scpy(char *d, const char *s, int cap)
 {
     int i = 0;
     while (s[i] && i < cap - 1) { d[i] = s[i]; i++; }
@@ -31,6 +32,8 @@ static void rd_scpy(char *d, const char *s, int cap)
 void rd_buf_init(struct rd_buffer *b, const char *name, char *store, int cap)
 {
     rd_scpy(b->name, name, (int)sizeof(b->name));
+    b->mode_line[0] = 0;            // no mode name until set-mode-line-name
+    b->wrap = 0;                    // truncate long lines by default; opt in via (set-line-wrap)
     b->text = store; b->cap = cap;
     b->gap_start = 0; b->gap_end = cap;
     b->point = 0;
@@ -251,8 +254,8 @@ static void put_cell(struct rd_frame *f, int col, int row, int ch, int face)
     f->back[row * f->cols + col].face = (unsigned char)face;
 }
 
-// Lay out one leaf window's rect: text lines (truncated, never wrapped),
-// then its modeline on its last row.
+// Lay out one leaf window's rect: text lines (truncated by default; wrapped
+// when the buffer's line-wrap minor mode is on), then its modeline on its last row.
 static void layout_leaf(struct rd_frame *f, struct rd_win *w)
 {
     struct rd_buffer *b = w->buf;
@@ -288,8 +291,74 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
         if (w->top_line < 0) { w->top_line = 0; }
     }
 
+    int len = b ? rd_buf_len(b) : 0;
+
+    if (b && b->wrap) {
+        // Line-wrap minor mode: a logical line longer than the window flows
+        // onto the following screen row(s) instead of being clipped at the
+        // edge. `top_line` stays a LOGICAL-line anchor (set by the scroll
+        // block above), so scrolling is unchanged: we begin at the start of
+        // logical line `top_line` and fill screen rows top to bottom.
+        //
+        // Walk: advance `pos` to the first char of logical line `top_line`.
+        int pos = 0, line = 0;
+        while (line < w->top_line && pos < len) {
+            if (rd_buf_char_at(b, pos++) == '\n') { line++; }
+        }
+        int row = 0, col = 0, p = pos;
+        // Only render if we actually reached the requested start line (an
+        // empty/short buffer may stop early -- then nothing to draw).
+        if (line == w->top_line) {
+            while (row < text_rows && p < len) {
+                int c = rd_buf_char_at(b, p);
+                if (c == '\n') {
+                    // End of this logical line: cursor may sit on the newline
+                    // (i.e. at end-of-line, before the '\n').
+                    if (w == f->selected && b->point == p) {
+                        f->cursor_col = w->x + col; f->cursor_row = w->y + row;
+                    }
+                    // Blank-fill the rest of this row, then drop to the next
+                    // row to begin the next logical line.
+                    for (; col < w->w; col++) {
+                        put_cell(f, w->x + col, w->y + row, ' ', 0);
+                    }
+                    row++; col = 0; p++;
+                    continue;
+                }
+                if (col >= w->w) {                // window edge reached: WRAP
+                    row++; col = 0;               // continue the SAME logical line
+                    if (row >= text_rows) { break; }
+                }
+                put_cell(f, w->x + col, w->y + row, c, 0);
+                if (w == f->selected && b->point == p) {
+                    f->cursor_col = w->x + col; f->cursor_row = w->y + row;
+                }
+                col++; p++;
+            }
+            // Point at end of buffer (no trailing newline): place the cursor
+            // after the last char, wrapping to a fresh row if we're at the edge.
+            if (w == f->selected && b->point == p && row < text_rows) {
+                if (col >= w->w) { row++; col = 0; }
+                if (row < text_rows) {
+                    f->cursor_col = w->x + col; f->cursor_row = w->y + row;
+                }
+            }
+        }
+        // Blank-fill the remainder of the current partial row, then every
+        // unused row below it, so stale cells never linger.
+        if (row < text_rows) {
+            for (; col < w->w; col++) { put_cell(f, w->x + col, w->y + row, ' ', 0); }
+            for (row++; row < text_rows; row++) {
+                for (int c2 = 0; c2 < w->w; c2++) {
+                    put_cell(f, w->x + c2, w->y + row, ' ', 0);
+                }
+            }
+        }
+        goto modeline;
+    }
+
     // Walk the buffer line by line; render lines [top_line, top_line+rows).
-    int pos = 0, line = 0, len = b ? rd_buf_len(b) : 0;
+    int pos = 0, line = 0;
     for (int row = 0; row < text_rows; row++) {
         // Find the start of buffer line (w->top_line + row): advance `pos`.
         while (line < w->top_line + row && pos < len) {
@@ -326,6 +395,18 @@ modeline:;
     const char *nm = b ? b->name : "?";
     for (int i = 0; nm[i] && n < (int)sizeof(ml) - 2; i++) { ml[n++] = nm[i]; }
     ml[n++] = ' ';
+    // mode_line is set from Lisp by (set-mode-line-name) when a buffer
+    // enters a major mode; paint "  (Name)" after the buffer name so the
+    // active mode is visible in the mode line without querying Lisp.
+    if (b && b->mode_line[0]) {
+        if (n < (int)sizeof(ml) - 1) { ml[n++] = ' '; }
+        if (n < (int)sizeof(ml) - 1) { ml[n++] = '('; }
+        for (int i = 0; b->mode_line[i] && n < (int)sizeof(ml) - 3; i++) {
+            ml[n++] = b->mode_line[i];
+        }
+        if (n < (int)sizeof(ml) - 2) { ml[n++] = ')'; }
+        if (n < (int)sizeof(ml) - 1) { ml[n++] = ' '; }
+    }
     while (n < w->w && n < (int)sizeof(ml) - 1) { ml[n++] = '-'; }
     ml[n] = 0;
     for (int col = 0; col < w->w; col++) {

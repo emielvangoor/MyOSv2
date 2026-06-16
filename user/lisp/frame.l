@@ -8,31 +8,22 @@
 ;;;
 ;;; Loaded by `lisp -frame` after bootstrap.l and system.l.
 
-;; REPL state, kept PER BUFFER so each split window is an independent REPL:
-;;   repl-bufs   -- handles that are REPLs (vs file/editable buffers)
-;;   repl-starts -- alist (handle . input-start), where the prompt left off
+;; REPL state, kept PER BUFFER so each split window is an independent REPL.
+;; "Being a REPL" is no longer a list-membership flag: a buffer is a REPL when
+;; its major-mode is repl-mode (see modes.l). Where each REPL's prompt left off
+;; is the buffer-local `repl-start` (read/written via cur-start/set-cur-start).
 ;; Input history is shared across REPLs (one command history), newest-first;
 ;; repl-hist-idx is the position being shown (-1 = the live line).
-(setq repl-bufs nil)
-(setq repl-starts nil)
 (setq repl-history nil)
 (setq repl-hist-idx -1)
 
-(defun in-list (x lst)                 ; numeric membership (handles are fixnums)
-  (cond ((null lst) nil) ((= x (car lst)) t) (t (in-list x (cdr lst)))))
-
-(defun repl-buf-p (b) (in-list b repl-bufs))
-
 (defun cur-start ()
   "Where the SELECTED buffer's REPL input begins (0 if it has no prompt yet)."
-  (let ((e (assoc (current-buffer) repl-starts)))
-    (if e (cdr e) 0)))
+  (buffer-local-get (current-buffer) 'repl-start 0))
 
 (defun set-cur-start (pos)
-  "Record the current buffer's input start, replacing any previous entry."
-  (let ((b (current-buffer)))
-    (setq repl-starts (cons (cons b pos)
-                            (filter (lambda (e) (not (= (car e) b))) repl-starts)))))
+  "Record the current buffer's input start."
+  (buffer-local-set (current-buffer) 'repl-start pos))
 
 (defun prompt ()
   "Show a fresh prompt and remember where input starts (in THIS buffer)."
@@ -83,48 +74,43 @@ the buffer, read-string turns text into a form, eval runs it."
 ;; C-x prefix state: nil normally, t after a C-x.
 (setq pending-cx nil)
 
-;; The alist of (buffer . file path) for buffers visiting a file. editing-p
-;; tells dispatch which keymap to use: the same RET means "evaluate" in a REPL
-;; buffer and "insert a newline" in a file buffer.
-(setq file-of nil)
-
-(defun editing-p ()
-  "t when the selected buffer is a plain editable buffer, not a REPL."
-  (not (repl-buf-p (current-buffer))))
-
 (defun new-repl ()
-  "Turn the selected window's buffer into a FRESH REPL: a new buffer, marked as
-a REPL, with its own prompt. The split commands use this so each window is an
-independent REPL instead of mirroring one shared buffer."
+  "Turn the selected window's buffer into a FRESH REPL buffer in repl-mode."
+  (interactive)
   (let ((b (make-buffer "*repl*")))
-    (set-buffer b)
-    (setq repl-bufs (cons b repl-bufs))
-    (goto-char 0)
-    (prompt)
+    (set-major-mode b 'repl-mode)                         ; prompts via repl-setup
     b))
+
+(defun repl ()
+  "M-x repl: open a fresh REPL in its own *repl* buffer (Emacs-style command).
+In the frame this shadows system.l's blocking demo `repl`, whose read loop
+would freeze the event loop."
+  (interactive)
+  (new-repl))
+
+(defun repl-here ()
+  "C-x r: turn the current window's buffer into a fresh REPL (clear + prompt)."
+  (interactive)
+  (goto-char (buffer-length)) (delete-char (buffer-length))   ; clear the buffer
+  (set-major-mode (current-buffer) 'repl-mode))
 
 (defun split-repl-below ()
   "C-x 2: split, and give the new (lower) window its own fresh REPL."
+  (interactive)
   (split-below) (other-window) (new-repl) (redisplay))
 
 (defun split-repl-right ()
   "C-x 3: split side by side, fresh REPL in the new (right) window."
+  (interactive)
   (split-right) (other-window) (new-repl) (redisplay))
-
-(defun edit-key (ch)
-  "Self-insert editing for a file buffer: backspace deletes before point,
-everything else (RET included -> a newline) inserts at point."
-  (cond
-    ((= ch 8) (if (> (point) 0) (delete-char 1) nil))    ; backspace
-    (t (insert (string-from-char ch)))))                 ; incl. RET -> newline
 
 ;; ---- basic Emacs motion + editing commands -----------------------------
 ;; These act on the current buffer; in the REPL the lower bound is the prompt
 ;; (repl-start), so motion and deletion never reach into the prompt text.
 
 (defun edit-lo ()
-  "Leftmost editable position: 0 in a file buffer, the prompt in the REPL."
-  (if (editing-p) 0 (cur-start)))
+  "Leftmost editable position: the prompt in a REPL, else 0."
+  (if (eq (buffer-mode (current-buffer)) 'repl-mode) (cur-start) 0))
 
 (defun word-char-p (c)
   (or (and (>= c 48) (<= c 57))          ; 0-9
@@ -173,24 +159,188 @@ move right K and delete K -- those K become the chars that were ahead."
 (defun kill-word ()       ; M-d
   (let ((e (fwd-word-pos))) (if (> e (point)) (del-fwd (- e (point))) nil)))
 
+;; ---- the major modes (the MODEL is in modes.l; definitions live here) ----
+;; Each mode names handler functions that touch the buffer (insert, prompt,
+;; eval). The descriptor order is
+;;   (parent keymap on-self-insert on-return setup-fn doc mode-line-name).
+;; Hierarchy (behavior axis): special-mode is the inert root; surface-mode and
+;; fundamental-mode are its two children. "Graphics is the substrate" lives on
+;; the RENDERING axis (rd_core paints pixels for all buffers), not here.
+;;   special-mode
+;;     surface-mode          (a pixel canvas; ignores typing)
+;;     fundamental-mode      (adds text self-insert / RET)
+;;       text / repl / lisp-interaction
+
+(defun ignore-char (ch) ch)              ; inert: a key in the canvas does nothing
+(defun ignore-ret () nil)
+(register-mode 'special-mode
+  (list nil nil 'ignore-char 'ignore-ret nil
+        "Special: an inert displayed buffer. Typing does nothing; ctrl/meta keys
+fall through to the global keymap (so C-x o etc. still work)."
+        "Special"))
+
+(register-mode 'surface-mode
+  (list 'special-mode nil nil nil nil
+        "Surface: a pixel canvas an external renderer (e.g. the teapot) draws
+into. Keys do nothing -- it is not text."
+        "Surface"))
+
+(defun fundamental-self-insert (ch) (insert (string-from-char ch)))
+(defun fundamental-return () (insert "\n"))
+(register-mode 'fundamental-mode
+  (list 'special-mode nil 'fundamental-self-insert 'fundamental-return nil
+        "Fundamental mode: text self-inserts; RET inserts a newline."
+        "Fundamental"))
+
+(register-mode 'text-mode
+  (list 'fundamental-mode nil nil nil nil
+        "Text mode: plain text editing. C-x C-s saves to the visited file."
+        "Text"))
+
+(defun repl-self-insert (ch) (insert (string-from-char ch)))
+(defun repl-return () (repl-eval))
+(defun repl-setup () (goto-char (buffer-length)) (prompt))
+(setq repl-keymap
+  (list
+    (list 'ctrl 112 'cmd-history-prev "C-p    previous input (history)")
+    (list 'ctrl 110 'cmd-history-next "C-n    next input (history)")))
+(register-mode 'repl-mode
+  (list 'fundamental-mode repl-keymap 'repl-self-insert 'repl-return 'repl-setup
+        "REPL mode: RET evaluates the input; C-p/C-n walk the input history."
+        "REPL"))
+
+(defun scratch-setup ()
+  (insert ";; *scratch* -- type a Lisp form and press C-j to evaluate it.\n\n"))
+(setq lisp-interaction-keymap
+  (list (list 'ctrl 106 'eval-last-sexp "C-j    eval the form before point")))
+(register-mode 'lisp-interaction-mode
+  (list 'fundamental-mode lisp-interaction-keymap nil nil 'scratch-setup
+        "Lisp Interaction: RET=newline; C-j evaluates the form before point."
+        "Lisp Interaction"))
+
+;; ---- minor modes: buffer-local toggles that compose with the major mode ----
+;; A minor mode is a symbol with a registry entry (lighter keymap effect-fn):
+;; the lighter is the tag it adds to the mode line, the keymap (may be nil) is
+;; consulted by dispatch BEFORE the major-mode chain (Emacs precedence), and the
+;; effect-fn is run with t/nil whenever the mode turns on/off. Which minors are
+;; ACTIVE is a buffer-local list ('minor-modes), so each buffer toggles its own.
+(setq *minor-modes* nil)   ; alist (sym . (lighter keymap effect-fn))
+
+(defun register-minor-mode (sym lighter keymap effect-fn)
+  "Register minor mode SYM: LIGHTER (mode-line tag), optional KEYMAP, and
+EFFECT-FN called with t/nil when the mode turns on/off."
+  (setq *minor-modes* (cons (cons sym (list lighter keymap effect-fn))
+                            (filter (lambda (e) (not (eq (car e) sym))) *minor-modes*)))
+  sym)
+
+(defun minor-lighter (sym) (nth 0 (cdr (assoc sym *minor-modes*))))
+(defun minor-keymap (sym)  (nth 1 (cdr (assoc sym *minor-modes*))))
+(defun minor-effect-fn (sym) (nth 2 (cdr (assoc sym *minor-modes*))))
+
+(defun active-minor-modes () (buffer-local-get (current-buffer) 'minor-modes nil))
+(defun minor-mode-on-p (sym) (member sym (active-minor-modes)))
+
+(defun mode-line-string ()
+  "Compose '<Major> <Lighter1> <Lighter2>...' for the current buffer."
+  (let ((s (mode-line-name-of (buffer-mode (current-buffer)))))
+    (foreach (lambda (m) (setq s (string-concat s " " (minor-lighter m))))
+             (active-minor-modes))
+    s))
+
+(defun refresh-mode-line () (set-mode-line-name (mode-line-string)))
+
+(defun set-major-mode (buf mode-sym)
+  "Make BUF use MODE-SYM: record it (buffer-local), select it, paint the mode
+line (major name + any active minor lighters), and run the mode's setup-fn."
+  (buffer-local-set buf 'major-mode mode-sym)
+  (set-buffer buf)
+  ;; refresh-mode-line reads buffer-mode (just set) + active minors, so the bar
+  ;; always reflects major + minors -- not just the bare major name.
+  (refresh-mode-line)
+  ;; funcall needs a function VALUE, not a symbol; (eval (list s)) calls the
+  ;; setup fn named by the symbol s (s sits in function position for eval).
+  (let ((s (mode-setup-fn mode-sym))) (if s (eval (list s)) nil))
+  mode-sym)
+
+(defun toggle-minor-mode (sym)
+  "Flip minor mode SYM in the current buffer: update the active list, run its
+effect, repaint the mode line, redisplay, and echo the new state."
+  (let ((on (not (minor-mode-on-p sym))))
+    (buffer-local-set (current-buffer) 'minor-modes
+      (if on (cons sym (active-minor-modes))
+        (filter (lambda (m) (not (eq m sym))) (active-minor-modes))))
+    ;; effect-fn is stored as a SYMBOL; this Lisp's funcall needs a function
+    ;; VALUE, so call it the way set-major-mode calls its setup-fn: build the
+    ;; form (effect-fn on) and eval it.
+    (let ((fx (minor-effect-fn sym))) (if fx (eval (list fx on)) nil))
+    (refresh-mode-line)
+    (redisplay)
+    (echo (string-concat (symbol-name sym) (if on " enabled" " disabled")))))
+
+(defun line-wrap-effect (on) (set-line-wrap (if on 1 0)))
+(register-minor-mode 'line-wrap "Wrap" nil 'line-wrap-effect)
+
+(defun line-wrap-mode ()
+  "Toggle line wrapping in the current buffer (minor mode; lighter Wrap)."
+  (interactive)
+  (toggle-minor-mode 'line-wrap))
+
+;; ---- lisp-interaction: evaluate the form before point (C-j) ----
+(defun sexp-ws-p (c) (or (= c 32) (= c 10) (= c 9)))   ; space/newline/tab
+
+(defun last-sexp-start (p)
+  "Scan left from P over one balanced form; return its start position."
+  (let ((q (- p 1)) (lo (edit-lo)))
+    (while (and (> q lo) (sexp-ws-p (char-at q))) (setq q (- q 1)))  ; trailing ws
+    (if (and (>= q 0) (= (char-at q) 41))            ; ')' -> match parens back
+        (let ((depth 0) (done nil))
+          (while (not done)
+            (let ((c (char-at q)))
+              ;; ')' deepens; the '(' that brings depth back to 0 is the matching opener
+              (cond ((= c 41) (setq depth (+ depth 1)))
+                    ((= c 40) (setq depth (- depth 1))))
+              (cond ((and (= c 40) (= depth 0)) (setq done t))
+                    ((<= q lo) (setq done t))
+                    (t (setq q (- q 1))))))
+          q)
+      (progn                                          ; an atom: back over it
+        (while (and (> q lo)
+                    (not (sexp-ws-p (char-at (- q 1))))
+                    (not (= (char-at (- q 1)) 40)))
+          (setq q (- q 1)))
+        q))))
+
+(defun eval-last-sexp ()
+  "C-j in lisp-interaction-mode: eval the form before point; insert its value."
+  (let ((start (last-sexp-start (point))) (end (point)))
+    (let ((src (buffer-substring start end)))
+      (goto-char end)
+      (insert "\n")
+      (let ((val (eval (read-string src))))
+        (flush-output)
+        (insert (prin1-to-string val))
+        (insert "\n")))))
+
 ;; ---- keymaps as DATA (the self-documenting heart) -----------------------
 ;; A binding is (kind code command description). dispatch looks a key up in a
 ;; keymap and runs its command; C-h b/k/m read the SAME tables -- so the help
 ;; can never drift from what the keys actually do. Commands are named functions
 ;; so C-h k can show each one's living source via describe-function-text.
 
-(defun cmd-beginning-of-line () (goto-char (bol-pos)))
-(defun cmd-end-of-line () (goto-char (eol-pos)))
+(defun cmd-beginning-of-line () (interactive) (goto-char (bol-pos)))
+(defun cmd-end-of-line () (interactive) (goto-char (eol-pos)))
 (defun cmd-backward-char ()
+  (interactive)
   (let ((lo (edit-lo))) (if (> (point) lo) (goto-char (- (point) 1)) nil)))
 (defun cmd-forward-char ()
+  (interactive)
   (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
-(defun cmd-delete-forward () (del-fwd 1))
-(defun cmd-forward-word () (goto-char (fwd-word-pos)))
-(defun cmd-backward-word () (goto-char (bwd-word-pos)))
-(defun cmd-history-prev () (if (editing-p) nil (repl-history-prev)))
-(defun cmd-history-next () (if (editing-p) nil (repl-history-next)))
-(defun cmd-describe-function () (mb-start 'describe))
+(defun cmd-delete-forward () (interactive) (del-fwd 1))
+(defun cmd-forward-word () (interactive) (goto-char (fwd-word-pos)))
+(defun cmd-backward-word () (interactive) (goto-char (bwd-word-pos)))
+(defun cmd-history-prev () (interactive) (repl-history-prev))
+(defun cmd-history-next () (interactive) (repl-history-next))
+(defun cmd-describe-function () (interactive) (mb-start 'describe))
 
 (setq global-keymap
   (list
@@ -215,6 +365,7 @@ so forget help-buf and let show-help re-split next time."
 
 (defun switch-to-buffer ()
   "C-x b: pick a buffer by name in the minibuffer and show it here."
+  (interactive)
   (mb-start 'switch))
 
 (setq cx-keymap
@@ -226,7 +377,9 @@ so forget help-buf and let show-help re-split next time."
     (list 'char 111 'other-window     "C-x o  other window")
     (list 'char 98  'switch-to-buffer "C-x b  switch to buffer")
     (list 'ctrl 98  'list-buffers     "C-x C-b  list buffers")
-    (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")))
+    (list 'ctrl 102 'cmd-find-file    "C-x C-f  find file")
+    (list 'ctrl 115 'save-buffer      "C-x C-s  save buffer")
+    (list 'char 114 'repl-here       "C-x r    open a REPL in this window")))
 
 (setq help-keymap
   (list
@@ -234,13 +387,6 @@ so forget help-buf and let show-help re-split next time."
     (list 'char 107 'describe-key          "C-h k  describe key")
     (list 'char 98  'describe-bindings     "C-h b  list key bindings")
     (list 'char 109 'describe-mode         "C-h m  describe mode")))
-
-(defun key-lookup (ev km)
-  "The binding for EV (a (kind code ...) event) in keymap KM, or nil."
-  (cond ((null km) nil)
-        ((and (eq (nth 0 (car km)) (car ev)) (= (nth 1 (car km)) (cadr ev)))
-         (car km))
-        (t (key-lookup ev (cdr km)))))
 
 (defun run-key (ev km)
   "If EV is bound in KM, run its command and return t; otherwise nil."
@@ -253,66 +399,81 @@ the whole event, not a bare char."
   (setq pending-cx nil)
   (if (run-key ev cx-keymap) nil (echo "unbound C-x key")))
 
+(defun minor-maps-lookup (ev lst)
+  "First binding for EV among the active minor modes' keymaps (a nil keymap is
+inert: key-lookup returns nil for it), or nil if none bind it."
+  (cond ((null lst) nil)
+        ((key-lookup ev (minor-keymap (car lst))))   ; nil keymap -> key-lookup nil -> nil
+        (t (minor-maps-lookup ev (cdr lst)))))
+
+(defun run-mode-or-global (ev)
+  "Run EV via active minor-mode maps, then the major-mode keymap chain, then global.
+Minor maps take precedence over the major mode (Emacs order)."
+  (let ((b (or (minor-maps-lookup ev (active-minor-modes))
+               (mode-key-lookup (buffer-mode (current-buffer)) ev))))
+    (if b (progn (eval (list (nth 2 b))) t)
+      (if (run-key ev global-keymap) t (progn (echo "unbound key") nil)))))
+
+(defun mode-backspace (m)
+  "Backspace in mode M: in a REPL never past the prompt; else one char."
+  (if (eq m 'repl-mode)
+      (if (> (point) (cur-start)) (delete-char 1) nil)
+    (if (> (point) 0) (delete-char 1) nil)))
+
 (defun dispatch (ev)
-  "Route one cooked input event. The keymap is a cond -- live data."
+  "Route one cooked input event through the selected buffer's major mode."
   (cond
     ((null ev) nil)
     (mb-action (mb-dispatch ev))                          ; minibuffer owns input
-    (pending-cx (handle-cx ev))                           ; C-x <key> (char OR ctrl)
+    (pending-cx (handle-cx ev))                           ; C-x <key>
     ((eq (car ev) 'mouse)
      (select-window-at (cadr ev) (caddr ev)))
     ((eq (car ev) 'meta)
-     (if (= (cadr ev) 120) (mb-start 'mx)                 ; M-x (a prefix of its own)
-       (run-key ev global-keymap)))                       ; M-f/M-b/M-d, ...
+     (if (= (cadr ev) 120) (mb-start 'mx)                 ; M-x
+       (run-mode-or-global ev)))
     (pending-ch
      (setq pending-ch nil)
-     (if (run-key ev help-keymap) nil (echo "unbound C-h key")))  ; C-h f/k/b/m
+     (if (run-key ev help-keymap) nil (echo "unbound C-h key")))
     ((eq (car ev) 'ctrl)
-     (cond ((= (cadr ev) 120) (setq pending-cx t))       ; C-x: await suffix
-           ((= (cadr ev) 104) (setq pending-ch t))       ; C-h: await suffix
-           ((= (cadr ev) 103) (setq pending-cx nil)      ; C-g: never mind
+     (cond ((= (cadr ev) 120) (setq pending-cx t))        ; C-x: await suffix
+           ((= (cadr ev) 104) (setq pending-ch t))        ; C-h: await suffix
+           ((= (cadr ev) 103) (setq pending-cx nil)       ; C-g: quit
                               (echo "quit"))
-           (t (run-key ev global-keymap))))              ; C-a/C-e/C-b/C-f/...
-
+           (t (run-mode-or-global ev))))                  ; mode keymap then global
     ((eq (car ev) 'char)
-     (if (editing-p)
-         (edit-key (cadr ev))                             ; file buffer: plain edit
-       (let ((ch (cadr ev)))
-         (cond
-           ((= ch 10) (repl-eval))                        ; RET: evaluate
-           ((= ch 8)                                      ; backspace: char before
-            (if (> (point) (cur-start)) (delete-char 1) nil)) ; point, not the prompt
-           (t (insert (string-from-char ch)))))))         ; self-insert (at point)
+     (let ((m (buffer-mode (current-buffer))) (ch (cadr ev)))
+       (cond
+         ((= ch 10) (eval (list (mode-return-fn m))))     ; RET: mode decides
+         ((= ch 8) (mode-backspace m))                    ; backspace
+         (t (eval (list (mode-self-insert-fn m) ch))))))  ; printable: mode decides
     (t nil)))
 
 ;; ---- visiting files: open, edit, save (Phase 27.3) ----------------------
 
-(defun find-file (path)
-  "Open PATH in a split window below; the file shows there and the buffer
-remembers its path (so C-x C-s knows where to write). A missing file starts
-empty. We return selection to the REPL before finishing -- like (teapot) --
-so the REPL's own 'print the value and re-prompt' lands in the REPL, not in
-the file buffer. Switch to the file with C-x o to start editing."
-  (split-below)
-  (other-window)                           ; into the new (bottom) window
+(defun find-file-here (path)
+  "Open PATH in text-mode in the CURRENT window. A missing file starts empty.
+The buffer remembers PATH (buffer-local file-path) so C-x C-s knows where to
+write."
   (let ((b (make-buffer path)))
-    (set-buffer b)                         ; show the file there
-    (setq file-of (cons (cons b path) file-of))
+    (set-major-mode b 'text-mode)                     ; selects b, mode line (Text)
+    (buffer-local-set b 'file-path path)
     (let ((fd (open path)))
       (if (>= fd 0)
           (progn
             (let ((chunk (fd-read fd 1024)))
               (while chunk (insert chunk) (setq chunk (fd-read fd 1024))))
             (close fd))
-        nil))                              ; nonexistent: a fresh empty buffer
+        nil))                                         ; nonexistent -> empty buffer
     (goto-char 0)
-    (other-window)                         ; back to the REPL (see docstring)
     (redisplay)
     b))
 
+(defun cmd-find-file () (interactive) (mb-start 'find-file))         ; C-x C-f
+
 (defun save-buffer ()
   "Write the current buffer back to the file it is visiting (C-x C-s)."
-  (let ((path (cdr (assoc (current-buffer) file-of))))
+  (interactive)
+  (let ((path (buffer-local-get (current-buffer) 'file-path nil)))
     (if path
         (let ((fd (creat path)))
           (if (>= fd 0)
@@ -336,16 +497,46 @@ the file buffer. Switch to the file with C-x o to start editing."
 (setq mb-top 0)             ; first VISIBLE candidate -- the scroll offset
 (setq mb-rows 8)            ; how many candidates the echo area shows at once
 
+;; ---- (interactive): mark a defun as an M-x command (Emacs-style) ----------
+;; A command declares itself by making (interactive) its FIRST body form. At
+;; run time (interactive) is a harmless no-op; M-x reads it as data via
+;; function-info to decide what to OFFER. This keeps M-x to real commands and
+;; away from internal helpers and blocking loops (e.g. system.l's demo `repl`).
+(defun interactive () nil)
+
+(defun interactive-form-p (f)
+  "t when F is the call (interactive ...)."
+  (and (consp f) (eq (car f) 'interactive)))
+
+(defun command-p (sym)
+  "t when SYM is a defun declaring (interactive) as its first real body form.
+defun stores a single-form body as-is and a multi-form body wrapped in
+(progn ...). A docstring, if present, is the FIRST progn element (this Lisp
+keeps it as a literal form rather than stripping it), so (interactive) may be
+either the first OR the second progn element -- accept both."
+  (let ((info (function-info sym)))
+    (and info
+         (eq (car info) 'lambda)
+         (let ((body (caddr info)))
+           (and (consp body)
+                (or (eq (car body) 'interactive)            ; body IS (interactive)
+                    (and (eq (car body) 'progn)             ; body is (progn ...)
+                         (or (interactive-form-p (cadr body))     ; (progn (interactive) ...)
+                             (interactive-form-p (caddr body))    ; (progn "doc" (interactive) ...)
+                             ))))))))
+
 (defun command-symbols ()
-  "Every symbol whose function slot holds something runnable."
-  (filter (lambda (s) (function-info s)) (all-symbols)))
+  "Every interactive command -- the M-x palette (see command-p / (interactive))."
+  (filter (lambda (s) (command-p s)) (all-symbols)))
 
 ;; The minibuffer is generic over its candidates: each action supplies a
 ;; SOURCE (the full candidate list) and a LABEL (the display/match string for
 ;; one candidate). M-x/describe complete over command symbols; switch-to-buffer
 ;; completes over (handle . name) buffer entries.
 (defun mb-source ()
-  (if (eq mb-action 'switch) (buffer-list) (command-symbols)))
+  (cond ((eq mb-action 'switch) (buffer-list))
+        ((eq mb-action 'find-file) nil)               ; free-text path entry
+        (t (command-symbols))))
 
 (defun mb-label (c)
   (if (eq mb-action 'switch) (cdr c) (symbol-name c)))
@@ -387,6 +578,7 @@ drives the face-2 bar)."
         (txt (string-concat
               (cond ((eq mb-action 'mx) "M-x ")
                     ((eq mb-action 'switch) "Buffer: ")
+                    ((eq mb-action 'find-file) "Find file: ")
                     (t "Describe: "))
               mb-input)))
     (if (> n 0)
@@ -445,6 +637,7 @@ the very lambda the machine runs -- which you can redefine."
 
 (defun list-buffers ()
   "C-x C-b: every live buffer in a *Help* window, the current one marked '*'."
+  (interactive)
   (let ((here (current-buffer))
         (txt "=== Buffers ===\n\n"))
     (foreach (lambda (e)
@@ -455,24 +648,30 @@ the very lambda the machine runs -- which you can redefine."
     (show-help txt)))
 
 (defun describe-bindings ()
-  "C-h b: every key binding, in a *Help* window -- read from the live keymaps."
+  "C-h b: every key binding (current mode's keymap + the global maps)."
+  (interactive)
   (show-help (string-concat
     "=== Key bindings ===\n\n"
+    "-- " (mode-line-name-of (buffer-mode (current-buffer))) " mode --\n"
+    (fmt-bindings (mode-keymap (buffer-mode (current-buffer))))
+    "\n-- global --\n"
     (fmt-bindings global-keymap)
     (fmt-bindings cx-keymap)
     (fmt-bindings help-keymap)
     "\nC-x      prefix\nC-h      prefix (help)\nC-g      quit\n"
-    "M-x      run a command by name\nRET      evaluate (REPL) / newline (file)\n")))
+    "M-x      run a command by name\nRET      mode-defined (eval / newline)\n")))
 
 (defun describe-mode ()
-  "C-h m: describe the selected buffer's mode and the keys that work in it."
-  (show-help (string-concat
-    (if (editing-p)
-        "=== File buffer ===\n\nText self-inserts; RET inserts a newline.\nC-x C-s saves to disk.\n\n"
-      "=== REPL ===\n\nRET evaluates the input; the value prints below.\nUp/Down walk the input history.\n\n")
-    "Key bindings:\n\n"
-    (fmt-bindings global-keymap)
-    (fmt-bindings cx-keymap))))
+  "C-h m: describe the selected buffer's mode (its doc + the keys it adds)."
+  (interactive)
+  (let ((m (buffer-mode (current-buffer))))
+    (show-help (string-concat
+      "=== " (mode-line-name-of m) " mode ===\n\n"
+      (mode-doc m) "\n\n"
+      "Mode keys:\n\n" (fmt-bindings (mode-keymap m))
+      "\nGlobal keys:\n\n"
+      (fmt-bindings global-keymap)
+      (fmt-bindings cx-keymap)))))
 
 (defun describe-binding (b prefix)
   (if b
@@ -484,6 +683,7 @@ the very lambda the machine runs -- which you can redefine."
   "C-h k: read a key (following a C-x / C-h prefix) and report the command it
 runs, with that command's living source -- read from the same keymaps dispatch
 uses, so it is always accurate."
+  (interactive)
   (echo "Describe key: press a key")
   (redisplay)
   (let ((ev (read-event)))
@@ -496,17 +696,21 @@ uses, so it is always accurate."
 
 (defun mb-commit ()
   (let ((sel (if mb-matches (nth mb-sel mb-matches) nil))
-        (action mb-action))
+        (action mb-action)
+        (input mb-input))
     (mb-stop)
     (cond
-      ((eq action 'switch)                    ; sel is (handle . name)
+      ((eq action 'switch)
        (if sel (progn (set-buffer (car sel)) (redisplay)) (echo "no such buffer")))
+      ((eq action 'find-file)                          ; the typed text IS the path
+       (find-file-here input))
       ((eq action 'mx)
-       (let ((sym (if sel sel (read-string mb-input))))
+       (let ((sym (if sel sel (read-string input))))
          (let ((val (eval (list sym))))
-           (flush-output) (insert (prin1-to-string val)) (insert "\n") (prompt))))
+           (flush-output)
+           (echo (prin1-to-string val)))))
       ((eq action 'describe)
-       (show-help (describe-function-text (if sel sel (read-string mb-input))))))))
+       (show-help (describe-function-text (if sel sel (read-string input))))))))
 
 (defun mb-dispatch (ev)
   "The minibuffer keymap -- live data, like everything else here."
@@ -671,13 +875,11 @@ the current buffer, where the person at the frame can actually see it."
       nil)))
 
 (defun frame-setup ()
-  "Acquire the screen and greet. Returns nil when there is no display."
+  "Acquire the screen, then open *scratch* in lisp-interaction-mode (Emacs-style)."
   (if (frame-init)
       (progn
-        (setq repl-bufs (list (current-buffer)))  ; the first REPL is frame-init's buffer
-        (insert "MyOSv2 Graphical Lisp Machine\n")
-        (insert "C-x 2/3 split  C-x 0 delete  C-x o next  mouse-1 select\n\n")
-        (prompt)
+        (let ((sb (make-buffer "*scratch*")))
+          (set-major-mode sb 'lisp-interaction-mode))     ; selects + banner
         (echo "ready")
         (redisplay)
         t)
@@ -687,12 +889,21 @@ the current buffer, where the person at the frame can actually see it."
 ;; surface buffers with live renderers (the teapot!) keep repainting.
 (setq animate nil)
 
+(defun make-surface (name w h)
+  "Make a surface (pixel-canvas) buffer in surface-mode. The Lisp face of the
+make-surface-buffer C primitive: it allocates the shm canvas; we put the buffer
+in surface-mode so keys are inert and the mode line reads (Surface)."
+  (let ((b (make-surface-buffer name w h)))
+    (if b (set-major-mode b 'surface-mode) nil)
+    b))
+
 (defun teapot ()
   "The Utah teapot, spinning in a buffer: split the window, give the new
 half a surface canvas, and run /bin/teapot (TinyGL) into it."
+  (interactive)
   (split-below)
   (other-window)
-  (let ((sb (make-surface-buffer "*teapot*" 480 360)))
+  (let ((sb (make-surface "*teapot*" 480 360)))
     (set-buffer sb)
     (other-window)
     (setq animate t)
@@ -710,7 +921,9 @@ only what changed -- an idle machine costs nothing."
         ;; aborted mid-eval (a typo): show what it printed -- the ERROR line
         ;; -- and lay a fresh prompt, which also re-anchors repl-start past
         ;; the broken input so the next RET doesn't re-eval it.
-        (progn (insert pending) (insert "\n") (prompt) (redisplay))
+        (progn (insert pending) (insert "\n")
+               (if (eq (buffer-mode (current-buffer)) 'repl-mode) (prompt) nil)
+               (redisplay))
       nil))
   (if animate
       ;; Animation heartbeat: poll input, repaint at ~25Hz so live surface
