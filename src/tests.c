@@ -746,7 +746,7 @@ static void test_vfs_lookup_relative(void)
 // /hello.txt = "Hello, MyOSv2!\n". Replaces the old initrd_unpack() fixture now
 // that the real userland lives on the ext2 disk image, not embedded in the
 // kernel. Self-contained so these tests never depend on production seed code.
-static void test_seed_fs(void)
+static void fs_fresh(void)
 {
     vfs_mount_root(ramfs_type());
     struct vnode *vn = vfs_create("/hello.txt", VN_FILE);
@@ -757,11 +757,11 @@ static void test_seed_fs(void)
 static void test_seed_fs_provides_hello(void)
 {
     pmm_init(); kheap_init();
-    test_seed_fs();
+    fs_fresh();
     struct file *f = vfs_open("/hello.txt");
     KASSERT(f != 0);
     char buf[16] = {0};
-    int n = vfs_read(f, buf, 14);
+    int n = vfs_read(f, buf, 14);             // 14 = the content, minus the trailing newline
     KASSERT(n == 14);
     KASSERT(bytes_eq(buf, "Hello, MyOSv2!\n", 14));
     vfs_close(f);
@@ -782,7 +782,7 @@ static void fd_worker(void *a)
 static void test_fd_open_returns_fd(void)
 {
     pmm_init(); kheap_init();
-    test_seed_fs();
+    fs_fresh();
     fd_res = -1;
     sched_init();
     thread_create(fd_worker, 0, 1);
@@ -808,7 +808,7 @@ static void fd_read_worker(void *a)
 static void test_fd_read_syscall(void)
 {
     pmm_init(); kheap_init();
-    test_seed_fs();
+    fs_fresh();
     fd_n = -1;
     sched_init();
     thread_create(fd_read_worker, 0, 1);
@@ -830,7 +830,7 @@ static void fd_miss_worker(void *a)
 static void test_fd_open_missing(void)
 {
     pmm_init(); kheap_init();
-    test_seed_fs();
+    fs_fresh();
     fd_miss = 0;
     sched_init();
     thread_create(fd_miss_worker, 0, 1);
@@ -854,7 +854,7 @@ static void fd_reuse_worker(void *a)
 static void test_fd_close_reuse(void)
 {
     pmm_init(); kheap_init();
-    test_seed_fs();
+    fs_fresh();
     fd_a = fd_b = -1;
     sched_init();
     thread_create(fd_reuse_worker, 0, 1);
@@ -1014,7 +1014,7 @@ static void rd_worker(void *a)
 static void test_syscall_readdir(void)
 {
     pmm_init(); kheap_init();
-    test_seed_fs();
+    fs_fresh();
     rd_r0 = rd_r1 = -2;
     sched_init();
     thread_create(rd_worker, 0, 1);
