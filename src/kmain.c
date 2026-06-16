@@ -79,7 +79,8 @@ void kmain(void)
     // The root '/' is the persistent ext2 image on the virtio-blk disk -- the
     // Linux model: the build "installs" the userland (/bin, /lib, /usr, seed
     // files) onto the image, and we mount it here. There is no ramfs root and no
-    // initrd to unpack; on-device edits live on disk and survive reboots. A
+    // initrd to unpack; on-device edits live on the ext2 image and survive
+    // reboots (the retired /disk mount is gone -- the root IS that filesystem). A
     // blank/corrupt/non-ext2 disk has no root to boot, so we halt with a clear
     // message -- the spirit of Linux's "VFS: Unable to mount root fs".
     virtio_blk_init();
@@ -95,7 +96,9 @@ void kmain(void)
     kprintf("rootfs: / mounted (ext2)\n");
 
     // Persistence proof: a boot counter at /boots. It is now an ordinary file on
-    // the root filesystem, so it survives reboots without any special handling.
+    // the root filesystem, so it survives reboots without any special handling --
+    // each boot reads the value the PREVIOUS boot committed to disk and increments
+    // it, which is exactly the property the whole ext2-root change buys us.
     {
         int n = 0;
         struct file *bf = vfs_open("/boots");
