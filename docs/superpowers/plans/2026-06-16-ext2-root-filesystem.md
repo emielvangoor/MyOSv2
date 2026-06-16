@@ -324,13 +324,15 @@ git commit -m "feat(fs): mount ext2 as root /; retire /disk; persistent on-devic
 
 ---
 
-## Task 4: Remove the kernel-embedded userland
+## Task 4: Remove the kernel-embedded userland (slim `user_blob` to the `sh` test fixture)
 
-Now that the userland lives on disk and no KTEST or boot path calls `initrd_unpack`, delete the embedding machinery: a smaller kernel and a single source of truth.
+**Plan correction (discovered during execution):** `user_blob` cannot be removed *entirely*. `src/vm.c:88-89` and `src/tests.c` reference `sh_elf`/`sh_elf_len` as a **test-only** sample ELF: the VM/address-space KTESTs (`as_create()` → `as_create_image(sh_elf,…)`, `as_create_elf(sh_elf,…)`, and the ~20 mmap/sbrk/COW/shm tests built on `as_create()`) need a real ELF to load. This is purely test scaffolding — production loading reads ELFs from **disk** via `as_create_elf(file_contents)` (`proc.c:127`, `sched.c:220`) and never touches `sh_elf`.
+
+So (Option A, user-approved): drop `lisp_blob` and `initrd.c` completely, and **slim `user_blob` to embed only `sh.elf`** as the test fixture. The entire *runnable* userland (busybox, tcc, the Lisp machine, all `.l` source, every other program) leaves the kernel and lives only on the disk image; one ~10 KB `sh` ELF remains solely so the VM unit tests have a real ELF.
 
 **Files:**
 - Delete: `src/initrd.c`, `src/initrd.h`
-- Modify: `Makefile` — drop `user_blob.o`/`lisp_blob.o` from `OBJ` and remove their recipes
+- Modify: `Makefile` — drop `lisp_blob.o` from `OBJ`; slim the `user_blob.c` recipe to only `sh.elf`; delete the `lisp_blob` recipes
 
 - [ ] **Step 1: Delete the initrd source**
 
@@ -338,36 +340,72 @@ Now that the userland lives on disk and no KTEST or boot path calls `initrd_unpa
 git rm src/initrd.c src/initrd.h
 ```
 
-- [ ] **Step 2: Drop the blobs from the kernel object list**
+- [ ] **Step 2: Drop only `lisp_blob.o` from the kernel object list**
 
-In `Makefile`, remove these two lines from the `OBJ :=` definition (lines 23-24):
+In `Makefile`, remove this ONE line from the `OBJ :=` definition (keep `$(BUILD)/user_blob.o`):
 
 ```makefile
-        $(BUILD)/user_blob.o \
         $(BUILD)/lisp_blob.o
 ```
 
-So `OBJ` becomes just the `src/*.c` + `src/*.S` patterns. Update the comment on line 20 (`# user_blob.o = embedded ...`) to note the userland now lives on the disk image.
+Ensure the remaining `OBJ :=` continuation backslashes are still well-formed (the last line must not dangle a trailing `\`). Update the comment above `OBJ` (it currently says `# user_blob.o = embedded user-program ELFs; lisp_blob.o = embedded .l source.`) to explain: the Lisp library and the full userland now live on the ext2 disk image (see the `disk.img` recipe); `user_blob.o` now embeds ONLY `sh.elf` as a sample ELF for the VM/address-space self-tests, not as runtime userland.
 
-- [ ] **Step 3: Remove the blob recipes**
+- [ ] **Step 3: Slim the `user_blob.c` recipe to `sh.elf` only; delete the `lisp_blob` recipes**
 
-In `Makefile`, delete the `$(BUILD)/user_blob.c`, `$(BUILD)/user_blob.o`, `$(BUILD)/lisp_blob.c`, and `$(BUILD)/lisp_blob.o` rules (the block at lines ~251-269). The `$(USER_ELFS)`/`$(MUSL_ELFS)`/`$(PREBUILT_ELFS)`/`mycrt.elf`/`libtcc1.a`/`LISP_FILES` definitions and their `.elf` build rules stay — they are now prerequisites of `disk.img` (wired in Task 1).
+In `Makefile`, replace the `user_blob.c` recipe (currently depends on `$(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf` and loops xxd over all of them) with one that embeds only `sh.elf`. Running `xxd -i sh.elf` from `build/user/` yields the symbols `sh_elf` / `sh_elf_len`, matching the `extern` decls in `vm.c`/`tests.c`:
 
-- [ ] **Step 4: Verify a clean build links without the blobs and KTESTs pass**
+```makefile
+# The kernel embeds exactly ONE program ELF -- /bin/sh -- as a C byte array
+# (sh_elf / sh_elf_len). It is NOT runtime userland: it is a sample ELF the
+# VM/address-space self-tests load (as_create()/as_create_elf() in src/tests.c)
+# to exercise the loader without a disk. The real userland is staged onto the
+# ext2 disk image (see the disk.img recipe); production loading reads ELFs from
+# disk via as_create_elf(). xxd run from build/user names the symbol `sh_elf`.
+$(BUILD)/user_blob.c: $(BUILD)/user/sh.elf
+	cd $(BUILD)/user && : > ../user_blob.c && xxd -i sh.elf >> ../user_blob.c
+
+$(BUILD)/user_blob.o: $(BUILD)/user_blob.c
+	$(CC) $(CFLAGS) -c $< -o $@
+```
+
+Then DELETE the `$(BUILD)/lisp_blob.c` and `$(BUILD)/lisp_blob.o` rules entirely (including their comments and the `build/lisp/` staging they used for xxd — nothing else needs it; the `disk.img` recipe copies `.l` straight from `user/lisp/`). Keep all `PROGS`/`MUSL_PROGS`/`PREBUILT_PROGS`/`LISP_FILES` vars and the `$(BUILD)/user/%.elf` build rules — they are prerequisites of `disk.img`.
+
+- [ ] **Step 4: Verify a clean build links and KTESTs pass**
 
 Run: `make clean && make test`
-Expected: the kernel links with no `user_blob`/`lisp_blob`/`initrd` symbols, and the suite is green. (If the link fails with an undefined `*_elf`/`initrd_unpack` symbol, a reference was missed — grep `src/` for it.)
+Expected: links with no `lisp_blob`/`initrd` symbols (and `sh_elf` still resolves from the slimmed `user_blob`), and `==== self-tests: 164 passed, 0 failed ====`. If a `*_elf` symbol other than `sh_elf` is now undefined, some non-test code depended on an embedded binary the plan didn't expect — STOP and report it; do not re-add the other binaries.
 
-- [ ] **Step 5: Sanity-check no dangling references**
+- [ ] **Step 5: Sanity-check references**
 
-Run: `grep -rn "initrd\|user_blob\|lisp_blob" src/ Makefile`
-Expected: no matches (or only historical comments you choose to leave). Fix any live reference.
+Run: `grep -rn "initrd\|lisp_blob" src/ Makefile`
+Expected: no matches. `grep -rn "user_blob\|sh_elf" src/ Makefile` SHOULD still show: the slimmed `user_blob` recipe in the Makefile, and the `sh_elf` references in `vm.c`/`tests.c` (these are correct and intended). Confirm no `lisp_blob`/`initrd` remain.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Verify the OS still boots from the ext2 root**
+
+Run the non-destructive boot check (adapt to the real `Qemu` API in `tools/lm_harness.py`):
+```bash
+python3 - <<'PY'
+import sys; sys.path.insert(0, "tools")
+from lm_harness import Qemu
+q = Qemu()
+try:
+    assert q.expect(b"rootfs: / mounted (ext2)", 40), "root not mounted"
+    assert q.expect(b"lisp> ", 40), "no REPL"
+    q.send_line('(ls "/bin")')
+    assert q.expect(b"busybox", 10), "/bin missing on disk"
+    print("BOOT-FROM-DISK OK")
+finally:
+    try: q.close()
+    except Exception: pass
+PY
+```
+Expected: `BOOT-FROM-DISK OK` — proves the runnable userland is read from disk, not the kernel.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add -A
-git commit -m "build(fs): drop kernel-embedded userland (user_blob/lisp_blob/initrd) -- now on disk"
+git commit -m "build(fs): drop embedded userland + lisp_blob + initrd; keep only sh.elf as VM-test fixture"
 ```
 
 ---
