@@ -101,7 +101,9 @@ photograph itself: `(screenshot "/shot.ppm")`.
   create/write/grow (allocating indirect blocks on demand), truncate, and
   unlink — all write-through, leaving an `e2fsck`-clean image. On-device edits
   and newly created files survive reboots; the `/boots` counter proves it
-  (verified by `tools/persist_check.py`).
+  (verified by `tools/persist_check.py`). Rebuilding `disk.img` (`make` when its
+  inputs change, or `make fresh-disk`) is a deliberate reflash that resets the
+  system files — the running machine never touches them except when you save.
 - **Network interface** — a **virtio-net** driver that sends and receives raw
   Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
 - **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum
@@ -232,9 +234,10 @@ photograph itself: `(screenshot "/shot.ppm")`.
   Lisp. Start the network REPL with `(run "lisp" "-serve")` and hack the
   running machine from Emacs.
 
-Where it goes next lives in **[docs/ROADMAP.md](docs/ROADMAP.md)** — currently
-Phase 25: the **graphical Lisp machine** (Emacs architecture, tiled buffers,
-multiple swappable Lisp VMs).
+Where it goes next lives in **[docs/ROADMAP.md](docs/ROADMAP.md)** — most
+recently Phase 29: the **persistent ext2 root filesystem** (the build installs
+the userland onto the disk image; the kernel mounts ext2 as `/`; on-device edits
+survive reboots).
 
 ## Try it
 
