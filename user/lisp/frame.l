@@ -76,21 +76,32 @@ the buffer, read-string turns text into a form, eval runs it."
 
 (defun new-repl ()
   "Turn the selected window's buffer into a FRESH REPL buffer in repl-mode."
+  (interactive)
   (let ((b (make-buffer "*repl*")))
     (set-major-mode b 'repl-mode)                         ; prompts via repl-setup
     b))
 
+(defun repl ()
+  "M-x repl: open a fresh REPL in its own *repl* buffer (Emacs-style command).
+In the frame this shadows system.l's blocking demo `repl`, whose read loop
+would freeze the event loop."
+  (interactive)
+  (new-repl))
+
 (defun repl-here ()
   "C-x r: turn the current window's buffer into a fresh REPL (clear + prompt)."
+  (interactive)
   (goto-char (buffer-length)) (delete-char (buffer-length))   ; clear the buffer
   (set-major-mode (current-buffer) 'repl-mode))
 
 (defun split-repl-below ()
   "C-x 2: split, and give the new (lower) window its own fresh REPL."
+  (interactive)
   (split-below) (other-window) (new-repl) (redisplay))
 
 (defun split-repl-right ()
   "C-x 3: split side by side, fresh REPL in the new (right) window."
+  (interactive)
   (split-right) (other-window) (new-repl) (redisplay))
 
 ;; ---- basic Emacs motion + editing commands -----------------------------
@@ -259,18 +270,20 @@ line, and run the mode's setup-fn."
 ;; can never drift from what the keys actually do. Commands are named functions
 ;; so C-h k can show each one's living source via describe-function-text.
 
-(defun cmd-beginning-of-line () (goto-char (bol-pos)))
-(defun cmd-end-of-line () (goto-char (eol-pos)))
+(defun cmd-beginning-of-line () (interactive) (goto-char (bol-pos)))
+(defun cmd-end-of-line () (interactive) (goto-char (eol-pos)))
 (defun cmd-backward-char ()
+  (interactive)
   (let ((lo (edit-lo))) (if (> (point) lo) (goto-char (- (point) 1)) nil)))
 (defun cmd-forward-char ()
+  (interactive)
   (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
-(defun cmd-delete-forward () (del-fwd 1))
-(defun cmd-forward-word () (goto-char (fwd-word-pos)))
-(defun cmd-backward-word () (goto-char (bwd-word-pos)))
-(defun cmd-history-prev () (repl-history-prev))
-(defun cmd-history-next () (repl-history-next))
-(defun cmd-describe-function () (mb-start 'describe))
+(defun cmd-delete-forward () (interactive) (del-fwd 1))
+(defun cmd-forward-word () (interactive) (goto-char (fwd-word-pos)))
+(defun cmd-backward-word () (interactive) (goto-char (bwd-word-pos)))
+(defun cmd-history-prev () (interactive) (repl-history-prev))
+(defun cmd-history-next () (interactive) (repl-history-next))
+(defun cmd-describe-function () (interactive) (mb-start 'describe))
 
 (setq global-keymap
   (list
@@ -295,6 +308,7 @@ so forget help-buf and let show-help re-split next time."
 
 (defun switch-to-buffer ()
   "C-x b: pick a buffer by name in the minibuffer and show it here."
+  (interactive)
   (mb-start 'switch))
 
 (setq cx-keymap
@@ -388,10 +402,11 @@ write."
     (redisplay)
     b))
 
-(defun cmd-find-file () (mb-start 'find-file))         ; C-x C-f
+(defun cmd-find-file () (interactive) (mb-start 'find-file))         ; C-x C-f
 
 (defun save-buffer ()
   "Write the current buffer back to the file it is visiting (C-x C-s)."
+  (interactive)
   (let ((path (buffer-local-get (current-buffer) 'file-path nil)))
     (if path
         (let ((fd (creat path)))
@@ -416,9 +431,37 @@ write."
 (setq mb-top 0)             ; first VISIBLE candidate -- the scroll offset
 (setq mb-rows 8)            ; how many candidates the echo area shows at once
 
+;; ---- (interactive): mark a defun as an M-x command (Emacs-style) ----------
+;; A command declares itself by making (interactive) its FIRST body form. At
+;; run time (interactive) is a harmless no-op; M-x reads it as data via
+;; function-info to decide what to OFFER. This keeps M-x to real commands and
+;; away from internal helpers and blocking loops (e.g. system.l's demo `repl`).
+(defun interactive () nil)
+
+(defun interactive-form-p (f)
+  "t when F is the call (interactive ...)."
+  (and (consp f) (eq (car f) 'interactive)))
+
+(defun command-p (sym)
+  "t when SYM is a defun declaring (interactive) as its first real body form.
+defun stores a single-form body as-is and a multi-form body wrapped in
+(progn ...). A docstring, if present, is the FIRST progn element (this Lisp
+keeps it as a literal form rather than stripping it), so (interactive) may be
+either the first OR the second progn element -- accept both."
+  (let ((info (function-info sym)))
+    (and info
+         (eq (car info) 'lambda)
+         (let ((body (caddr info)))
+           (and (consp body)
+                (or (eq (car body) 'interactive)            ; body IS (interactive)
+                    (and (eq (car body) 'progn)             ; body is (progn ...)
+                         (or (interactive-form-p (cadr body))     ; (progn (interactive) ...)
+                             (interactive-form-p (caddr body))    ; (progn "doc" (interactive) ...)
+                             ))))))))
+
 (defun command-symbols ()
-  "Every symbol whose function slot holds something runnable."
-  (filter (lambda (s) (function-info s)) (all-symbols)))
+  "Every interactive command -- the M-x palette (see command-p / (interactive))."
+  (filter (lambda (s) (command-p s)) (all-symbols)))
 
 ;; The minibuffer is generic over its candidates: each action supplies a
 ;; SOURCE (the full candidate list) and a LABEL (the display/match string for
@@ -528,6 +571,7 @@ the very lambda the machine runs -- which you can redefine."
 
 (defun list-buffers ()
   "C-x C-b: every live buffer in a *Help* window, the current one marked '*'."
+  (interactive)
   (let ((here (current-buffer))
         (txt "=== Buffers ===\n\n"))
     (foreach (lambda (e)
@@ -539,6 +583,7 @@ the very lambda the machine runs -- which you can redefine."
 
 (defun describe-bindings ()
   "C-h b: every key binding (current mode's keymap + the global maps)."
+  (interactive)
   (show-help (string-concat
     "=== Key bindings ===\n\n"
     "-- " (mode-line-name-of (buffer-mode (current-buffer))) " mode --\n"
@@ -552,6 +597,7 @@ the very lambda the machine runs -- which you can redefine."
 
 (defun describe-mode ()
   "C-h m: describe the selected buffer's mode (its doc + the keys it adds)."
+  (interactive)
   (let ((m (buffer-mode (current-buffer))))
     (show-help (string-concat
       "=== " (mode-line-name-of m) " mode ===\n\n"
@@ -571,6 +617,7 @@ the very lambda the machine runs -- which you can redefine."
   "C-h k: read a key (following a C-x / C-h prefix) and report the command it
 runs, with that command's living source -- read from the same keymaps dispatch
 uses, so it is always accurate."
+  (interactive)
   (echo "Describe key: press a key")
   (redisplay)
   (let ((ev (read-event)))
@@ -594,7 +641,8 @@ uses, so it is always accurate."
       ((eq action 'mx)
        (let ((sym (if sel sel (read-string input))))
          (let ((val (eval (list sym))))
-           (flush-output) (insert (prin1-to-string val)) (insert "\n") (prompt))))
+           (flush-output)
+           (echo (prin1-to-string val)))))
       ((eq action 'describe)
        (show-help (describe-function-text (if sel sel (read-string input))))))))
 
@@ -786,6 +834,7 @@ in surface-mode so keys are inert and the mode line reads (Surface)."
 (defun teapot ()
   "The Utah teapot, spinning in a buffer: split the window, give the new
 half a surface canvas, and run /bin/teapot (TinyGL) into it."
+  (interactive)
   (split-below)
   (other-window)
   (let ((sb (make-surface "*teapot*" 480 360)))

@@ -61,14 +61,15 @@ def main() -> int:
         time.sleep(1.0)
         ctrl("x"); time.sleep(0.2); qmp_type("r"); time.sleep(0.8)  # C-x r: REPL in this window
 
-        # M-x spli -> the candidate list must narrow to the split commands.
+        # M-x split-repl -> the candidate list must narrow to the interactive
+        # split commands (split-below is a C primitive now, so not offered).
         meta_x()
         time.sleep(0.5)
-        qmp_type("spli")
+        qmp_type("split-repl")
         time.sleep(1.5)
         tail, _ = rows_of(font, dump, 6)
         flat = " | ".join(t for t in tail if t)
-        if "M-x spli" not in flat or "split-below" not in flat:
+        if "M-x split-repl" not in flat or "split-repl-below" not in flat:
             print(f"FAIL: vertico candidates missing: {flat!r}"); return 1
         print(f"ok: M-x narrows live: {flat!r}")
 
