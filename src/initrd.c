@@ -66,6 +66,13 @@ static const char hello_c[] =
 extern unsigned char bootstrap_l[]; extern unsigned int bootstrap_l_len;
 extern unsigned char system_l[];    extern unsigned int system_l_len;
 extern unsigned char modes_l[];     extern unsigned int modes_l_len;
+extern unsigned char fr_repl_l[];   extern unsigned int fr_repl_l_len;
+extern unsigned char fr_edit_l[];   extern unsigned int fr_edit_l_len;
+extern unsigned char fr_modes_l[];  extern unsigned int fr_modes_l_len;
+extern unsigned char fr_keys_l[];   extern unsigned int fr_keys_l_len;
+extern unsigned char fr_files_l[];  extern unsigned int fr_files_l_len;
+extern unsigned char fr_mini_l[];   extern unsigned int fr_mini_l_len;
+extern unsigned char fr_help_l[];   extern unsigned int fr_help_l_len;
 extern unsigned char frame_l[];     extern unsigned int frame_l_len;
 
 // Write an embedded program into the filesystem at `path`.
@@ -128,6 +135,13 @@ void initrd_unpack(void)
     add_prog("/lib/bootstrap.l", bootstrap_l, (uint64_t)bootstrap_l_len);
     add_prog("/lib/system.l",    system_l,    (uint64_t)system_l_len);
     add_prog("/lib/modes.l",     modes_l,     (uint64_t)modes_l_len);
+    add_prog("/lib/fr-repl.l",   fr_repl_l,   (uint64_t)fr_repl_l_len);
+    add_prog("/lib/fr-edit.l",   fr_edit_l,   (uint64_t)fr_edit_l_len);
+    add_prog("/lib/fr-modes.l",  fr_modes_l,  (uint64_t)fr_modes_l_len);
+    add_prog("/lib/fr-keys.l",   fr_keys_l,   (uint64_t)fr_keys_l_len);
+    add_prog("/lib/fr-files.l",  fr_files_l,  (uint64_t)fr_files_l_len);
+    add_prog("/lib/fr-mini.l",   fr_mini_l,   (uint64_t)fr_mini_l_len);
+    add_prog("/lib/fr-help.l",   fr_help_l,   (uint64_t)fr_help_l_len);
     add_prog("/lib/frame.l",     frame_l,     (uint64_t)frame_l_len);
     add_prog("/lib/mycrt.o", mycrt_elf, (uint64_t)mycrt_elf_len);    // crt TCC links in
 }

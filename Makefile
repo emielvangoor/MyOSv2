@@ -30,7 +30,7 @@ DEP  := $(OBJ:.o=.d)
 # segments at load/exec time.
 PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest teapot
 # The .l files embedded into the kernel and unpacked to /lib by the initrd.
-LISP_FILES  := bootstrap system modes frame
+LISP_FILES  := bootstrap system modes fr-repl fr-edit fr-modes fr-keys fr-files fr-mini fr-help frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 
