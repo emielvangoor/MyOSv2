@@ -152,12 +152,14 @@ move right K and delete K -- those K become the chars that were ahead."
 
 (defun kill-line ()
   "C-k: kill to end of line; if already at the line end, eat the newline."
-  (let ((e (eol-pos)))
-    (if (> e (point)) (del-fwd (- e (point)))
-      (if (< (point) (buffer-length)) (del-fwd 1) nil))))
+  (if (read-only-p) (echo "buffer is read-only")
+    (let ((e (eol-pos)))
+      (if (> e (point)) (del-fwd (- e (point)))
+        (if (< (point) (buffer-length)) (del-fwd 1) nil)))))
 
 (defun kill-word ()       ; M-d
-  (let ((e (fwd-word-pos))) (if (> e (point)) (del-fwd (- e (point))) nil)))
+  (if (read-only-p) (echo "buffer is read-only")
+    (let ((e (fwd-word-pos))) (if (> e (point)) (del-fwd (- e (point))) nil))))
 
 ;; ---- the major modes (the MODEL is in modes.l; definitions live here) ----
 ;; Each mode names handler functions that touch the buffer (insert, prompt,
@@ -171,26 +173,33 @@ move right K and delete K -- those K become the chars that were ahead."
 ;;     fundamental-mode      (adds text self-insert / RET)
 ;;       text / repl / lisp-interaction
 
-(defun ignore-char (ch) ch)              ; inert: a key in the canvas does nothing
-(defun ignore-ret () nil)
+;; The basic text handlers, shared by every mode (in read-only modes they're
+;; simply never reached -- dispatch blocks modification, the Emacs way).
+(defun fundamental-self-insert (ch) (insert (string-from-char ch)))
+(defun fundamental-return () (insert "\n"))
+
+;; Descriptor index 7 is the read-only marker: 'ro (navigable, not editable) or
+;; 'rw (editable), inherited up the parent chain like every other field. This
+;; is Emacs's buffer-read-only model -- special/surface buffers move point fine
+;; (C-a/C-n work) but interactive insert/delete is refused. special-mode is the
+;; read-only root; fundamental-mode flips to 'rw, so its children (text/repl/
+;; lisp-interaction) are editable while surface (a child of special) stays 'ro.
 (register-mode 'special-mode
-  (list nil nil 'ignore-char 'ignore-ret nil
-        "Special: an inert displayed buffer. Typing does nothing; ctrl/meta keys
-fall through to the global keymap (so C-x o etc. still work)."
-        "Special"))
+  (list nil nil 'fundamental-self-insert 'fundamental-return nil
+        "Special: a displayed but read-only buffer -- navigable, not editable.
+ctrl/meta keys fall through to the global keymap."
+        "Special" 'ro))
 
 (register-mode 'surface-mode
   (list 'special-mode nil nil nil nil
         "Surface: a pixel canvas an external renderer (e.g. the teapot) draws
-into. Keys do nothing -- it is not text."
-        "Surface"))
+into. Read-only -- it is not text."
+        "Surface"))                          ; inherits 'ro from special-mode
 
-(defun fundamental-self-insert (ch) (insert (string-from-char ch)))
-(defun fundamental-return () (insert "\n"))
 (register-mode 'fundamental-mode
   (list 'special-mode nil 'fundamental-self-insert 'fundamental-return nil
         "Fundamental mode: text self-inserts; RET inserts a newline."
-        "Fundamental"))
+        "Fundamental" 'rw))                  ; editable (overrides special's 'ro)
 
 (register-mode 'text-mode
   (list 'fundamental-mode nil nil nil nil
@@ -253,6 +262,7 @@ EFFECT-FN called with t/nil when the mode turns on/off."
   "Make BUF use MODE-SYM: record it (buffer-local), select it, paint the mode
 line (major name + any active minor lighters), and run the mode's setup-fn."
   (buffer-local-set buf 'major-mode mode-sym)
+  (buffer-local-set buf 'read-only (eq (mode-read-only mode-sym) 'ro))  ; Emacs read-only model
   (set-buffer buf)
   ;; refresh-mode-line reads buffer-mode (just set) + active minors, so the bar
   ;; always reflects major + minors -- not just the bare major name.
@@ -335,7 +345,7 @@ effect, repaint the mode line, redisplay, and echo the new state."
 (defun cmd-forward-char ()
   (interactive)
   (if (< (point) (buffer-length)) (goto-char (+ (point) 1)) nil))
-(defun cmd-delete-forward () (interactive) (del-fwd 1))
+(defun cmd-delete-forward () (interactive) (if (read-only-p) (echo "buffer is read-only") (del-fwd 1)))
 (defun cmd-forward-word () (interactive) (goto-char (fwd-word-pos)))
 (defun cmd-backward-word () (interactive) (goto-char (bwd-word-pos)))
 (defun cmd-history-prev () (interactive) (repl-history-prev))
@@ -346,6 +356,11 @@ effect, repaint the mode line, redisplay, and echo the new state."
 ;; next line. repl-mode REBINDS C-p/C-n to history in its own keymap, which
 ;; dispatch consults before the global map -- so history is REPL-only and
 ;; never leaks into a file buffer.
+(defun read-only-p ()
+  "t when the current buffer is read-only (special/surface): interactive
+modification is refused, but motion still works -- Emacs's model."
+  (buffer-local-get (current-buffer) 'read-only nil))
+
 (defun cur-column () (- (point) (bol-pos)))
 (defun cmd-previous-line ()
   (interactive)
@@ -464,10 +479,14 @@ Minor maps take precedence over the major mode (Emacs order)."
            (t (run-mode-or-global ev))))                  ; mode keymap then global
     ((eq (car ev) 'char)
      (let ((m (buffer-mode (current-buffer))) (ch (cadr ev)))
-       (cond
-         ((= ch 10) (eval (list (mode-return-fn m))))     ; RET: mode decides
-         ((= ch 8) (mode-backspace m))                    ; backspace
-         (t (eval (list (mode-self-insert-fn m) ch))))))  ; printable: mode decides
+       ;; Every char-branch action (RET=newline, backspace, self-insert) MODIFIES
+       ;; the buffer, so a read-only buffer refuses them all -- motion (the ctrl
+       ;; branch above) still works, the Emacs way.
+       (if (read-only-p) (echo "buffer is read-only")
+         (cond
+           ((= ch 10) (eval (list (mode-return-fn m))))   ; RET: mode decides
+           ((= ch 8) (mode-backspace m))                  ; backspace
+           (t (eval (list (mode-self-insert-fn m) ch))))))) ; printable: mode decides
     (t nil)))
 
 ;; ---- visiting files: open, edit, save (Phase 27.3) ----------------------
@@ -640,9 +659,16 @@ the very lambda the machine runs -- which you can redefine."
   "Pop *Help* in the other window (splitting on first use), Emacs-style."
   (if help-buf nil
     (progn (setq help-buf (make-buffer "*Help*"))
+           ;; *Help* is read-only special-mode: you can navigate it (C-n/C-p),
+           ;; but not type into it. show-help fills it with the `insert`
+           ;; PRIMITIVE below, which is programmatic and so not gated by the
+           ;; read-only check (that only refuses interactive modification).
+           (buffer-local-set help-buf 'major-mode 'special-mode)
+           (buffer-local-set help-buf 'read-only t)
            (split-below)))
   (other-window)
   (set-buffer help-buf)
+  (refresh-mode-line)    ; paint "(Special)" for the *Help* window
   (goto-char (buffer-length))
   (delete-char (buffer-length))
   (insert txt)

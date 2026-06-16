@@ -36,6 +36,7 @@ Returns nil when the mode is unregistered or the chain reaches a nil parent."
 (defun mode-setup-fn (sym)       (mode-field sym 4))
 (defun mode-doc (sym)            (mode-field sym 5))
 (defun mode-line-name-of (sym)   (mode-field sym 6))
+(defun mode-read-only (sym)      (mode-field sym 7))   ; 'ro / 'rw, inherited
 
 ;; ---- keymaps (key-lookup MOVED here from frame.l so the serial REPL has it)
 (defun key-lookup (ev km)
