@@ -107,6 +107,14 @@ static int ramfs_write(struct vnode *vn, uint64_t off, const void *buf, uint64_t
     return (int)len;
 }
 
+static int ramfs_truncate(struct vnode *vn)
+{
+    struct ramfs_node *n = vn->priv;   // keep the buffer (cap); just reset length
+    n->size = 0;
+    vn->size = 0;
+    return 0;
+}
+
 static int ramfs_readdir(struct vnode *dir, int index, char *name_out)
 {
     struct ramfs_node *d = dir->priv;
@@ -124,6 +132,7 @@ const struct vnode_ops ramfs_ops = {
     .lookup = ramfs_lookup,
     .create = ramfs_create,
     .readdir = ramfs_readdir,
+    .truncate = ramfs_truncate,
 };
 
 static struct vnode *ramfs_mount(void)

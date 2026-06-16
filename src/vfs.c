@@ -158,6 +158,12 @@ int vfs_readdir(struct vnode *dir, int index, char *name_out)
     return dir->ops->readdir(dir, index, name_out);
 }
 
+int vfs_truncate(struct vnode *vn)
+{
+    if (!vn->ops->truncate) { return -1; }
+    return vn->ops->truncate(vn);
+}
+
 void vfs_close(struct file *f)
 {
     if (--f->ref > 0) { return; }     // other fds still reference this file

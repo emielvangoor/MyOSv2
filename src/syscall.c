@@ -112,7 +112,9 @@ long do_syscall(struct trapframe *tf)
     case SYS_OPENAT: {                      // x0=dirfd, x1=path, x2=flags, x3=mode
         // dirfd is AT_FDCWD only; paths resolve against the process cwd (a
         // relative path is joined onto it -- see resolve_path). O_CREAT makes a
-        // missing file; O_TRUNC is not yet honored (the SFS can't shrink).
+        // missing file; O_TRUNC resets an existing file to 0 bytes -- so
+        // rewriting a file (e.g. C-x C-s, or `cc` re-emitting an output) replaces
+        // its contents rather than leaving a stale tail past the new length.
         char path[256];
         resolve_path((const char *)(uintptr_t)tf->x[1], path, sizeof(path));
         int flags = (int)tf->x[2];
@@ -124,6 +126,7 @@ long do_syscall(struct trapframe *tf)
             f = vfs_open(path);
         }
         if (!f) { ret = -ENOENT; break; }
+        if ((flags & O_TRUNC) && f->vnode) { vfs_truncate(f->vnode); f->off = 0; }
         ret = -EMFILE;
         for (int i = 3; i < 16; i++) {
             if (!fds[i]) { fds[i] = f; ret = i; break; }

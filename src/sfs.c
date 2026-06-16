@@ -136,6 +136,17 @@ static int sfs_write(struct vnode *vn, uint64_t off, const void *buf, uint64_t l
     return (int)done;
 }
 
+static int sfs_truncate(struct vnode *vn)
+{
+    uint32_t inum = inum_of(vn);
+    struct sfs_inode ino;
+    rd_inode(inum, &ino);
+    ino.size = 0;               // logical truncate: size 0 (direct[] blocks stay
+    wr_inode(inum, &ino);       // allocated, reused/overwritten by the next write)
+    vn->size = 0;
+    return 0;
+}
+
 // --- directory ops (one data block of dirents) ---
 
 static struct vnode *sfs_lookup(struct vnode *dir, const char *name)
@@ -215,6 +226,7 @@ static int sfs_readdir(struct vnode *dir, int index, char *name_out)
 const struct vnode_ops sfs_ops = {
     .read = sfs_read, .write = sfs_write,
     .lookup = sfs_lookup, .create = sfs_create, .readdir = sfs_readdir,
+    .truncate = sfs_truncate,
 };
 
 // --- mkfs / mount ---

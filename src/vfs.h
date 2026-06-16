@@ -13,6 +13,7 @@ struct vnode_ops {
     struct vnode *(*lookup)(struct vnode *dir, const char *name);
     struct vnode *(*create)(struct vnode *dir, const char *name, int type);
     int (*readdir)(struct vnode *dir, int index, char *name_out); // 0=ok, -1=done
+    int (*truncate)(struct vnode *vn);          // shrink to 0 bytes (O_TRUNC)
 };
 
 struct vnode {
@@ -45,5 +46,6 @@ struct file  *vfs_open(const char *path);
 int           vfs_read(struct file *f, void *buf, uint64_t len);
 int           vfs_write(struct file *f, const void *buf, uint64_t len);
 int           vfs_readdir(struct vnode *dir, int index, char *name_out);
+int           vfs_truncate(struct vnode *vn);   // O_TRUNC: reset the file to 0 bytes
 void          vfs_close(struct file *f);
 struct file  *file_dup(struct file *f);   // bump the reference count; returns f

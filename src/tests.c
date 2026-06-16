@@ -660,6 +660,31 @@ static void test_vfs_write_grows(void)
     vfs_close(r);
 }
 
+// O_TRUNC / re-save: truncate resets size to 0, and a shorter rewrite leaves
+// NO stale tail (the bug where C-x C-s kept the old text past the new length).
+static void test_vfs_truncate(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/f", VN_FILE);
+    struct file *w = vfs_open("/f");
+    vfs_write(w, "LONG-OLD-CONTENT", 16);
+    vfs_close(w);
+    struct vnode *vn = vfs_lookup("/f");
+    KASSERT(vn->size == 16);
+    vfs_truncate(vn);                       // O_TRUNC
+    KASSERT(vn->size == 0);
+    struct file *w2 = vfs_open("/f");
+    vfs_write(w2, "NEW", 3);                // shorter rewrite
+    vfs_close(w2);
+    KASSERT(vn->size == 3);                 // size shrank -- no stale 16 bytes
+    struct file *r = vfs_open("/f");
+    char buf[20] = {0};
+    KASSERT(vfs_read(r, buf, 16) == 3);     // only the new 3 bytes are readable
+    KASSERT(bytes_eq(buf, "NEW", 3));
+    vfs_close(r);
+}
+
 static void test_vfs_readdir_lists(void)
 {
     pmm_init(); kheap_init();
@@ -2758,6 +2783,7 @@ static const struct ktest tests[] = {
     { "vfs: write then read",             test_vfs_write_then_read },
     { "vfs: read at offset",              test_vfs_read_offset },
     { "vfs: write grows file",            test_vfs_write_grows },
+    { "vfs: truncate resets file",        test_vfs_truncate },
     { "vfs: readdir lists entries",       test_vfs_readdir_lists },
     { "vfs: lookup missing -> null",      test_vfs_lookup_missing },
     { "vfs: nested directory",            test_vfs_nested_dir },
