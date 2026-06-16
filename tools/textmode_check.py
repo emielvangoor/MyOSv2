@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 textmode_check.py -- C-x C-f opens a file in text-mode in the current window;
-edit + C-x C-s saves; the mode line reads (Text). Uses the persistent /disk so
-a re-open in a fresh boot would find it; here we verify within one boot by
-reading it back via the serial REPL helper (cat).
+edit + C-x C-s saves; the mode line reads (Text). Saves onto the persistent
+ext2 root / so a re-open in a fresh boot would find it; here we verify within
+one boot by reading it back via the serial REPL helper (cat).
 """
 import os, sys, tempfile, time
 sys.path.insert(0, "tools")
@@ -35,7 +35,7 @@ def main() -> int:
             print("FAIL: frame did not load"); return 1
         time.sleep(1.0)
         ctrl("x"); time.sleep(0.2); ctrl("f"); time.sleep(0.5)   # C-x C-f
-        qmp_type("/disk/note.txt\n"); time.sleep(0.8)            # path in minibuffer
+        qmp_type("/note.txt\n"); time.sleep(0.8)                # path in minibuffer (ext2 root)
         qmp_type("hello text mode"); time.sleep(0.6)            # edit in text-mode
         ctrl("x"); time.sleep(0.2); ctrl("s"); time.sleep(0.8)   # C-x C-s save
         qmp_screendump(dump); time.sleep(0.5)

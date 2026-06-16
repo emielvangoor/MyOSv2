@@ -553,9 +553,9 @@ DEFGFX("prin1-to-string", Gprin1str, 1, 1) {
 
 /* ---- the machine photographs itself ---------------------------------------- */
 
-/* (screenshot "/disk/shot.ppm") -> dump the framebuffer as a binary PPM (P6)
- * to a file. The fb is just process memory and /disk is the persistent SFS,
- * so the OS can keep evidence of what its screen looked like. */
+/* (screenshot "/shot.ppm") -> dump the framebuffer as a binary PPM (P6)
+ * to a file. The fb is just process memory and the root / is the persistent
+ * ext2 filesystem, so the OS can keep evidence of what its screen looked like. */
 DEFGFX("screenshot", Gscreenshot, 1, 1) {
     (void)env;
     const char *path = req_string(CAR(args), "screenshot: expected a path");

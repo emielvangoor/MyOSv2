@@ -151,7 +151,7 @@ DEFSYS("open", Sopen, 1, 1) {
 }
 
 /* (creat path) -> fd: open, creating the file if missing. How the machine
- * writes its own configuration: (let ((fd (creat "/disk/init.l"))) ...). */
+ * writes its own configuration: (let ((fd (creat "/init.l"))) ...). */
 DEFSYS("creat", Screat, 1, 1) {
     (void)env;
     return FIXNUM(sys_creat(req_string(CAR(args), "creat: path must be a string")));

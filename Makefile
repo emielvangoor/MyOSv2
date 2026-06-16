@@ -105,10 +105,11 @@ all: $(TARGET)
 $(BUILD):
 	mkdir -p $(BUILD)
 
-# The /disk filesystem is now a real ext2 image, built ON THE HOST with mke2fs's
-# `-d` (populate from a directory) so it ships pre-loaded with /init.l and the
-# KTEST fixtures -- the kernel only has to READ it (Phase 1 is read-only). One
-# ext2 block = 1024 bytes (forced -b 1024 => 2 disk sectors per block, matching
+# The ROOT filesystem is a real ext2 image, built ON THE HOST with mke2fs's
+# `-d` (populate from a directory) so it ships pre-loaded with the full userland
+# (/bin, /lib, /usr), /init.l, and the KTEST fixtures -- the kernel mounts it as
+# / and reads what the host laid down. One ext2 block = 1024 bytes (forced
+# -b 1024 => 2 disk sectors per block, matching
 # the driver). MKE2FS is overridable for other hosts.
 MKE2FS  ?= /opt/homebrew/share/android-commandlinetools/platform-tools/mke2fs
 DISK_MB := 64
