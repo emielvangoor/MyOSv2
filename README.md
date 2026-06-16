@@ -127,6 +127,17 @@ photograph itself: `(screenshot "/shot.ppm")`.
 - **Program arguments** — `exec` passes `argv` to programs; the shell tokenizes
   the command line, so `/bin/ping <host>` and friends get their arguments.
 - **`shutdown`** — a shell command that halts the machine via PSCI (QEMU exits).
+- **Linux/aarch64 ABI (musl)** — the syscall ABI *is* the Linux aarch64 ABI
+  (numbers in `x8`, negative-errno, the `*at`-family, an `auxv` initial stack),
+  so **unmodified static musl binaries run**: `/bin/busybox` (echo, `uname -a`,
+  `ls` via `getdents64`, …) and small `aarch64-linux-musl-gcc -static` programs.
+  See **[docs/superpowers/specs/2026-06-15-musl-port-design.md](docs/superpowers/specs/2026-06-15-musl-port-design.md)**.
+- **Compiles C *on the machine*** — `/bin/tcc` is a static-musl
+  [TinyCC](https://repo.or.cz/tinycc.git) that runs on MyOSv2 and compiles +
+  links C in one process. `(cc "/hello.c" "/hello")` builds a runnable static
+  ELF, and `(run-file "/hello")` runs it — a C compiler hosted on the OS, not a
+  cross-compile. (Freestanding for now, linking `user/musl/mycrt.S`; a full libc
+  sysroot for `#include <stdio.h>` is next. Build notes: `user/musl/README-tcc.md`.)
 - **Lisp machine** — `/bin/lisp` is a full **Emacs-architecture Lisp** running at
   EL0: tagged 64-bit objects, a **mark-and-sweep collector with conservative
   C-stack scanning** (so it can collect mid-computation in a long-lived process),

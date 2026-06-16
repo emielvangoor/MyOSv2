@@ -44,7 +44,7 @@ MUSL_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(MUSL_PROGS))
 # Prebuilt static-musl binaries embedded in the initrd as-is (built from source
 # with CONFIG_STATIC + -Wl,-Ttext-segment=0x8000000000; see user/musl/*.bin).
 # busybox is the forcing function for the long syscall tail.
-PREBUILT_PROGS := busybox
+PREBUILT_PROGS := busybox tcc
 PREBUILT_ELFS  := $(patsubst %,$(BUILD)/user/%.elf,$(PREBUILT_PROGS))
 # -z max-page-size=4096: align segments to 4 KiB (our page size) instead of the
 # AArch64 default 64 KiB, so PT_LOAD vaddrs/offsets are page-aligned and small.
@@ -171,10 +171,18 @@ $(BUILD)/user/%.elf: user/musl/%.bin | $(BUILD)
 	mkdir -p $(BUILD)/user
 	cp $< $@
 
+# A tiny gcc-built C runtime (_start + syscall stubs) that the on-device TCC
+# links user programs against -- so `tcc hello.c /lib/mycrt.o` produces a
+# runnable static ELF without a full libc sysroot. Built -c (relocatable .o);
+# named .elf only so the blob step picks it up uniformly.
+$(BUILD)/user/mycrt.elf: user/musl/mycrt.S | $(BUILD)
+	mkdir -p $(BUILD)/user
+	$(MUSL_CC) -c -o $@ $<
+
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
-$(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS)
+$(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf
 	cd $(BUILD)/user && : > ../user_blob.c && \
-	  for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do xxd -i $$p.elf >> ../user_blob.c; done
+	  for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS) mycrt; do xxd -i $$p.elf >> ../user_blob.c; done
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@

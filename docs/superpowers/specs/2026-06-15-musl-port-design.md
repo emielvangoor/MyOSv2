@@ -42,10 +42,19 @@ separate per-process mode.
   `wait4` (fork/exec/wait + Linux exit-status encoding), `lseek`/`fstat`/
   `newfstatat`. Demonstrated by `mmalloc`, `mfork`, `mfile`.
 - ✅ **B-SP4** — **static-musl busybox 1.36.1 runs cleanly.** `busybox echo`,
-  `uname -a` (`Linux ... aarch64`), `true` all work. VA layout spread for the
-  ~1.25 MB image; `getuid`/`uname` added. The forcing function is in:
-  `[syscall] unhandled #N` drives the long tail (getdents64/pipe2/dup3/… →
-  more applets → gcc).
+  `uname -a` (`Linux ... aarch64`), `true`, `ls` (`getdents64`) all work. VA
+  layout spread for the ~1.25 MB image; `getuid`/`uname` added.
+- ✅ **B-SP5** — **a C compiler runs ON the machine.** `/bin/tcc` is a
+  static-musl TinyCC (one `svc`-encoding backend patch; built per
+  `user/musl/README-tcc.md`). It compiles + links C in a single process — no
+  `cc1`/`as`/`ld` pipeline — so `(cc "/hello.c" "/hello")` produces a runnable
+  static ELF on MyOSv2 and `(run-file "/hello")` runs it. Freestanding (links
+  `user/musl/mycrt.S` for `_start` + the write syscall; TCC's inline asm can't
+  emit `svc`, and there's no libc here yet). Two requirements the loader forces:
+  build `-static -no-pie` (no dynamic linker) and `-Wl,-Ttext=0x8000000000`
+  (the clean user VA). Verified by `tools/tcc_check.py`. **Next:** a musl libc
+  sysroot on disk (headers + `libc.a` + `crt*.o`) so `#include <stdio.h>` /
+  `printf` link — then a real `hello.c`, and onward toward GCC.
 
 ## Decomposition (each its own spec → plan → build)
 

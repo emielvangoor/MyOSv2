@@ -1,0 +1,53 @@
+diff --git a/arm64-asm.c b/arm64-asm.c
+index d34ff21..cd1dca0 100644
+--- a/arm64-asm.c
++++ b/arm64-asm.c
+@@ -1156,6 +1156,35 @@ static void gen_barrier(int barrier_type, int option)
+ }
+ 
+ /* Handle barrier instructions */
++/* Exception-generating instructions: svc/hvc/brk #imm16.
++   Encoding: 1101 0100 ooo imm16 000LL (svc=0xd4000001, hvc=0xd4000002,
++   brk=0xd4200000); the 16-bit immediate sits in bits [20:5]. */
++static void asm_exception(TCCState *s1, int token)
++{
++    Operand op;
++    uint32_t base;
++
++    switch (token) {
++        case TOK_ASM_svc: base = 0xd4000001; break;
++        case TOK_ASM_hvc: base = 0xd4000002; break;
++        case TOK_ASM_brk: base = 0xd4200000; break;
++        default:
++            tcc_error("unknown exception instruction");
++            return;
++    }
++
++    parse_operand(s1, &op);
++    if (!(op.type & OP_IM) || op.e.sym) {
++        tcc_error("exception instruction expects an immediate");
++        return;
++    }
++    if ((uint64_t)op.e.v > 0xffff) {
++        tcc_error("exception immediate out of range");
++        return;
++    }
++    gen_le32(base | ((uint32_t)op.e.v << 5));
++}
++
+ static void asm_barrier(TCCState *s1, int token)
+ {
+     int barrier_type, option;
+@@ -1805,6 +1834,12 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+             asm_barrier(s1, opcode);
+             break;
+ 
++        case TOK_ASM_svc:
++        case TOK_ASM_hvc:
++        case TOK_ASM_brk:
++            asm_exception(s1, opcode);
++            break;
++
+         case TOK_ASM_nop:
+             gen_nop();
+             break;

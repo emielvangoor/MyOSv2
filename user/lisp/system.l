@@ -51,6 +51,22 @@ init keeps the serial REPL alive."
         (progn (exec (bin-path (car cmdargs)) cmdargs) (exit 127))
       pid)))
 
+;; ---- compiling C ON the machine (TCC) --------------------------------
+
+(defun cc (src out)
+  "(cc \"/hello.c\" \"/hello\") -> compile + link SRC into a runnable static
+ELF at OUT using the on-device C compiler (/bin/tcc). Wraps the flags MyOSv2
+needs: -static -no-pie (our loader has no dynamic linker), linked at the user
+VA base, against /lib/mycrt.o (which supplies _start + the write syscall, since
+TCC has no libc here). Evaluates to tcc's exit status (0 = success)."
+  (run "tcc" "-static" "-nostdlib" "-Wl,-Ttext=0x8000000000"
+       src "/lib/mycrt.o" "-o" out))
+
+(defun run-file (path)
+  "(run-file \"/hello\") -> exec the program at PATH (an absolute path, e.g. one
+just produced by (cc ...)). Unlike (run NAME), this does NOT prepend /bin."
+  (run-prog-raw path (list path)))
+
 ;; ---- pipelines -------------------------------------------------------
 
 (defun pipe-stages-raw (left right)

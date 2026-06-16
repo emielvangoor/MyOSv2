@@ -46,6 +46,21 @@ extern unsigned char mmalloc_elf[]; extern unsigned int mmalloc_elf_len; // musl
 extern unsigned char mfork_elf[];   extern unsigned int mfork_elf_len;   // musl
 extern unsigned char mfile_elf[];   extern unsigned int mfile_elf_len;   // musl
 extern unsigned char busybox_elf[]; extern unsigned int busybox_elf_len; // prebuilt musl
+extern unsigned char tcc_elf[];     extern unsigned int tcc_elf_len;     // TCC: a C compiler
+extern unsigned char mycrt_elf[];   extern unsigned int mycrt_elf_len;   // crt + syscall stub
+
+// A hello world for TCC to compile ON the machine. It is pure C -- the runtime
+// glue (_start, the write syscall) lives in /lib/mycrt.o, which TCC links in:
+//   tcc -nostdlib -Wl,-Ttext=0x8000000000 /hello.c /lib/mycrt.o -o /hello
+// TCC compiles hello.c and links it against the gcc-built stub into a static
+// ELF our loader runs. This proves on-device C COMPILATION + LINKING (the goal)
+// without depending on TCC's limited inline assembler or a full libc sysroot.
+static const char hello_c[] =
+    "void print(const char *, long);\n"
+    "int main(void){\n"
+    "  print(\"hello from tcc on myosv2\\n\", 25);\n"
+    "  return 0;\n"
+    "}\n";
 
 // The embedded Lisp source (from user/lisp/*.l, via build/lisp_blob.c).
 extern unsigned char bootstrap_l[]; extern unsigned int bootstrap_l_len;
@@ -102,11 +117,15 @@ void initrd_unpack(void)
     add_prog("/bin/mfork", mfork_elf, (uint64_t)mfork_elf_len);
     add_prog("/bin/mfile", mfile_elf, (uint64_t)mfile_elf_len);
     add_prog("/bin/busybox", busybox_elf, (uint64_t)busybox_elf_len);
+    add_prog("/bin/tcc", tcc_elf, (uint64_t)tcc_elf_len);            // the C compiler
+    add_prog("/hello.c", hello_c, (uint64_t)(sizeof(hello_c) - 1));  // source to compile
 
     // The Lisp standard library (bootstrap.l = the language, system.l = the
-    // shell), loaded by /bin/lisp at startup.
+    // shell), loaded by /bin/lisp at startup. /lib also holds mycrt.o, the
+    // crt the on-device TCC links user programs against.
     vfs_create("/lib", VN_DIR);
     add_prog("/lib/bootstrap.l", bootstrap_l, (uint64_t)bootstrap_l_len);
     add_prog("/lib/system.l",    system_l,    (uint64_t)system_l_len);
     add_prog("/lib/frame.l",     frame_l,     (uint64_t)frame_l_len);
+    add_prog("/lib/mycrt.o", mycrt_elf, (uint64_t)mycrt_elf_len);    // crt TCC links in
 }
