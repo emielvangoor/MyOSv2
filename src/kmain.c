@@ -24,7 +24,7 @@
 #include "proc.h"
 #include "shm.h"
 #include "block.h"
-#include "sfs.h"
+#include "ext2.h"
 #include "net.h"
 #include "input.h"
 #include "gfx.h"
@@ -85,32 +85,22 @@ void kmain(void)
     // --- Block device + persistent /disk filesystem ---
     virtio_blk_init();
     if (block_present()) {
-        vfs_mount_at("/disk", sfs_mount());
+        // Mount the host-built ext2 image at /disk. A blank/zeroed disk (or a
+        // non-ext2 image) fails the magic check; ext2_mount returns NULL and we
+        // leave /disk unmounted (graceful) rather than mounting garbage.
+        struct vnode *disk = ext2_mount();
+        if (disk) {
+            vfs_mount_at("/disk", disk);
+            kprintf("disk: /disk mounted (ext2)\n");
+        } else {
+            kprintf("disk: present but not ext2 (unmounted)\n");
+        }
 
-        // Persistence demo: a boot counter stored in /disk/boots. It survives
-        // reboots because the disk image is a real file -- re-running `make run`
-        // shows it increment.
-        int n = 0;
-        struct file *bf = vfs_open("/disk/boots");
-        if (bf) {
-            char b[16] = {0};
-            int k = vfs_read(bf, b, 15);
-            for (int i = 0; i < k && b[i] >= '0' && b[i] <= '9'; i++) { n = n * 10 + (b[i] - '0'); }
-            vfs_close(bf);
-        }
-        n++;
-        if (!vfs_lookup("/disk/boots")) { vfs_create("/disk/boots", VN_FILE); }
-        struct file *wf = vfs_open("/disk/boots");
-        if (wf) {
-            char b[16]; int i = 0, v = n; char t[16]; int j = 0;
-            if (v == 0) { t[j++] = '0'; }
-            while (v) { t[j++] = (char)('0' + v % 10); v /= 10; }
-            while (j) { b[i++] = t[--j]; }
-            wf->off = 0;
-            vfs_write(wf, b, i);
-            vfs_close(wf);
-        }
-        kprintf("disk: /disk mounted (boot count %d)\n", n);
+        // TODO(ext2 Phase 2): re-enable the persistent /disk/boots boot counter
+        // once the ext2 write path (create/write/truncate) lands. ext2 is
+        // read-only in Phase 1, so the counter (which WRITES) is disabled. The
+        // boot seed /init.l is only READ at boot, so the read path still drives
+        // the frame autostart.
     } else {
         kprintf("disk: none\n");
     }

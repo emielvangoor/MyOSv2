@@ -91,8 +91,10 @@ photograph itself: `(screenshot "/shot.ppm")`.
   trampoline), and **Ctrl-C** → `SIGINT` to the foreground program.
 - **Block device** — a **virtio-blk** disk driver on a generic virtio-mmio +
   virtqueue layer, reading and writing 512-byte sectors.
-- **Persistent filesystem** — a small on-disk inode FS (SFS) mounted at `/disk`;
-  files survive reboots.
+- **Persistent filesystem** — a real on-disk **ext2** filesystem mounted at
+  `/disk` (inodes with direct + single/double/triple indirect blocks, so files
+  are no longer capped at a few KiB). The image is host-built with `mke2fs -d`,
+  shipping pre-loaded with `/init.l`. Read path is live; write is Phase 2.
 - **Network interface** — a **virtio-net** driver that sends and receives raw
   Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
 - **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum

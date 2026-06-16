@@ -28,7 +28,7 @@
 #include "pipe.h"
 #include "signal.h"
 #include "block.h"
-#include "sfs.h"
+#include "ext2.h"
 #include "virtio.h"
 #include "input.h"
 #include "gfx.h"
@@ -1961,8 +1961,12 @@ static void test_block_write_read(void)
     virtio_blk_init();
     static uint8_t w[512], r[512];
     for (int i = 0; i < 512; i++) { w[i] = (uint8_t)(i * 7 + 3); r[i] = 0; }
-    KASSERT(block_write(1, w) == 0);
-    KASSERT(block_read(1, r) == 0);
+    // Write a HIGH scratch sector (far past the ext2 metadata + fixtures, which
+    // live in low blocks): /disk is now a real ext2 image, so scribbling on
+    // sector 1/2/3 would corrupt the superblock/group-descriptors and break the
+    // ext2: read tests. The disk is 64 MiB == 131072 sectors; 100000 is unused.
+    KASSERT(block_write(100000, w) == 0);
+    KASSERT(block_read(100000, r) == 0);
     for (int i = 0; i < 512; i++) { KASSERT(r[i] == w[i]); }
 }
 
@@ -1973,77 +1977,84 @@ static void test_block_two_sectors(void)
     virtio_blk_init();
     static uint8_t a[512], b[512], ra[512], rb[512];
     for (int i = 0; i < 512; i++) { a[i] = (uint8_t)i; b[i] = (uint8_t)(255 - i); }
-    KASSERT(block_write(2, a) == 0);
-    KASSERT(block_write(3, b) == 0);
-    KASSERT(block_read(2, ra) == 0);
-    KASSERT(block_read(3, rb) == 0);
+    // High scratch sectors, away from the ext2 image's live metadata/fixtures.
+    KASSERT(block_write(100002, a) == 0);
+    KASSERT(block_write(100003, b) == 0);
+    KASSERT(block_read(100002, ra) == 0);
+    KASSERT(block_read(100003, rb) == 0);
     for (int i = 0; i < 512; i++) { KASSERT(ra[i] == a[i] && rb[i] == b[i]); }
 }
 
-// --- on-disk filesystem (Phase 20) ---
+// --- on-disk filesystem: ext2 READ (Phase 1) ---
+//
+// These run against the host-built ext2 image baked into build/disk.img by the
+// Makefile (`mke2fs -b 1024 -d build/rootfs`), with deterministic fixtures:
+//   /test/small.txt -- exactly "ext2-small-file-ok\n"
+//   /test/big.bin    -- 16384 bytes of `yes 0123456789ABCDEF` (a 17-byte
+//                       repeating pattern "0123456789ABCDEF\n"), which spans well
+//                       past the 12 direct blocks (12*1024 = 12288), so reading
+//                       offset 13000 exercises a single-indirect block.
 
-static void test_sfs_create_write_read(void)
+static void test_ext2_mount_root_is_dir(void)
 {
     if (!DISK_TESTS) { return; }
-    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
-    struct vnode *r = sfs_mount();
-    KASSERT(r && r->type == VN_DIR);
-    struct vnode *f = r->ops->create(r, "f", VN_FILE);
-    KASSERT(f != 0);
-    struct file fh = { .vnode = f, .off = 0 };
-    KASSERT(vfs_write(&fh, "hello", 5) == 5);
-    char b[8] = {0};
+    pmm_init(); kheap_init(); virtio_blk_init();
+    struct vnode *r = ext2_mount();
+    KASSERT(r != 0);
+    KASSERT(r->type == VN_DIR);                      // inode 2 is the root dir
+}
+
+static void test_ext2_read_small_file(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+    struct vnode *f = vfs_lookup("/disk/test/small.txt");
+    KASSERT(f != 0 && f->type == VN_FILE);
+    const char *want = "ext2-small-file-ok\n";
+    int wlen = 0; while (want[wlen]) { wlen++; }     // 19 bytes
+    KASSERT((int)f->size == wlen);
+    char b[32] = {0};
     struct file fr = { .vnode = f, .off = 0 };
-    KASSERT(vfs_read(&fr, b, 8) == 5);
-    KASSERT(b[0] == 'h' && b[4] == 'o');
-    KASSERT(f->size == 5);
+    KASSERT(vfs_read(&fr, b, sizeof(b)) == wlen);
+    for (int i = 0; i < wlen; i++) { KASSERT(b[i] == want[i]); }
 }
 
-static void test_sfs_persists_remount(void)
+static void test_ext2_read_indirect(void)
 {
     if (!DISK_TESTS) { return; }
-    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
-    struct vnode *r = sfs_mount();
-    struct vnode *f = r->ops->create(r, "p", VN_FILE);
-    struct file fh = { .vnode = f, .off = 0 };
-    vfs_write(&fh, "persist", 7);
-    struct vnode *r2 = sfs_mount();                  // fresh vnodes from disk
-    struct vnode *f2 = r2->ops->lookup(r2, "p");
-    KASSERT(f2 != 0);
-    char b[8] = {0};
-    struct file fr = { .vnode = f2, .off = 0 };
-    KASSERT(vfs_read(&fr, b, 8) == 7);
-    KASSERT(b[0] == 'p' && b[6] == 't');
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+    struct vnode *f = vfs_lookup("/disk/test/big.bin");
+    KASSERT(f != 0 && f->type == VN_FILE);
+    KASSERT(f->size == 16384);                       // spans past the 12 direct blocks
+
+    // Read a single byte at offset 13000 (file block 12 -> single indirect). The
+    // file is `yes 0123456789ABCDEF` = the 17-byte pattern "0123456789ABCDEF\n"
+    // repeated, so byte N == pattern[N % 17].
+    const char *pat = "0123456789ABCDEF\n";
+    char b = 0;
+    struct file fr = { .vnode = f, .off = 13000 };
+    KASSERT(vfs_read(&fr, &b, 1) == 1);
+    KASSERT(b == pat[13000 % 17]);                   // 13000 % 17 == 12 -> 'C'
 }
 
-static void test_sfs_readdir(void)
+static void test_ext2_readdir_test_dir(void)
 {
     if (!DISK_TESTS) { return; }
-    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
-    struct vnode *r = sfs_mount();
-    r->ops->create(r, "aa", VN_FILE);
-    r->ops->create(r, "bb", VN_FILE);
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+    struct vnode *d = vfs_lookup("/disk/test");
+    KASSERT(d != 0 && d->type == VN_DIR);
     char n[32]; int seen = 0;
-    for (int i = 0; r->ops->readdir(r, i, n) == 0; i++) {
-        if (n[0] == 'a' && n[1] == 'a') { seen |= 1; }
-        if (n[0] == 'b' && n[1] == 'b') { seen |= 2; }
+    for (int i = 0; vfs_readdir(d, i, n) == 0; i++) {
+        if (n[0] == 's' && n[5] == '.' && n[6] == 't') { seen |= 1; }   // small.txt
+        if (n[0] == 'b' && n[3] == '.' && n[4] == 'b') { seen |= 2; }   // big.bin
     }
-    KASSERT(seen == 3);
-}
-
-static void test_sfs_multiblock(void)
-{
-    if (!DISK_TESTS) { return; }
-    pmm_init(); kheap_init(); virtio_blk_init(); sfs_mkfs();
-    struct vnode *r = sfs_mount();
-    struct vnode *f = r->ops->create(r, "big", VN_FILE);
-    static uint8_t w[600], rb[600];
-    for (int i = 0; i < 600; i++) { w[i] = (uint8_t)(i * 3 + 1); rb[i] = 0; }
-    struct file fh = { .vnode = f, .off = 0 };
-    KASSERT(vfs_write(&fh, w, 600) == 600);          // spans direct[0] and direct[1]
-    struct file fr = { .vnode = f, .off = 0 };
-    KASSERT(vfs_read(&fr, rb, 600) == 600);
-    for (int i = 0; i < 600; i++) { KASSERT(rb[i] == w[i]); }
+    KASSERT(seen == 3);                              // both fixtures present
 }
 
 static void test_vfs_mount_at(void)
@@ -2051,14 +2062,11 @@ static void test_vfs_mount_at(void)
     if (!DISK_TESTS) { return; }
     pmm_init(); kheap_init(); virtio_blk_init();
     vfs_mount_root(ramfs_type());
-    sfs_mkfs();
-    vfs_mount_at("/disk", sfs_mount());
+    vfs_mount_at("/disk", ext2_mount());
     struct vnode *d = vfs_lookup("/disk");
-    KASSERT(d && d->type == VN_DIR);                 // the mounted FS root
-    struct vnode *f = vfs_create("/disk/x", VN_FILE); // create routes into SFS
-    KASSERT(f != 0);
-    KASSERT(vfs_lookup("/disk/x") != 0);             // and is found there
-    KASSERT(vfs_lookup("/disk/nope") == 0);
+    KASSERT(d && d->type == VN_DIR);                 // the mounted ext2 root
+    KASSERT(vfs_lookup("/disk/test/small.txt") != 0);// a baked file is found
+    KASSERT(vfs_lookup("/disk/nope") == 0);          // a missing one is not
 }
 
 // --- virtio-net (Phase 21) ---
@@ -2847,10 +2855,10 @@ static const struct ktest tests[] = {
     { "block: disk present",              test_block_present },
     { "block: write then read sector",    test_block_write_read },
     { "block: two sectors independent",   test_block_two_sectors },
-    { "sfs: create write read",           test_sfs_create_write_read },
-    { "sfs: persists across remount",     test_sfs_persists_remount },
-    { "sfs: readdir lists entries",       test_sfs_readdir },
-    { "sfs: multi-block file",            test_sfs_multiblock },
+    { "ext2: mount root is dir",          test_ext2_mount_root_is_dir },
+    { "ext2: read small file",            test_ext2_read_small_file },
+    { "ext2: read large file via indirect", test_ext2_read_indirect },
+    { "ext2: readdir lists /test",        test_ext2_readdir_test_dir },
     { "vfs: mount at /disk",              test_vfs_mount_at },
     { "input: two devices present",       test_input_devices_present },
     { "input: driver present",            test_input_present },

@@ -100,25 +100,40 @@ all: $(TARGET)
 $(BUILD):
 	mkdir -p $(BUILD)
 
-# A 4 MiB raw disk image for the virtio-blk device (created once if missing).
+# The /disk filesystem is now a real ext2 image, built ON THE HOST with mke2fs's
+# `-d` (populate from a directory) so it ships pre-loaded with /init.l and the
+# KTEST fixtures -- the kernel only has to READ it (Phase 1 is read-only). One
+# ext2 block = 1024 bytes (forced -b 1024 => 2 disk sectors per block, matching
+# the driver). MKE2FS is overridable for other hosts.
+MKE2FS  ?= /opt/homebrew/share/android-commandlinetools/platform-tools/mke2fs
+DISK_MB := 64
+
+# Stage build/rootfs/ then bake it into an ext2 image. /init.l boots the frame;
+# the test/ fixtures are deterministic (known content + sizes) for the ext2:
+# read KTESTs -- big.bin is 16 KiB so it spans past the 12 direct blocks and
+# forces a single-indirect read.
 $(BUILD)/disk.img: | $(BUILD)
-	dd if=/dev/zero of=$@ bs=1m count=4 2>/dev/null
+	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test
+	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
+	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
+	yes 0123456789ABCDEF | head -c 16384 > $(BUILD)/rootfs/test/big.bin
+	dd if=/dev/zero of=$@ bs=1m count=$(DISK_MB) 2>/dev/null
+	$(MKE2FS) -t ext2 -F -q -b 1024 -d $(BUILD)/rootfs $@
 
 # The PERSISTENT disk for interactive runs: lives at the repo root (gitignored)
-# so `make clean` / `make test` never destroy it -- /disk/init.l and anything
-# else the machine writes survives. Tests keep using the build-local (blank)
-# scratch. A FRESH persistent disk is pre-seeded with /init.l (via mkdisk.py)
-# so it boots straight into the graphical frame; existing disks are left alone.
+# so `make clean` never destroys it -- anything the machine writes survives. It
+# is just a copy of the freshly built ext2 image (which already boots the frame
+# via /init.l); existing disks are left alone.
 DISK := disk.img
-$(DISK):
-	python3 tools/mkdisk.py $@
+$(DISK): $(BUILD)/disk.img
+	cp $(BUILD)/disk.img $@
 
-# Rebuild the persistent disk from scratch (re-seeds /init.l). Destroys any
-# files the machine wrote -- run it when the frame stops autostarting.
+# Rebuild the persistent disk from scratch (re-bakes the ext2 image, re-seeds
+# /init.l). Destroys any files the machine wrote.
 .PHONY: fresh-disk
 fresh-disk:
-	rm -f $(DISK)
-	python3 tools/mkdisk.py $(DISK)
+	rm -f $(DISK) $(BUILD)/disk.img
+	$(MAKE) --no-print-directory $(DISK)
 
 $(BUILD)/%.o: src/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@

@@ -15,6 +15,7 @@ including, fatally, the newline. The TCP path has no such limit.
 import json
 import os
 import select
+import shutil
 import socket
 import subprocess
 import time
@@ -26,11 +27,17 @@ GUEST_PORT = 7777
 HOST_PORT = 17777
 QMP_SOCK = f"/tmp/myosv2-qmp-{os.getpid()}.sock"
 
-# A pristine scratch disk per run: checks must not inherit the user's
-# persistent /disk (e.g. an init.l that boots the frame at startup).
+# A private scratch disk per run, isolated from the user's persistent /disk so
+# concurrent runs never collide. /disk is now ext2 (not a zeroed SFS), so the
+# scratch is a COPY of the host-built ext2 image (build/disk.img): it mounts as
+# valid ext2 and ships /init.l, so the frame/serial checks boot the same way a
+# real run does. A zeroed truncate would fail the ext2 magic check and leave
+# /disk unmounted.
 SCRATCH_DISK = f"/tmp/myosv2-test-disk-{os.getpid()}.img"
-with open(SCRATCH_DISK, "wb") as _f:
-    _f.truncate(4 * 1024 * 1024)
+_BUILT_DISK = "build/disk.img"
+if not os.path.exists(_BUILT_DISK):
+    raise RuntimeError(f"{_BUILT_DISK} missing -- run `make` before the harness")
+shutil.copyfile(_BUILT_DISK, SCRATCH_DISK)
 
 QEMU_CMD = [
     "qemu-system-aarch64",
