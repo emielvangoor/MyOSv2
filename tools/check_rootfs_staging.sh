@@ -6,7 +6,7 @@ make --no-print-directory build/disk.img >/dev/null
 R=build/rootfs
 fail=0
 for f in \
-  bin/init bin/lisp bin/sh bin/busybox bin/tcc bin/teapot \
+  bin/init bin/lisp bin/lm bin/sh bin/busybox bin/tcc bin/teapot \
   lib/bootstrap.l lib/system.l lib/frame.l lib/mycrt.o \
   hello.c hellobare.c \
   usr/include/stdio.h usr/lib/libc.a usr/lib/libtcc1.a \
