@@ -1964,6 +1964,31 @@ static void test_process_groups(void)
     KASSERT(sched_setpgid(9999, 0) == -1);           // no such pid
 }
 
+// The real aarch64 kill/setpgid numbers (129/154) that busybox's libc emits must
+// dispatch to the same scheduler logic as the legacy MyOSv2 numbers (20/44).
+static void test_kill_setpgid_linux_numbers(void)
+{
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *a = thread_create(sig_noop, 0, 1);
+    struct thread *b = thread_create(sig_noop, 0, 1);
+    struct trapframe tf;
+    // setpgid@154: b joins a's group.
+    tf.x[8] = SYS_SETPGID_LINUX; tf.x[0] = (uint64_t)b->id; tf.x[1] = (uint64_t)a->id;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);
+    KASSERT(b->pgid == a->id);
+    // kill@129 of the whole group reaches both.
+    tf.x[8] = SYS_KILL_LINUX; tf.x[0] = (uint64_t)(-a->id); tf.x[1] = SIGTERM;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);
+    KASSERT(a->sig_pending & (1ull << SIGTERM));
+    KASSERT(b->sig_pending & (1ull << SIGTERM));
+    // kill@129 of a missing pid still fails like the legacy path.
+    tf.x[8] = SYS_KILL_LINUX; tf.x[0] = 9999; tf.x[1] = SIGTERM;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == -1);
+}
+
 static void test_sig_default_vs_handler(void)
 {
     pmm_init(); kheap_init(); vm_init(); sched_init();
@@ -3065,6 +3090,7 @@ static const struct ktest tests[] = {
     { "sig: kill by pid",                 test_kill_by_pid },
     { "sig: default vs handler action",   test_sig_default_vs_handler },
     { "sig: process groups (kill -pgid)", test_process_groups },
+    { "sig: kill/setpgid linux numbers",  test_kill_setpgid_linux_numbers },
     { "block: disk present",              test_block_present },
     { "block: write then read sector",    test_block_write_read },
     { "block: two sectors independent",   test_block_two_sectors },

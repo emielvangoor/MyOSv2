@@ -708,6 +708,8 @@ long do_syscall(struct trapframe *tf)
         //   F_GETFL  -> O_RDWR (2): busybox probes fds to decide blocking vs. non-blocking;
         //              O_RDWR is the safest answer -- it implies no O_NONBLOCK bit.
         //   F_SETFL  -> 0 (accepted, ignored; we are always blocking)
+        //   F_DUPFD  -> dup the fd into the lowest free slot >= arg (real dup:
+        //              ash uses this for job control, so 0/stdin would be wrong)
         //   unknown  -> 0 (lenient no-op; prevents ENOSYS from breaking shell scripts)
         int cmd = (int)tf->x[1];
         switch (cmd) {
@@ -715,6 +717,18 @@ long do_syscall(struct trapframe *tf)
         case F_SETFD: ret = 0; break;
         case F_GETFL: ret = 2; break;   // O_RDWR
         case F_SETFL: ret = 0; break;
+        case F_DUPFD: {                 // x0=fd, x2=lowest acceptable new fd
+            struct file **fds = sched_current_fds();
+            uint64_t fd = tf->x[0];
+            int min = (int)tf->x[2];
+            if (!fds || fd >= 16 || !fds[fd]) { ret = -EBADF; break; }
+            if (min < 0) { min = 0; }
+            ret = -EMFILE;
+            for (int i = min; i < 16; i++) {
+                if (!fds[i]) { fds[i] = file_dup(fds[fd]); ret = i; break; }
+            }
+            break;
+        }
         default:      ret = 0; break;
         }
         break;
