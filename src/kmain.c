@@ -19,8 +19,6 @@
 #include "semihost.h"
 #include "sched.h"
 #include "vfs.h"
-#include "ramfs.h"
-#include "initrd.h"
 #include "proc.h"
 #include "shm.h"
 #include "block.h"
@@ -77,57 +75,50 @@ void kmain(void)
     pmm_init();
     kheap_init();
 
-    // --- 4. Filesystem: mount ramfs as root and unpack the initrd into it ---
-    // (the shell at /bin/init lives here, so this must happen before we spawn it)
-    vfs_mount_root(ramfs_type());
-    initrd_unpack();
-
-    // --- Block device + persistent /disk filesystem ---
+    // --- 4. Block device + ext2 ROOT filesystem ---
+    // The root '/' is the persistent ext2 image on the virtio-blk disk -- the
+    // Linux model: the build "installs" the userland (/bin, /lib, /usr, seed
+    // files) onto the image, and we mount it here. There is no ramfs root and no
+    // initrd to unpack; on-device edits live on disk and survive reboots. A
+    // blank/corrupt/non-ext2 disk has no root to boot, so we halt with a clear
+    // message -- the spirit of Linux's "VFS: Unable to mount root fs".
     virtio_blk_init();
-    if (block_present()) {
-        // Mount the host-built ext2 image at /disk. A blank/zeroed disk (or a
-        // non-ext2 image) fails the magic check; ext2_mount returns NULL and we
-        // leave /disk unmounted (graceful) rather than mounting garbage.
-        struct vnode *disk = ext2_mount();
-        if (disk) {
-            vfs_mount_at("/disk", disk);
-            kprintf("disk: /disk mounted (ext2)\n");
-        } else {
-            kprintf("disk: present but not ext2 (unmounted)\n");
-        }
+    if (!block_present()) {
+        kprintf("VFS: no block device -- cannot mount root fs\n");
+        for (;;) { __asm__ volatile("wfi"); }
+    }
+    vfs_mount_root(ext2_type());
+    if (!vfs_root()) {
+        kprintf("VFS: unable to mount root fs (ext2 mount failed)\n");
+        for (;;) { __asm__ volatile("wfi"); }
+    }
+    kprintf("rootfs: / mounted (ext2)\n");
 
-        // Persistence demo: a boot counter stored in /disk/boots. It survives
-        // reboots because the disk image is a real file -- re-running `make run`
-        // shows it increment. Now backed by the ext2 write path (Phase 2):
-        // create/write/truncate go straight through to the block device.
-        if (disk) {
-            int n = 0;
-            struct file *bf = vfs_open("/disk/boots");
-            if (bf) {
-                char b[16] = {0};
-                int k = vfs_read(bf, b, 15);
-                for (int i = 0; i < k && b[i] >= '0' && b[i] <= '9'; i++) { n = n * 10 + (b[i] - '0'); }
-                vfs_close(bf);
-            }
-            n++;
-            if (!vfs_lookup("/disk/boots")) { vfs_create("/disk/boots", VN_FILE); }
-            struct file *wf = vfs_open("/disk/boots");
-            if (wf) {
-                // Rewrite from the start; truncate first so a shorter number
-                // doesn't leave a stale digit tail past the new length.
-                if (wf->vnode) { vfs_truncate(wf->vnode); }
-                char b[16]; int i = 0, v = n; char t[16]; int j = 0;
-                if (v == 0) { t[j++] = '0'; }
-                while (v) { t[j++] = (char)('0' + v % 10); v /= 10; }
-                while (j) { b[i++] = t[--j]; }
-                wf->off = 0;
-                vfs_write(wf, b, i);
-                vfs_close(wf);
-            }
-            kprintf("disk: /disk/boots boot count %d\n", n);
+    // Persistence proof: a boot counter at /boots. It is now an ordinary file on
+    // the root filesystem, so it survives reboots without any special handling.
+    {
+        int n = 0;
+        struct file *bf = vfs_open("/boots");
+        if (bf) {
+            char b[16] = {0};
+            int k = vfs_read(bf, b, 15);
+            for (int i = 0; i < k && b[i] >= '0' && b[i] <= '9'; i++) { n = n * 10 + (b[i] - '0'); }
+            vfs_close(bf);
         }
-    } else {
-        kprintf("disk: none\n");
+        n++;
+        if (!vfs_lookup("/boots")) { vfs_create("/boots", VN_FILE); }
+        struct file *wf = vfs_open("/boots");
+        if (wf) {
+            if (wf->vnode) { vfs_truncate(wf->vnode); }
+            char b[16]; int i = 0, v = n; char t[16]; int j = 0;
+            if (v == 0) { t[j++] = '0'; }
+            while (v) { t[j++] = (char)('0' + v % 10); v /= 10; }
+            while (j) { b[i++] = t[--j]; }
+            wf->off = 0;
+            vfs_write(wf, b, i);
+            vfs_close(wf);
+        }
+        kprintf("rootfs: /boots boot count %d\n", n);
     }
 
     // --- Network interface ---

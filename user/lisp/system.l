@@ -44,7 +44,7 @@ argv[0] = the command name."
 
 (defun run-bg cmdargs
   "(run-bg \"lisp\" \"-frame\") -> start a program WITHOUT waiting; returns
-the child's pid. What /disk/init.l uses to boot the graphical machine while
+the child's pid. What /init.l uses to boot the graphical machine while
 init keeps the serial REPL alive."
   (let ((pid (fork)))
     (if (= pid 0)
@@ -56,28 +56,28 @@ init keeps the serial REPL alive."
 (defun cc (src out)
   "(cc \"/hello.c\" \"/hello\") -> compile + link SRC into a runnable static
 ELF at OUT using the on-device C compiler (/bin/tcc), against the REAL musl
-libc baked onto /disk (Phase 3 of ext2). So SRC may #include <stdio.h> and call
+libc baked onto the ext2 root /. So SRC may #include <stdio.h> and call
 printf -- the full hosted C library. The flags reconstruct the classic static
 crt link line by hand, because we link -nostdlib (tcc must not assume a host
 toolchain's default library/crt paths):
   -static -nostdlib            no dynamic linker (our loader has none), no
                                implicit libs -- we name every input ourselves
   -Wl,-Ttext=0x8000000000      the clean user VA base our loader maps into
-  -I/disk/usr/include          the musl headers (<stdio.h> et al.)
+  -I/usr/include               the musl headers (<stdio.h> et al.)
   crt1.o crti.o ... crtn.o     the C runtime startup, in the canonical order:
                                crt1 (_start -> __libc_start_main(main)), crti
                                (prologue of .init/.fini), then SRC, then -lc
                                and crtn (the .init/.fini epilogue) LAST.
-  -L/disk/usr/lib -lc          musl's static libc.a (printf, etc.)
+  -L/usr/lib -lc               musl's static libc.a (printf, etc.)
   libtcc1.a                    tcc's own codegen-support runtime (64-bit
                                div/mod, varargs glue, builtins) -- a tcc-built
                                object can reference these even when SRC doesn't.
 Evaluates to tcc's exit status (0 = success)."
   (run "tcc" "-nostdlib" "-static" "-Wl,-Ttext=0x8000000000"
-       "-I/disk/usr/include"
-       "/disk/usr/lib/crt1.o" "/disk/usr/lib/crti.o" src
-       "-L/disk/usr/lib" "-lc" "/disk/usr/lib/libtcc1.a"
-       "/disk/usr/lib/crtn.o" "-o" out))
+       "-I/usr/include"
+       "/usr/lib/crt1.o" "/usr/lib/crti.o" src
+       "-L/usr/lib" "-lc" "/usr/lib/libtcc1.a"
+       "/usr/lib/crtn.o" "-o" out))
 
 (defun cc-bare (src out)
   "(cc-bare \"/hello.c\" \"/hello\") -> the FREESTANDING path: compile + link
