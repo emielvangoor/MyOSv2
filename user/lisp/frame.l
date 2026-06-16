@@ -342,6 +342,28 @@ effect, repaint the mode line, redisplay, and echo the new state."
 (defun cmd-history-next () (interactive) (repl-history-next))
 (defun cmd-describe-function () (interactive) (mb-start 'describe))
 
+;; Line motion (C-p/C-n globally): move to the same column on the previous /
+;; next line. repl-mode REBINDS C-p/C-n to history in its own keymap, which
+;; dispatch consults before the global map -- so history is REPL-only and
+;; never leaks into a file buffer.
+(defun cur-column () (- (point) (bol-pos)))
+(defun cmd-previous-line ()
+  (interactive)
+  (let ((col (cur-column)) (bol (bol-pos)))
+    (if (> bol (edit-lo))
+        (progn (goto-char (- bol 1))               ; end of the previous line
+               (let ((pbol (bol-pos)) (plen (- (eol-pos) (bol-pos))))
+                 (goto-char (+ pbol (if (< col plen) col plen)))))
+      nil)))
+(defun cmd-next-line ()
+  (interactive)
+  (let ((col (cur-column)) (eol (eol-pos)))
+    (if (< eol (buffer-length))
+        (progn (goto-char (+ eol 1))               ; start of the next line
+               (let ((nbol (point)) (nlen (- (eol-pos) (point))))
+                 (goto-char (+ nbol (if (< col nlen) col nlen)))))
+      nil)))
+
 (setq global-keymap
   (list
     (list 'ctrl 97  'cmd-beginning-of-line "C-a    beginning of line")
@@ -350,8 +372,8 @@ effect, repaint the mode line, redisplay, and echo the new state."
     (list 'ctrl 102 'cmd-forward-char      "C-f    forward char (Right)")
     (list 'ctrl 100 'cmd-delete-forward    "C-d    delete forward char")
     (list 'ctrl 107 'kill-line             "C-k    kill to end of line")
-    (list 'ctrl 112 'cmd-history-prev      "C-p    previous history (Up)")
-    (list 'ctrl 110 'cmd-history-next      "C-n    next history (Down)")
+    (list 'ctrl 112 'cmd-previous-line     "C-p    previous line (Up)")
+    (list 'ctrl 110 'cmd-next-line         "C-n    next line (Down)")
     (list 'meta 102 'cmd-forward-word      "M-f    forward word")
     (list 'meta 98  'cmd-backward-word     "M-b    backward word")
     (list 'meta 100 'kill-word             "M-d    kill word")))
