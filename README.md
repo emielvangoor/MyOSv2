@@ -137,12 +137,14 @@ photograph itself: `(screenshot "/shot.ppm")`.
   so **unmodified static musl binaries run**: `/bin/busybox` (echo, `uname -a`,
   `ls` via `getdents64`, …) and small `aarch64-linux-musl-gcc -static` programs.
   See **[docs/superpowers/specs/2026-06-15-musl-port-design.md](docs/superpowers/specs/2026-06-15-musl-port-design.md)**.
-- **Compiles C *on the machine*** — `/bin/tcc` is a static-musl
-  [TinyCC](https://repo.or.cz/tinycc.git) that runs on MyOSv2 and compiles +
-  links C in one process. `(cc "/hello.c" "/hello")` builds a runnable static
-  ELF, and `(run-file "/hello")` runs it — a C compiler hosted on the OS, not a
-  cross-compile. (Freestanding for now, linking `user/musl/mycrt.S`; a full libc
-  sysroot for `#include <stdio.h>` is next. Build notes: `user/musl/README-tcc.md`.)
+- **Compiles C *on the machine*, against a real libc** — `/bin/tcc` is a
+  static-musl [TinyCC](https://repo.or.cz/tinycc.git) that runs on MyOSv2 and
+  compiles + links C in one process. A **musl sysroot is baked onto the ext2
+  `/disk`** (`/disk/usr/{include,lib}`), so `(cc "/hello.c" "/hello")` links a
+  `#include <stdio.h>` program that calls `printf` into a runnable static ELF,
+  and `(run-file "/hello")` runs it — a hosted C toolchain on the OS, not a
+  cross-compile. `(cc-bare ...)` keeps the freestanding (no-libc, `mycrt.S`)
+  path. Build notes: `user/musl/README-tcc.md`.
 - **Lisp machine** — `/bin/lisp` is a full **Emacs-architecture Lisp** running at
   EL0: tagged 64-bit objects, a **mark-and-sweep collector with conservative
   C-stack scanning** (so it can collect mid-computation in a long-lived process),

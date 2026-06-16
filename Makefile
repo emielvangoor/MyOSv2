@@ -108,15 +108,36 @@ $(BUILD):
 MKE2FS  ?= /opt/homebrew/share/android-commandlinetools/platform-tools/mke2fs
 DISK_MB := 64
 
+# The musl sysroot we bake onto /disk so the on-device TinyCC (/bin/tcc) can
+# compile programs that #include <stdio.h> and link against a real libc. We pull
+# the headers + the static-link objects (crt1/crti/crtn + libc.a) straight out
+# of the cross toolchain. -print-sysroot / -print-file-name resolve the exact
+# host paths (they vary: lib/ vs lib64/, include/ vs usr/include/), so we never
+# hard-code Homebrew's Cellar layout.
+MUSL_SYSROOT := $(shell $(MUSL_CC) -print-sysroot)
+# Headers ship under usr/include on this toolchain; fall back to include if a
+# host puts them at the sysroot root.
+MUSL_INC := $(firstword $(wildcard $(MUSL_SYSROOT)/usr/include $(MUSL_SYSROOT)/include))
+# Resolve the static-link objects by name -- they may live in lib/ or lib64/.
+print-musl = $(shell $(MUSL_CC) -print-file-name=$(1))
+
 # Stage build/rootfs/ then bake it into an ext2 image. /init.l boots the frame;
 # the test/ fixtures are deterministic (known content + sizes) for the ext2:
 # read KTESTs -- big.bin is 16 KiB so it spans past the 12 direct blocks and
-# forces a single-indirect read.
-$(BUILD)/disk.img: | $(BUILD)
+# forces a single-indirect read. We also stage the musl sysroot under
+# /disk/usr/{include,lib}: cp -RL on the headers DEREFERENCES symlinks (our ext2
+# driver has no symlink support, so the image must hold only real files).
+$(BUILD)/disk.img: $(BUILD)/user/libtcc1.a | $(BUILD)
 	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test
 	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
 	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
 	yes 0123456789ABCDEF | head -c 16384 > $(BUILD)/rootfs/test/big.bin
+	mkdir -p $(BUILD)/rootfs/usr/include $(BUILD)/rootfs/usr/lib
+	cp -RL $(MUSL_INC)/* $(BUILD)/rootfs/usr/include/
+	cp $(call print-musl,crt1.o) $(call print-musl,crti.o) \
+	   $(call print-musl,crtn.o) $(call print-musl,libc.a) \
+	   $(BUILD)/rootfs/usr/lib/
+	cp $(BUILD)/user/libtcc1.a $(BUILD)/rootfs/usr/lib/
 	dd if=/dev/zero of=$@ bs=1m count=$(DISK_MB) 2>/dev/null
 	$(MKE2FS) -t ext2 -F -q -b 1024 -d $(BUILD)/rootfs $@
 
@@ -193,6 +214,39 @@ $(BUILD)/user/%.elf: user/musl/%.bin | $(BUILD)
 $(BUILD)/user/mycrt.elf: user/musl/mycrt.S | $(BUILD)
 	mkdir -p $(BUILD)/user
 	$(MUSL_CC) -c -o $@ $<
+
+# libtcc1.a -- TinyCC's compiler-support runtime (the helpers tcc's codegen
+# *calls*: 64-bit division/modulo on a 32-bit-ish target, varargs glue,
+# __builtin_* fallbacks, atomics, alloca). A program tcc compiles can reference
+# these even if the .c never names them, so the link line must offer the archive
+# or the link fails with "undefined symbol". tcc normally builds this with
+# ITSELF; we can't run tcc on the host, so we compile the SAME arm64 runtime
+# sources (lib/Makefile's OBJ-arm64 set) with the cross musl-gcc instead -- the
+# resulting objects are ABI-compatible static arm64 code. The source lives at
+# $(TCC_SRC) (cloned + arm64-svc-patched in an earlier phase); overridable.
+TCC_SRC   ?= /tmp/tinycc
+# OBJ-arm64 from tcc's lib/Makefile is: lib-arm64 + the COMMON set + armflush +
+# dsohandle. We OMIT armflush.c: it calls __arm64_clear_cache, which is not a
+# real function but a code-builtin tcc emits inline (tccgen.c) -- so gcc can't
+# compile it, and it only matters for self-modifying code we never run. The .S
+# files are GNU-as assembly; musl-gcc drives the assembler.
+TCC1_SRCS := lib-arm64.c stdatomic.c builtin.c dsohandle.c \
+             atomic.S alloca.S alloca-bt.S
+TCC1_OBJS := $(patsubst %,$(BUILD)/user/libtcc1/%.o,$(basename $(TCC1_SRCS)))
+# tcc's runtime sources #include "../tcc.h"/config.h and use -DTCC_TARGET_ARM64.
+TCC1_CFLAGS := -c -O2 -Wall -I$(TCC_SRC) -DTCC_TARGET_ARM64 -DCONFIG_TCC_STATIC \
+               -fno-stack-protector -funwind-tables
+
+$(BUILD)/user/libtcc1/%.o: $(TCC_SRC)/lib/%.c | $(BUILD)
+	mkdir -p $(BUILD)/user/libtcc1
+	$(MUSL_CC) $(TCC1_CFLAGS) -o $@ $<
+
+$(BUILD)/user/libtcc1/%.o: $(TCC_SRC)/lib/%.S | $(BUILD)
+	mkdir -p $(BUILD)/user/libtcc1
+	$(MUSL_CC) $(TCC1_CFLAGS) -o $@ $<
+
+$(BUILD)/user/libtcc1.a: $(TCC1_OBJS)
+	aarch64-linux-musl-ar rcs $@ $(TCC1_OBJS)
 
 # Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
 $(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf

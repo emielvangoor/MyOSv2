@@ -55,10 +55,37 @@ init keeps the serial REPL alive."
 
 (defun cc (src out)
   "(cc \"/hello.c\" \"/hello\") -> compile + link SRC into a runnable static
-ELF at OUT using the on-device C compiler (/bin/tcc). Wraps the flags MyOSv2
-needs: -static -no-pie (our loader has no dynamic linker), linked at the user
-VA base, against /lib/mycrt.o (which supplies _start + the write syscall, since
-TCC has no libc here). Evaluates to tcc's exit status (0 = success)."
+ELF at OUT using the on-device C compiler (/bin/tcc), against the REAL musl
+libc baked onto /disk (Phase 3 of ext2). So SRC may #include <stdio.h> and call
+printf -- the full hosted C library. The flags reconstruct the classic static
+crt link line by hand, because we link -nostdlib (tcc must not assume a host
+toolchain's default library/crt paths):
+  -static -nostdlib            no dynamic linker (our loader has none), no
+                               implicit libs -- we name every input ourselves
+  -Wl,-Ttext=0x8000000000      the clean user VA base our loader maps into
+  -I/disk/usr/include          the musl headers (<stdio.h> et al.)
+  crt1.o crti.o ... crtn.o     the C runtime startup, in the canonical order:
+                               crt1 (_start -> __libc_start_main(main)), crti
+                               (prologue of .init/.fini), then SRC, then -lc
+                               and crtn (the .init/.fini epilogue) LAST.
+  -L/disk/usr/lib -lc          musl's static libc.a (printf, etc.)
+  libtcc1.a                    tcc's own codegen-support runtime (64-bit
+                               div/mod, varargs glue, builtins) -- a tcc-built
+                               object can reference these even when SRC doesn't.
+Evaluates to tcc's exit status (0 = success)."
+  (run "tcc" "-nostdlib" "-static" "-Wl,-Ttext=0x8000000000"
+       "-I/disk/usr/include"
+       "/disk/usr/lib/crt1.o" "/disk/usr/lib/crti.o" src
+       "-L/disk/usr/lib" "-lc" "/disk/usr/lib/libtcc1.a"
+       "/disk/usr/lib/crtn.o" "-o" out))
+
+(defun cc-bare (src out)
+  "(cc-bare \"/hello.c\" \"/hello\") -> the FREESTANDING path: compile + link
+SRC with NO libc, against /lib/mycrt.o (which supplies _start + a raw write
+syscall stub). SRC must declare its own prototypes (e.g. `void puts(...)`) --
+there are no headers and no printf. This is the original `cc`; keep it for the
+no-libc demos and for code that must not pull in musl. `cc` above is the
+hosted-libc path (printf works)."
   (run "tcc" "-static" "-nostdlib" "-Wl,-Ttext=0x8000000000"
        src "/lib/mycrt.o" "-o" out))
 

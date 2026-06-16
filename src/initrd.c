@@ -49,16 +49,28 @@ extern unsigned char busybox_elf[]; extern unsigned int busybox_elf_len; // preb
 extern unsigned char tcc_elf[];     extern unsigned int tcc_elf_len;     // TCC: a C compiler
 extern unsigned char mycrt_elf[];   extern unsigned int mycrt_elf_len;   // crt + syscall stub
 
-// A hello world for TCC to compile ON the machine. It is pure C -- the runtime
-// glue (_start, the write syscall) lives in /lib/mycrt.o, which TCC links in:
-//   tcc -nostdlib -Wl,-Ttext=0x8000000000 /hello.c /lib/mycrt.o -o /hello
-// TCC compiles hello.c and links it against the gcc-built stub into a static
-// ELF our loader runs. This proves on-device C COMPILATION + LINKING (the goal)
-// without depending on TCC's limited inline assembler or a full libc sysroot.
+// A hello world for TCC to compile ON the machine, against the REAL musl libc
+// baked onto the ext2 /disk (Phase 3). It #includes <stdio.h> and calls printf,
+// the full hosted C library -- so the `cc` Lisp helper links it as:
+//   tcc -nostdlib -static -Ttext=0x8000000000 -I/disk/usr/include
+//       /disk/usr/lib/crt1.o crti.o /hello.c -L/disk/usr/lib -lc
+//       libtcc1.a crtn.o -o /hello
+// This proves on-device C COMPILATION + LINKING against a real libc (the goal).
 static const char hello_c[] =
+    "#include <stdio.h>\n"
+    "int main(void){\n"
+    "  printf(\"hello from tcc on myosv2: x=%d s=%s\\n\", 42, \"ok\");\n"
+    "  return 0;\n"
+    "}\n";
+
+// A FREESTANDING hello for the no-libc path (the `cc-bare` Lisp helper +
+// /lib/mycrt.o). It declares its own prototype and uses puts (mycrt's syscall
+// stub), proving the original "compile + link without a sysroot" path still
+// works. tcc_check.py drives this one through cc-bare.
+static const char hellobare_c[] =
     "void puts(const char *);\n"
     "int main(void){\n"
-    "  puts(\"hello from tcc on myosv2\\n\");\n"   // edit this string + recompile
+    "  puts(\"hello from tcc on myosv2\\n\");\n"
     "  return 0;\n"
     "}\n";
 
@@ -126,7 +138,8 @@ void initrd_unpack(void)
     add_prog("/bin/mfile", mfile_elf, (uint64_t)mfile_elf_len);
     add_prog("/bin/busybox", busybox_elf, (uint64_t)busybox_elf_len);
     add_prog("/bin/tcc", tcc_elf, (uint64_t)tcc_elf_len);            // the C compiler
-    add_prog("/hello.c", hello_c, (uint64_t)(sizeof(hello_c) - 1));  // source to compile
+    add_prog("/hello.c", hello_c, (uint64_t)(sizeof(hello_c) - 1));  // libc printf source
+    add_prog("/hellobare.c", hellobare_c, (uint64_t)(sizeof(hellobare_c) - 1));  // freestanding source
 
     // The Lisp standard library (bootstrap.l = the language, system.l = the
     // shell), loaded by /bin/lisp at startup. /lib also holds mycrt.o, the

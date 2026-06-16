@@ -17,6 +17,12 @@ cd tinycc
 # Apply our one backend fix: TCC's arm64 inline assembler had no `svc`
 # (needed for syscalls). The patch adds svc/hvc/brk encoding.
 git apply /path/to/os/user/musl/tcc-arm64-svc.patch
+# And our second fix (Phase ext2-3): a weak UNDEFINED symbol (musl crt1's
+# `_DYNAMIC`) resolves to address 0; ADRP can't reach address 0 from our high
+# link base (0x80_0000_0000), so tcc errored "R_AARCH64_ADR_PREL_PG_HI21
+# relocation failed" when linking against real libc. The patch materializes a
+# constant 0 for that case (mirroring tcc's existing PE path).
+git apply /path/to/os/user/musl/tcc-arm64-weakreloc.patch
 
 ./configure --targetos=Linux --cpu=arm64 \
     --cc=aarch64-linux-musl-gcc --ar=aarch64-linux-musl-ar --config-musl \
@@ -39,6 +45,15 @@ build static + non-PIE, link at the user VA base, and link the runtime stub:
 tcc -static -nostdlib -Wl,-Ttext=0x8000000000 SRC.c /lib/mycrt.o -o OUT
 ```
 `/lib/mycrt.o` (from `user/musl/mycrt.S`) supplies `_start` and a `print`
-syscall wrapper, since TCC has no libc here and its inline assembler is too
-limited to emit syscalls itself. The Lisp helper `(cc "src.c" "out")` wraps
-this. A full libc sysroot (for `#include <stdio.h>`/`printf`) is future work.
+syscall wrapper. This freestanding path is now `(cc-bare "src.c" "out")`.
+
+Since Phase ext2-3 there is a **real musl libc sysroot** baked onto the ext2
+`/disk` at `/disk/usr/{include,lib}` (the Makefile `build/disk.img` rule stages
+the cross toolchain's headers + `crt1.o`/`crti.o`/`crtn.o`/`libc.a`, plus a
+host-built `libtcc1.a`). So `#include <stdio.h>` + `printf` now work on-device.
+The Lisp helper `(cc "src.c" "out")` links the hosted-libc line:
+```
+tcc -nostdlib -static -Wl,-Ttext=0x8000000000 -I/disk/usr/include \
+    /disk/usr/lib/crt1.o /disk/usr/lib/crti.o SRC.c \
+    -L/disk/usr/lib -lc /disk/usr/lib/libtcc1.a /disk/usr/lib/crtn.o -o OUT
+```

@@ -1,0 +1,39 @@
+diff --git a/arm64-link.c b/arm64-link.c
+index 39777de..8c2b787 100644
+--- a/arm64-link.c
++++ b/arm64-link.c
+@@ -247,11 +247,18 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
+             return;
+         case R_AARCH64_ADR_PREL_PG_HI21: {
+             uint64_t off = (val >> 12) - (addr >> 12);
+-#ifdef TCC_TARGET_PE
+-            /* Weak undefined symbols resolve to address 0 on PE. ADRP cannot
+-               encode that from the default 64-bit image base, so materialize
+-               zero directly and let the paired ADD handle any low addend. */
+-            if ((off + ((uint64_t)1 << 20)) >> 21) {
++            /* A weak UNDEFINED symbol resolves to address 0 (it is simply
++               "not present"). ADRP is PC-relative with only +-4GB of reach,
++               so when the image is linked high (MyOSv2 uses 0x80_0000_0000)
++               the page delta from code to address 0 overflows the 21-bit
++               field and the relocation "fails" -- even though the program
++               only ever guards the symbol with a null check and never derefs
++               it. The canonical example is musl crt1's weak `_DYNAMIC`, which
++               a static link must see as 0. So instead of erroring, materialize
++               the constant 0 directly: rewrite the ADRP as `movz xN, #0` and
++               let the paired ADD (:lo12:) contribute the (also-zero) low bits.
++               This mirrors the upstream TCC_TARGET_PE path below. */
++            if (((off + ((uint64_t)1 << 20)) >> 21)) {
+                 ElfW(Sym) *sym = &((ElfW(Sym) *)symtab_section->data)[sym_index];
+                 if (sym->st_shndx == SHN_UNDEF
+                     && ELFW(ST_BIND)(sym->st_info) == STB_WEAK) {
+@@ -260,10 +267,6 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
+                 }
+                 tcc_error_noabort("R_AARCH64_ADR_PREL_PG_HI21 relocation failed");
+             }
+-#else
+-            if ((off + ((uint64_t)1 << 20)) >> 21)
+-                tcc_error_noabort("R_AARCH64_ADR_PREL_PG_HI21 relocation failed");
+-#endif
+             write32le(ptr, ((read32le(ptr) & 0x9f00001f) |
+                             (off & 0x1ffffc) << 3 | (off & 3) << 29));
+             return;

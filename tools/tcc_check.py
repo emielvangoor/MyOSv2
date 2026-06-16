@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-tcc_check.py -- a C compiler runs ON MyOSv2 and compiles a hello world.
+tcc_check.py -- a C compiler runs ON MyOSv2 and compiles a hello world,
+FREESTANDING (no libc), via the `cc-bare` Lisp helper.
 
 The Phase-28 milestone: TCC (a static aarch64-linux-musl build, /bin/tcc)
-compiles + links /hello.c into a runnable static ELF, on the machine, and that
-binary runs and prints. This drives it through the `cc` Lisp helper:
+compiles + links /hellobare.c into a runnable static ELF, on the machine,
+linked only against /lib/mycrt.o (a _start + write-syscall stub, no libc), and
+that binary runs and prints. (The libc/printf path is now `cc`; see
+printf_check.py. This check guards the no-sysroot path stays alive.)
 
-  (cc "/hello.c" "/hello")   -> tcc -static -nostdlib -Ttext=.. /hello.c
-                                /lib/mycrt.o -o /hello   (exit 0)
-  (run-file "/hello")        -> exec it; it prints the message
+  (cc-bare "/hellobare.c" "/hello") -> tcc -static -nostdlib -Ttext=.. \
+                                       /hellobare.c /lib/mycrt.o -o /hello (0)
+  (run-file "/hello")               -> exec it; it prints the message
 
-If on-device compilation works end to end, the serial shows the message that
-/hello.c's main() prints. /hello.c + /lib/mycrt.o + /bin/tcc are in the initrd.
+/hellobare.c + /lib/mycrt.o + /bin/tcc are in the initrd.
 
 Run from the repo root:  python3 tools/tcc_check.py
 """
@@ -28,8 +30,8 @@ def main() -> int:
     try:
         if not q.expect(b"lisp> ", 40):
             print("FAIL: no boot"); return 1
-        q.send_line('(cc "/hello.c" "/hello")')
-        if not q.expect(b"0", 12):                 # tcc exit status 0 = compiled
+        q.send_line('(cc-bare "/hellobare.c" "/hello")')
+        if not q.expect(b"0", 20):                 # tcc exit status 0 = compiled
             print("FAIL: tcc did not report success"); return 1
         q.send_line('(run-file "/hello")')
         if q.expect(b"hello from tcc on myosv2", 10):
