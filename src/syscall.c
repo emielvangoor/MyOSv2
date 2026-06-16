@@ -181,6 +181,9 @@ long do_syscall(struct trapframe *tf)
         // editor (TCSETS* to enter raw mode, TIOCGWINSZ for terminal dimensions,
         // TIOCGPGRP/TIOCSPGRP for job-control bookkeeping).
         //
+        // We ignore `fd`: the machine's only tty is the UART console, so every
+        // fd that asks a tty question is answered as that one console.
+        //
         // Our UART is char-at-a-time by nature (each SYS_READ blocks in
         // console_getc() until one character arrives via IRQ), so all the
         // "switch to raw" TCSETS* are accepted as no-ops -- the tty is already
@@ -200,7 +203,7 @@ long do_syscall(struct trapframe *tf)
                 // asm-generic termios layout (musl / Linux AArch64):
                 //   c_iflag u32, c_oflag u32, c_cflag u32, c_lflag u32,
                 //   c_line u8, c_cc[19] u8 x19, c_ispeed u32, c_ospeed u32
-                // Total: 36 bytes. We zero everything then set the two flags
+                // Total: 44 bytes. We zero everything then set the two flags
                 // ash cares about before it flips to raw mode.
                 struct termios {
                     unsigned int  c_iflag, c_oflag, c_cflag, c_lflag;
