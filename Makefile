@@ -17,11 +17,15 @@ LDFLAGS := -nostdlib -nostartfiles -T linker.ld -Wl,--gc-sections
 
 CSRC := $(wildcard src/*.c)
 ASRC := $(wildcard src/*.S)
-# user_blob.o = embedded user-program ELFs; lisp_blob.o = embedded .l source.
+# The full userland (every ELF + all Lisp .l library files) now lives on the
+# ext2 disk image (see the disk.img recipe); the kernel reads programs from disk
+# at runtime via as_create_elf() in proc.c / sched.c.  user_blob.o is the ONE
+# exception: it embeds ONLY sh.elf as a C byte array (sh_elf / sh_elf_len) so
+# the VM / address-space self-tests (src/tests.c, src/vm.c) can load a real ELF
+# without touching the disk.  It is pure test scaffolding, NOT runtime userland.
 OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
         $(patsubst src/%.S,$(BUILD)/%.o,$(ASRC)) \
-        $(BUILD)/user_blob.o \
-        $(BUILD)/lisp_blob.o
+        $(BUILD)/user_blob.o
 DEP  := $(OBJ:.o=.d)
 
 # User programs are separate ELF64 executables linked at USER_CODE_VA, each
@@ -270,24 +274,16 @@ $(BUILD)/user/libtcc1/%.o: $(TCC_SRC)/lib/%.S | $(BUILD)
 $(BUILD)/user/libtcc1.a: $(TCC1_OBJS)
 	aarch64-linux-musl-ar rcs $@ $(TCC1_OBJS)
 
-# Embed every program ELF as a C byte array (<prog>_elf / <prog>_elf_len).
-$(BUILD)/user_blob.c: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf
-	cd $(BUILD)/user && : > ../user_blob.c && \
-	  for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS) mycrt; do xxd -i $$p.elf >> ../user_blob.c; done
+# The kernel embeds exactly ONE program ELF -- /bin/sh -- as a C byte array
+# (sh_elf / sh_elf_len). It is NOT runtime userland: it is a sample ELF the
+# VM/address-space self-tests load (as_create()/as_create_elf() in src/tests.c)
+# to exercise the loader without a disk. The real userland is staged onto the
+# ext2 disk image (see the disk.img recipe); production loading reads ELFs from
+# disk via as_create_elf(). xxd run from build/user names the symbol `sh_elf`.
+$(BUILD)/user_blob.c: $(BUILD)/user/sh.elf
+	cd $(BUILD)/user && : > ../user_blob.c && xxd -i sh.elf >> ../user_blob.c
 
 $(BUILD)/user_blob.o: $(BUILD)/user_blob.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-# Embed each Lisp source file as a C byte array (<name>_l / <name>_l_len). We copy
-# into build/lisp first and run xxd from there so the symbol names stay clean
-# (bootstrap_l, not user_lisp_bootstrap_l). The initrd writes these to /lib.
-$(BUILD)/lisp_blob.c: $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
-	mkdir -p $(BUILD)/lisp
-	cp $(patsubst %,user/lisp/%.l,$(LISP_FILES)) $(BUILD)/lisp/
-	cd $(BUILD)/lisp && : > ../lisp_blob.c && \
-	  for f in $(LISP_FILES); do xxd -i $$f.l >> ../lisp_blob.c; done
-
-$(BUILD)/lisp_blob.o: $(BUILD)/lisp_blob.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJ) linker.ld
