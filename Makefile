@@ -153,6 +153,7 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycr
 	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/lisp
 	for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do \
 	  cp $(BUILD)/user/$$p.elf $(BUILD)/rootfs/bin/$$p; done
+	ln -sf busybox $(BUILD)/rootfs/bin/ls   # symlink fixture (Task 5 adds the full set)
 	# --- /lib: the Lisp library + the crt tcc links against ---
 	for f in $(LISP_FILES); do cp user/lisp/$$f.l $(BUILD)/rootfs/lib/$$f.l; done
 	cp $(BUILD)/user/mycrt.elf $(BUILD)/rootfs/lib/mycrt.o

@@ -554,7 +554,14 @@ static struct vnode *mkvnode(uint32_t inum)
     if (read_inode(inum, &ino) != 0) { return 0; }
     struct vnode *vn = kmalloc(sizeof(struct vnode));
     if (!vn) { return 0; }
-    vn->type = ((ino.i_mode & EXT2_S_IFMT) == EXT2_S_IFDIR) ? VN_DIR : VN_FILE;
+    // Map the ext2 mode top nibble to our vnode type.  Three cases:
+    //   IFDIR  (0x4000) -> VN_DIR      -- a directory
+    //   IFLNK  (0xA000) -> VN_SYMLINK  -- a symbolic link (read-only)
+    //   anything else   -> VN_FILE     -- regular file, device, etc.
+    uint16_t fmt = ino.i_mode & EXT2_S_IFMT;
+    vn->type = (fmt == EXT2_S_IFDIR) ? VN_DIR
+             : (fmt == EXT2_S_IFLNK) ? VN_SYMLINK
+             : VN_FILE;
     vn->size = ino.i_size;
     vn->ops  = &ext2_ops;
     vn->priv = (void *)(uintptr_t)inum;
@@ -596,6 +603,40 @@ static int ext2_read(struct vnode *vn, uint64_t off, void *buf, uint64_t len)
         done += n;
     }
     return (int)done;
+}
+
+// Read a symlink's target. ext2 supports two storage forms:
+//
+//  "Fast symlink": the target fits in the 60-byte i_block[] area (15 * 4 bytes).
+//   The kernel recognises this when i_blocks == 0 (no actual disk blocks allocated).
+//   In practice every target shorter than ~60 characters uses this path -- and
+//   busybox's relative targets (e.g. "busybox", 7 bytes) always qualify.
+//
+//  "Slow symlink": longer targets live in data block 0 like a regular file.
+//   We handle this too for correctness, even though our image never produces one.
+//
+// Returns the number of bytes copied (the target length, clamped to len), or -1.
+static int ext2_readlink(struct vnode *vn, char *buf, int len)
+{
+    struct ext2_inode ino;
+    if (read_inode(inum_of(vn), &ino) != 0) { return -1; }
+    int sz = (int)ino.i_size;
+    if (sz > len) { sz = len; }
+    if (sz <= 0) { return 0; }
+    if (ino.i_blocks == 0) {
+        // Fast symlink: the target bytes are stored inline, starting at the
+        // address of i_block[0]. No disk I/O needed.
+        const char *src = (const char *)ino.i_block;
+        for (int i = 0; i < sz; i++) { buf[i] = src[i]; }
+    } else {
+        // Slow symlink: target lives in the first data block.
+        char tmp[EXT2_BLOCK_SIZE];
+        uint32_t pb = bmap(&ino, 0);
+        // eb_read returns 0 on success, -1 on I/O error (two-sector transfer).
+        if (pb == 0 || eb_read(pb, tmp) != 0) { return -1; }
+        for (int i = 0; i < sz; i++) { buf[i] = tmp[i]; }
+    }
+    return sz;
 }
 
 // --- directory ops ---
@@ -991,6 +1032,7 @@ const struct vnode_ops ext2_ops = {
     .read = ext2_read, .write = ext2_write,
     .lookup = ext2_lookup, .create = ext2_create, .readdir = ext2_readdir,
     .truncate = ext2_truncate, .unlink = ext2_unlink,
+    .readlink = ext2_readlink,   // read a symlink's target (fast or slow form)
 };
 
 // --- mount ---

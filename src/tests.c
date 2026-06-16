@@ -2146,6 +2146,26 @@ static void test_vfs_mount_at(void)
     KASSERT(vfs_lookup("/disk/nope") == 0);          // a missing one is not
 }
 
+// Symlink following: /disk/bin/ls is a symlink pointing to "busybox" (relative).
+// vfs_lookup must follow it and return a vnode for the busybox binary itself --
+// not a VN_SYMLINK vnode. We verify:
+//   1. lookup via the symlink succeeds (not NULL).
+//   2. the result's type is VN_FILE (the symlink was followed, not returned as-is).
+//   3. the resolved vnode has the same size as the busybox vnode (same underlying file).
+static void test_ext2_symlink_follows(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+    struct vnode *via  = vfs_lookup("/disk/bin/ls");        // symlink -> busybox
+    struct vnode *real = vfs_lookup("/disk/bin/busybox");
+    KASSERT(via != 0);
+    KASSERT(real != 0);
+    KASSERT(via->type == VN_FILE);                          // followed to the regular file
+    KASSERT(via->size == real->size);                       // same underlying file
+}
+
 // --- on-disk filesystem: ext2 WRITE (Phase 2) ---
 //
 // These create/write/truncate/unlink against the booted ext2 image. The
@@ -3125,6 +3145,7 @@ static const struct ktest tests[] = {
     { "ext2: truncate resets",            test_ext2_truncate_resets },
     { "ext2: unlink",                     test_ext2_unlink },
     { "ext2: persists across remount",    test_ext2_persists_remount },
+    { "ext2: symlink follows to target",  test_ext2_symlink_follows },
     { "vfs: mount at /disk",              test_vfs_mount_at },
     { "input: two devices present",       test_input_devices_present },
     { "input: driver present",            test_input_present },

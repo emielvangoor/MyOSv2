@@ -15,6 +15,13 @@
 #pragma once
 #include "vfs.h"
 
+// Additional mode and directory-entry type constants for symlinks.
+// EXT2_S_IFLNK: the i_mode top-nibble value that marks a symlink inode.
+// EXT2_FT_SYMLINK: the file_type byte written in a directory entry for a symlink.
+// (The other mode/FT constants live in ext2.c alongside the rest of the driver.)
+#define EXT2_S_IFLNK    0xA000     // symlink inode (mode & IFMT == IFLNK)
+#define EXT2_FT_SYMLINK 7          // dir-entry file_type for a symlink
+
 struct vnode  *ext2_mount(void);   // read+validate the superblock -> root vnode (or NULL)
 struct fs_type *ext2_type(void);   // fs_type registering the name "ext2"
 

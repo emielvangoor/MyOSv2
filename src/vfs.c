@@ -34,8 +34,53 @@ struct vnode *vfs_root(void)
     return root;
 }
 
-// Walk the remaining path (starting just after a leading '/') from `cur`.
-static struct vnode *walk_from(struct vnode *cur, const char *p)
+// vfs_readlink: read a symlink's target into buf (up to len bytes). Returns the
+// number of bytes written (no NUL terminator), or -1 if the vnode has no
+// readlink op (i.e. it is not a symlink, or the filesystem doesn't implement it).
+int vfs_readlink(struct vnode *vn, char *buf, int len)
+{
+    if (!vn->ops->readlink) { return -1; }
+    return vn->ops->readlink(vn, buf, len);
+}
+
+// Forward declaration so resolve_symlink and walk_from_d can call each other.
+static struct vnode *walk_from_d(struct vnode *cur, const char *p, int depth);
+
+// Resolve a symlink vnode `link` whose directory entry lives inside `parent`.
+// If the stored target starts with '/', the walk restarts from the VFS root
+// (absolute symlink). Otherwise the target is relative and the walk starts from
+// `parent` (the directory that contains the symlink). Either way we pass
+// `depth+1` into walk_from_d so the hop count is always bounded.
+//
+// Why depth-bound? A cyclic chain (a -> b -> a) would otherwise loop forever.
+// We allow up to 8 hops -- enough for every real busybox applet layout and
+// consistent with historical POSIX lore (MAXSYMLINKS == 8 on many systems).
+static struct vnode *resolve_symlink(struct vnode *link, struct vnode *parent, int depth)
+{
+    if (depth >= 8) { return 0; }                 // -ELOOP: too many nested symlinks
+    char target[128];
+    int n = vfs_readlink(link, target, sizeof(target) - 1);
+    if (n <= 0) { return 0; }
+    target[n] = '\0';
+    if (target[0] == '/') {
+        // Absolute target: restart from the global root (mount-unaware, which is
+        // acceptable -- we only need this for the rare case of an absolute symlink,
+        // and the busybox layout uses relative targets like "busybox").
+        if (!root) { return 0; }
+        return walk_from_d(root, target + 1, depth + 1);
+    }
+    // Relative target: continue from the directory that owns the symlink.
+    return walk_from_d(parent, target, depth + 1);
+}
+
+// Walk the remaining path `p` from `cur`, one component at a time, following any
+// symlink we land on. `depth` tracks nested-symlink hops and is forwarded to
+// resolve_symlink; the public entry always passes 0 (see walk_from below).
+//
+// WHY follow here instead of at lookup: the VFS is the only place that knows the
+// whole path; the filesystem's lookup op just returns the vnode for a single name.
+// Doing the follow here keeps the filesystem code simple and the policy central.
+static struct vnode *walk_from_d(struct vnode *cur, const char *p, int depth)
 {
     char name[32];
     while (*p) {
@@ -43,12 +88,27 @@ static struct vnode *walk_from(struct vnode *cur, const char *p)
         while (*p && *p != '/' && i < 31) { name[i++] = *p++; }
         name[i] = '\0';
         if (*p == '/') { p++; }
-        if (i == 0) { continue; }            // skip empty components ("//")
+        if (i == 0) { continue; }                 // skip empty components ("//")
         if (!cur->ops->lookup) { return 0; }
-        cur = cur->ops->lookup(cur, name);
-        if (!cur) { return 0; }
+        struct vnode *parent = cur;
+        struct vnode *next = cur->ops->lookup(cur, name);
+        if (!next) { return 0; }
+        // If we landed on a symlink, resolve it before continuing. The target may
+        // itself be a symlink (depth allows up to 8 total hops).
+        if (next->type == VN_SYMLINK) {
+            next = resolve_symlink(next, parent, depth);
+            if (!next) { return 0; }
+        }
+        cur = next;
     }
     return cur;
+}
+
+// Walk "/a/b/c" from `cur`, following symlinks (the public entry, depth 0).
+// Replaces the old symlink-blind version; callers (vfs_lookup) are unchanged.
+static struct vnode *walk_from(struct vnode *cur, const char *p)
+{
+    return walk_from_d(cur, p, 0);
 }
 
 // True if `pfx` is a path-prefix of `path` at a '/' boundary (or exact match).
@@ -59,7 +119,8 @@ static int under(const char *pfx, const char *path)
     return path[i] == '\0' || path[i] == '/';
 }
 
-// Walk "/a/b/c" from the right filesystem root, one component at a time.
+// Walk "/a/b/c" from the right filesystem root, one component at a time,
+// following any symlinks encountered along the way (up to 8 hops).
 struct vnode *vfs_lookup(const char *path)
 {
     // A leading '/' marks an absolute path. MyOSv2 has no per-process current

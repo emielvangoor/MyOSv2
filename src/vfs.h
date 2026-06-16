@@ -2,7 +2,7 @@
 #pragma once
 #include <stdint.h>
 
-enum vnode_type { VN_FILE = 0, VN_DIR = 1 };
+enum vnode_type { VN_FILE = 0, VN_DIR = 1, VN_SYMLINK = 2 };
 
 struct vnode;
 
@@ -15,6 +15,7 @@ struct vnode_ops {
     int (*readdir)(struct vnode *dir, int index, char *name_out); // 0=ok, -1=done
     int (*truncate)(struct vnode *vn);          // shrink to 0 bytes (O_TRUNC)
     int (*unlink)(struct vnode *dir, const char *name); // remove an entry from dir
+    int (*readlink)(struct vnode *vn, char *buf, int len);  // read a symlink's target
 };
 
 struct vnode {
@@ -49,5 +50,6 @@ int           vfs_write(struct file *f, const void *buf, uint64_t len);
 int           vfs_readdir(struct vnode *dir, int index, char *name_out);
 int           vfs_truncate(struct vnode *vn);   // O_TRUNC: reset the file to 0 bytes
 int           vfs_unlink(const char *path);     // remove a file/empty entry by path
+int           vfs_readlink(struct vnode *vn, char *buf, int len); // copy a symlink target into buf
 void          vfs_close(struct file *f);
 struct file  *file_dup(struct file *f);   // bump the reference count; returns f
