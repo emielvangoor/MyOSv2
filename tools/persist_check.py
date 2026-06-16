@@ -57,18 +57,22 @@ def main() -> int:
             print("FAIL: boot 1 -- REPL prompt never appeared"); return 1
 
         # Write the sentinel.  We use the raw fd primitives so the write goes
-        # through the VirtIO block driver and is visible as a genuine file.
+        # through the VirtIO block driver and lands in the ext2 image as a
+        # genuine file.
         # (creat path) -> fd  (creates or truncates the file)
         # (fd-write fd str) -> bytes-written
-        # (close fd) -> nil  (flushes + releases the fd; ext2 must persist it)
+        # (close fd) -> nil  (releases the fd; the block write is now submitted
+        #                     to the driver -- guest-side it is done)
         form = (
             '(let ((fd (creat "/persist-test.txt")))'
             ' (fd-write fd "%s") (close fd))' % SENTINEL
         )
         q.send_line(form)
-        # Wait for the REPL to return a result and re-print the prompt.
-        # That guarantees the expression has fully evaluated (i.e. the fd is
-        # closed and the block write has been submitted to the driver).
+        # Wait for the REPL to re-print the prompt: the expression has fully
+        # evaluated and the fd is closed (guest-side).  NOTE: durability to the
+        # host .img file is guaranteed not by close() but by kill()+wait()
+        # below -- when QEMU exits, the host flushes its dirty page cache for
+        # the image file.  That is what makes Boot 2 see this write.
         if not q.expect(b"lisp> ", 15):
             print("FAIL: boot 1 -- REPL did not return to prompt after write"); return 1
 
