@@ -64,8 +64,10 @@ TCC has no libc here). Evaluates to tcc's exit status (0 = success)."
 
 (defun run-file (path)
   "(run-file \"/hello\") -> exec the program at PATH (an absolute path, e.g. one
-just produced by (cc ...)). Unlike (run NAME), this does NOT prepend /bin."
-  (run-prog-raw path (list path)))
+just produced by (cc ...)). Unlike (run NAME), this does NOT prepend /bin. Uses
+the pluggable run-prog, so in the frame the program's output streams into the
+current buffer (not the serial); on the serial machine it inherits fds raw."
+  (run-prog path (list path)))
 
 ;; ---- pipelines -------------------------------------------------------
 
