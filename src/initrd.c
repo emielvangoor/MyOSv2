@@ -56,9 +56,9 @@ extern unsigned char mycrt_elf[];   extern unsigned int mycrt_elf_len;   // crt 
 // ELF our loader runs. This proves on-device C COMPILATION + LINKING (the goal)
 // without depending on TCC's limited inline assembler or a full libc sysroot.
 static const char hello_c[] =
-    "void print(const char *, long);\n"
+    "void puts(const char *);\n"
     "int main(void){\n"
-    "  print(\"hello from tcc on myosv2\\n\", 25);\n"
+    "  puts(\"hello from tcc on myosv2\\n\");\n"   // edit this string + recompile
     "  return 0;\n"
     "}\n";
 

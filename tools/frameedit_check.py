@@ -63,9 +63,11 @@ def main() -> int:
 
         ctrl("x"); time.sleep(0.2); ctrl("f"); time.sleep(0.5)     # C-x C-f
         qmp_type("/e.c\n"); time.sleep(0.8)                        # new file, text-mode
-        qmp_type("void print(const char*,long);int main(void)", delay=0.12)
+        # puts() computes the length itself, so the WHOLE string prints -- no
+        # hand-counted byte cap. A longer message proves recompile + full output.
+        qmp_type("void puts(const char*);int main(void)", delay=0.12)
         brace(26); time.sleep(0.2)                                 # {
-        qmp_type('print("FRAME-EDIT-OK\\n",14);return 0;', delay=0.12)
+        qmp_type('puts("EDITED-LONGER-STRING-OK\\n");return 0;', delay=0.12)
         brace(27); time.sleep(0.4)                                 # }
         ctrl("x"); time.sleep(0.2); ctrl("s"); time.sleep(0.8)     # C-x C-s save
         ctrl("x"); time.sleep(0.2); qmp_type("b"); time.sleep(0.4) # C-x b
@@ -78,9 +80,9 @@ def main() -> int:
         lines = [row_text(font, w, data, r, 80) for r in range(h // CELL_H)]
         for i, t in enumerate(lines):
             if t.strip(): print(f"  row {i}: {t!r}")
-        # the program's output appears on its OWN line (vs inside the source string)
-        ok = any(t.strip() == "FRAME-EDIT-OK" for t in lines)
-        print("PASS: edited C compiled + ran in the frame" if ok
+        # the FULL string prints on its own line (puts computed the length)
+        ok = any(t.strip() == "EDITED-LONGER-STRING-OK" for t in lines)
+        print("PASS: edited C compiled + ran in the frame (full string via puts)" if ok
               else "FAIL: edited program did not compile/run")
         return 0 if ok else 1
     finally:
