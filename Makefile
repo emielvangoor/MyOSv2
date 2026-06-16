@@ -121,17 +121,39 @@ MUSL_INC := $(firstword $(wildcard $(MUSL_SYSROOT)/usr/include $(MUSL_SYSROOT)/i
 # Resolve the static-link objects by name -- they may live in lib/ or lib64/.
 print-musl = $(shell $(MUSL_CC) -print-file-name=$(1))
 
-# Stage build/rootfs/ then bake it into an ext2 image. /init.l boots the frame;
-# the test/ fixtures are deterministic (known content + sizes) for the ext2:
-# read KTESTs -- big.bin is 16 KiB so it spans past the 12 direct blocks and
-# forces a single-indirect read. We also stage the musl sysroot under
-# /disk/usr/{include,lib}: cp -RL on the headers DEREFERENCES symlinks (our ext2
-# driver has no symlink support, so the image must hold only real files).
-$(BUILD)/disk.img: $(BUILD)/user/libtcc1.a | $(BUILD)
-	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test
+# Stage build/rootfs/ then bake it into an ext2 image. The staging dir becomes
+# the complete persistent root filesystem:
+#   /init.l         -- boot script: launches the Lisp frame
+#   /test/          -- deterministic fixtures for the ext2 read KTESTs (big.bin
+#                      is 16 KiB, forcing single-indirect block reads)
+#   /bin/           -- all userland ELFs; init == lisp == lm.elf (three names,
+#                      one binary: the kernel exec()s /bin/init at boot, the
+#                      shell runs /bin/lisp for a REPL, /bin/lm by legacy name)
+#   /lib/           -- Lisp source library (.l files) + mycrt.o (the minimal
+#                      C runtime tcc links user programs against)
+#   /hello.c /hellobare.c -- seed C sources; persist once edited on-device
+#   /usr/include/   -- musl headers (symlinks dereferenced: our ext2 driver has
+#                      no symlink support, so the image must hold real files)
+#   /usr/lib/       -- musl crt1/crti/crtn/libc.a + libtcc1.a (TCC's compiler-
+#                      support runtime; tcc-compiled programs need both)
+$(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
+                   $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
+	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test $(BUILD)/rootfs/bin $(BUILD)/rootfs/lib
 	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
 	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
 	yes 0123456789ABCDEF | head -c 16384 > $(BUILD)/rootfs/test/big.bin
+	# --- /bin: the userland ELFs (init == lisp == lm.elf) ---
+	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/init
+	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/lisp
+	for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do \
+	  cp $(BUILD)/user/$$p.elf $(BUILD)/rootfs/bin/$$p; done
+	# --- /lib: the Lisp library + the crt tcc links against ---
+	for f in $(LISP_FILES); do cp user/lisp/$$f.l $(BUILD)/rootfs/lib/$$f.l; done
+	cp $(BUILD)/user/mycrt.elf $(BUILD)/rootfs/lib/mycrt.o
+	# --- seed sources (were in initrd.c); persist once edited on-device ---
+	printf '#include <stdio.h>\nint main(void){\n  printf("hello from tcc on myosv2: x=%%d s=%%s\\n", 42, "ok");\n  return 0;\n}\n' > $(BUILD)/rootfs/hello.c
+	printf 'void puts(const char *);\nint main(void){\n  puts("hello from tcc on myosv2\\n");\n  return 0;\n}\n' > $(BUILD)/rootfs/hellobare.c
+	# --- /usr: the musl sysroot (moved from /disk/usr to /usr) ---
 	mkdir -p $(BUILD)/rootfs/usr/include $(BUILD)/rootfs/usr/lib
 	cp -RL $(MUSL_INC)/* $(BUILD)/rootfs/usr/include/
 	cp $(call print-musl,crt1.o) $(call print-musl,crti.o) \
