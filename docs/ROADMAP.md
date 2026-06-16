@@ -588,6 +588,31 @@ A real Emacs-style major-mode system layered over the graphical Lisp machine.
 
 ---
 
+## Phase 29 — Persistent ext2 root filesystem  ✅ DONE
+
+The OS now boots from a **real, persistent on-disk ext2 filesystem** mounted as
+`/`. There is no ramfs root and no initrd at runtime; the kernel-embedded userland
+(`user_blob` / `lisp_blob` / `src/initrd.c`) was removed.
+
+- ✅ **29.1 — install userland onto disk image**: the host build runs
+  `mke2fs -d build/rootfs` to populate `build/disk.img` with the full root tree:
+  `/bin/*` (all programs: busybox, tcc, lisp, shell, …), `/lib/*.l` + `/lib/mycrt.o`,
+  `/usr/{include,lib}` (the musl sysroot), `/hello.c` + `/hellobare.c` seed sources,
+  and `/init.l`. The `/disk` mount point is retired — `/` IS the ext2 image.
+- ✅ **29.2 — mount ext2 as root**: `vfs_mount_root(ext2_type())` at boot;
+  the kernel halts with a clear message if the disk cannot be mounted. The musl
+  sysroot moved from `/disk/usr` → `/usr`; the boot counter from `/disk/boots` →
+  `/boots`; the user init file from `/disk/init.l` → `/init.l`.
+- ✅ **29.3 — remove kernel-embedded userland**: `user_blob`, `lisp_blob`, and
+  `src/initrd.c` deleted from the kernel build. (One tiny `sh.elf` is retained
+  embedded purely as a sample ELF for VM self-tests — not runtime userland.)
+- ✅ **29.4 — persistence verified**: `tools/persist_check.py` writes a file,
+  reboots the same `disk.img`, reads it back, and asserts `PERSIST OK`.
+
+`ramfs.c`/`ramfs.h` remain in the tree and are used by the KTEST harness.
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,

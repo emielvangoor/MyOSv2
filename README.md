@@ -23,8 +23,9 @@ no deadlines; just building it one piece at a time and enjoying the ride.
 
 **1. The kernel (C) — mechanism, never policy.** A classic Unix-shaped kernel:
 MMU with per-process page tables and ASID-tagged TLBs, fork with copy-on-write,
-an ELF64 loader with the full exec/exit/wait lifecycle, a VFS (ramfs, initrd,
-an on-disk FS), pipes, signals, a BSD-style socket API over a from-scratch
+an ELF64 loader with the full exec/exit/wait lifecycle, a VFS with a persistent
+**ext2 root filesystem** on disk (plus an in-memory ramfs for tests), pipes,
+signals, a BSD-style socket API over a from-scratch
 TCP/IP stack, and virtio drivers (block, net, **gpu, input**) on a shared
 virtio-mmio transport. Everything is interrupt-driven — blocked readers sleep
 and are woken, never polled. The kernel knows nothing about Lisp, buffers or
@@ -74,7 +75,7 @@ photograph itself: `(screenshot "/shot.ppm")`.
   polling: a UART receive IRQ feeds the **tty line discipline** (Ctrl-C → SIGINT),
   `read` blocks until a key is pressed, and the virtio-net IRQ wakes the network
   stack (a blocked `ping` is woken by the reply, or aborted instantly by Ctrl-C).
-- **Filesystem** — a VFS (vnode/fs_type) with an in-memory `ramfs` and an initrd.
+- **Filesystem** — a VFS (vnode/fs_type) whose **root `/` is a persistent on-disk ext2 filesystem**; an in-memory `ramfs` remains for the self-tests.
 - **Processes** — user mode at EL0, `fork` + copy-on-write, an **ELF64 loader**,
   and the full lifecycle: `exec`, `exit(status)`, `wait`/reap (with ASID + page
   recycling).
@@ -91,13 +92,16 @@ photograph itself: `(screenshot "/shot.ppm")`.
   trampoline), and **Ctrl-C** → `SIGINT` to the foreground program.
 - **Block device** — a **virtio-blk** disk driver on a generic virtio-mmio +
   virtqueue layer, reading and writing 512-byte sectors.
-- **Persistent filesystem** — a real on-disk **ext2** filesystem mounted at
-  `/disk` (inodes with direct + single/double/triple indirect blocks, so files
+- **Persistent filesystem** — a real on-disk **ext2** filesystem mounted as the
+  root `/` (inodes with direct + single/double/triple indirect blocks, so files
   are no longer capped at a few KiB). The image is host-built with `mke2fs -d`,
-  shipping pre-loaded with `/init.l`. Full read **and** write: bitmap block/inode
-  allocation, file create/write/grow (allocating indirect blocks on demand),
-  truncate, and unlink — all write-through, leaving an `e2fsck`-clean image. The
-  `/disk/boots` boot counter persists across reboots to prove it.
+  installing the full userland (`/bin`, `/lib`, `/usr`) onto `build/disk.img`;
+  the kernel mounts it as `/` at boot and halts with a clear message if it can't.
+  Full read **and** write: bitmap block/inode allocation, file
+  create/write/grow (allocating indirect blocks on demand), truncate, and
+  unlink — all write-through, leaving an `e2fsck`-clean image. On-device edits
+  and newly created files survive reboots; the `/boots` counter proves it
+  (verified by `tools/persist_check.py`).
 - **Network interface** — a **virtio-net** driver that sends and receives raw
   Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
 - **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum
@@ -140,7 +144,7 @@ photograph itself: `(screenshot "/shot.ppm")`.
 - **Compiles C *on the machine*, against a real libc** — `/bin/tcc` is a
   static-musl [TinyCC](https://repo.or.cz/tinycc.git) that runs on MyOSv2 and
   compiles + links C in one process. A **musl sysroot is baked onto the ext2
-  `/disk`** (`/disk/usr/{include,lib}`), so `(cc "/hello.c" "/hello")` links a
+  root** (`/usr/{include,lib}`), so `(cc "/hello.c" "/hello")` links a
   `#include <stdio.h>` program that calls `printf` into a runnable static ELF,
   and `(run-file "/hello")` runs it — a hosted C toolchain on the OS, not a
   cross-compile. `(cc-bare ...)` keeps the freestanding (no-libc, `mycrt.S`)
@@ -239,11 +243,11 @@ make run     # boot it in QEMU -- you land in the Lisp REPL (PID 1)
 make test    # run the in-kernel self-test suite
 ```
 
-Make it boot your way: the machine loads **`/disk/init.l`** (its ~/.emacs) at
+Make it boot your way: the machine loads **`/init.l`** (its ~/.emacs) at
 boot if present — write it from the REPL itself:
 
 ```lisp
-(let ((fd (creat "/disk/init.l")))
+(let ((fd (creat "/init.l")))
   (fd-write fd "(run-bg \"lisp\" \"-frame\")")
   (close fd))
 ```
