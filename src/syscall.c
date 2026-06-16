@@ -612,6 +612,18 @@ long do_syscall(struct trapframe *tf)
         }
         break;
     }
+    case SYS_PPOLL:                           // busybox ash polls stdin per keystroke
+        // ppoll(fds, nfds, const struct timespec *tmo, sigmask): like poll(), but
+        // the timeout is a timespec pointer (NULL = block forever) and there is a
+        // signal-mask arg we ignore (we have no per-call mask). Convert the
+        // timespec to the millisecond timeout SYS_POLL already understands and
+        // fall through to the shared poll loop. Without this, ash's line editor
+        // floods the console with one unhandled-syscall line per character typed.
+        {
+            const long *ts = (const long *)(uintptr_t)tf->x[2];   // [0]=sec, [1]=nsec
+            tf->x[2] = ts ? (uint64_t)(ts[0] * 1000 + ts[1] / 1000000) : (uint64_t)-1;
+        }
+        /* fall through */
     case SYS_POLL: {                          // x0=pollfd*, x1=nfds, x2=timeout_ms
         struct file **fds = sched_current_fds();
         struct pollfd *pf = (struct pollfd *)(uintptr_t)tf->x[0];
@@ -692,6 +704,30 @@ long do_syscall(struct trapframe *tf)
         // Both call through to sched_setpgid() unchanged.
         ret = sched_setpgid((int)tf->x[0], (int)tf->x[1]);
         break;
+    case SYS_GETPGID: {
+        // Process-group id of pid (0 = self). busybox's ash calls this in its
+        // interactive job-control loop and compares it to tcgetpgrp() (our
+        // ioctl TIOCGPGRP). BOTH must report the same value or ash spins forever
+        // trying to claim the terminal -- so this returns the same ->pgid that
+        // TIOCGPGRP does. (We have no real sessions; the group id is enough.)
+        struct thread *t = sched_current();
+        ret = t ? t->pgid : 1;
+        break;
+    }
+    case SYS_GETSID: {
+        // Session id. We don't model sessions separately from process groups,
+        // so report the group id -- enough for ash's bookkeeping.
+        struct thread *t = sched_current();
+        ret = t ? t->pgid : 1;
+        break;
+    }
+    case SYS_SETSID: {
+        // "Start a new session": we have no session objects, so just report a
+        // plausible new session id (our own pid). Keeps setsid()-callers happy.
+        struct thread *t = sched_current();
+        ret = t ? t->id : 1;
+        break;
+    }
     case SYS_GETPPID: {
         // Return the parent's pid. If there is no parent (the idle/boot thread, or
         // a thread that outlived its parent) return 1, mimicking init adoption --

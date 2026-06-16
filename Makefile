@@ -153,7 +153,15 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycr
 	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/lisp
 	for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do \
 	  cp $(BUILD)/user/$$p.elf $(BUILD)/rootfs/bin/$$p; done
-	ln -sf busybox $(BUILD)/rootfs/bin/ls   # symlink fixture (Task 5 adds the full set)
+	# busybox applet names: each is a symlink -> busybox, so a bare `ls`/`cat`/...
+	# in busybox sh resolves (via the kernel's symlink-following path lookup) to
+	# the multicall binary, which dispatches the applet by argv[0]. mke2fs -d bakes
+	# these as real ext2 symlinks; the relative target keeps them valid in /bin.
+	for a in ls cat echo pwd cp mv rm mkdir rmdir touch ln \
+	         grep sed head tail wc sort uniq cut tr find xargs \
+	         ps kill sleep date uname clear true false env which \
+	         chmod df du dd more vi basename dirname seq yes tee; do \
+	  ln -sf busybox $(BUILD)/rootfs/bin/$$a; done
 	# --- /lib: the Lisp library + the crt tcc links against ---
 	for f in $(LISP_FILES); do cp user/lisp/$$f.l $(BUILD)/rootfs/lib/$$f.l; done
 	cp $(BUILD)/user/mycrt.elf $(BUILD)/rootfs/lib/mycrt.o

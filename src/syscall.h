@@ -60,10 +60,14 @@
 // for the same operations. Both sets must coexist: the low numbers are what
 // /bin/sh (native) and our own test helpers call; the real numbers are what
 // busybox's libc emits. Both paths call the same kernel logic.
+#define SYS_PPOLL          73   // x0=pollfd*, x1=nfds, x2=timespec* (NULL=block), x3=sigmask
 #define SYS_FCNTL          25   // x0=fd, x1=cmd, x2=arg  (file-descriptor control)
 #define SYS_CLOCK_GETTIME  113  // x0=clockid (ignored), x1=struct timespec*  -> 0
 #define SYS_KILL_LINUX     129  // real aarch64 kill -- legacy SYS_KILL=20 kept for native
 #define SYS_SETPGID_LINUX  154  // real aarch64 setpgid  -- legacy SYS_SETPGID=44 kept
+#define SYS_GETPGID        155  // x0=pid (0=self) -> process group id
+#define SYS_GETSID         156  // x0=pid (0=self) -> session id (~ pgid here)
+#define SYS_SETSID         157  // -> new session id (our pid)
 #define SYS_GETTIMEOFDAY   169  // x0=struct timeval*, x1=tz (ignored)  -> 0
 #define SYS_GETPPID        173  // -> parent pid (or 1 if no parent)
 
