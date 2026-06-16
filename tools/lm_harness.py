@@ -156,6 +156,10 @@ _QCODE = {  # ascii -> (qcode, needs_shift)
     "!": ("1", True), "?": ("slash", True), ";": ("semicolon", False),
     ":": ("semicolon", True), "<": ("comma", True), ">": ("dot", True),
     "|": ("backslash", True), "\\": ("backslash", False), "_": ("minus", True),
+    "&": ("7", True), "%": ("5", True), "#": ("3", True),
+    # NOTE: {}[] are intentionally absent -- QEMU's bracketleft/bracketright
+    # qcodes don't deliver as Linux keycodes 26/27 here, so they'd silently
+    # drop. Tests that need braces inject the raw keycode (26/27, +shift 42).
 }
 
 
