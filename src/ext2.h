@@ -15,3 +15,8 @@
 
 struct vnode  *ext2_mount(void);   // read+validate the superblock -> root vnode (or NULL)
 struct fs_type *ext2_type(void);   // fs_type registering the name "ext2"
+
+// Phase 2 (write path): remove a directory entry `name` from `dir`, decrement
+// the target inode's link count, and free it (truncate + free_inode) when the
+// count hits zero. Returns 0 on success, -1 if not found. Exposed for vfs_unlink.
+int ext2_unlink(struct vnode *dir, const char *name);

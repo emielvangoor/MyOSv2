@@ -120,6 +120,36 @@ struct vnode *vfs_create(const char *path, int type)
     return dir->ops->create(dir, name, type);
 }
 
+// Remove the entry named at the end of `path` from its parent directory. Splits
+// the path into "parent" + "final name" exactly like vfs_create, then asks the
+// parent's filesystem to unlink the entry. Returns 0 on success, -1 otherwise.
+int vfs_unlink(const char *path)
+{
+    int len = 0;
+    while (path[len]) { len++; }
+    int slash = -1;
+    for (int i = 0; i < len; i++) {
+        if (path[i] == '/') { slash = i; }
+    }
+    if (slash < 0) { return -1; }
+
+    char parent[128];
+    if (slash == 0) {                // parent is root: "/x"
+        parent[0] = '/'; parent[1] = '\0';
+    } else {
+        for (int i = 0; i < slash; i++) { parent[i] = path[i]; }
+        parent[slash] = '\0';
+    }
+    char name[32];
+    int j = 0;
+    for (int i = slash + 1; i < len && j < 31; i++) { name[j++] = path[i]; }
+    name[j] = '\0';
+
+    struct vnode *dir = vfs_lookup(parent);
+    if (!dir || !dir->ops->unlink) { return -1; }
+    return dir->ops->unlink(dir, name);
+}
+
 struct file *vfs_open(const char *path)
 {
     struct vnode *vn = vfs_lookup(path);

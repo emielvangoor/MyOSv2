@@ -94,7 +94,10 @@ photograph itself: `(screenshot "/shot.ppm")`.
 - **Persistent filesystem** — a real on-disk **ext2** filesystem mounted at
   `/disk` (inodes with direct + single/double/triple indirect blocks, so files
   are no longer capped at a few KiB). The image is host-built with `mke2fs -d`,
-  shipping pre-loaded with `/init.l`. Read path is live; write is Phase 2.
+  shipping pre-loaded with `/init.l`. Full read **and** write: bitmap block/inode
+  allocation, file create/write/grow (allocating indirect blocks on demand),
+  truncate, and unlink — all write-through, leaving an `e2fsck`-clean image. The
+  `/disk/boots` boot counter persists across reboots to prove it.
 - **Network interface** — a **virtio-net** driver that sends and receives raw
   Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
 - **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum

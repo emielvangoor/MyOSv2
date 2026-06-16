@@ -96,11 +96,36 @@ void kmain(void)
             kprintf("disk: present but not ext2 (unmounted)\n");
         }
 
-        // TODO(ext2 Phase 2): re-enable the persistent /disk/boots boot counter
-        // once the ext2 write path (create/write/truncate) lands. ext2 is
-        // read-only in Phase 1, so the counter (which WRITES) is disabled. The
-        // boot seed /init.l is only READ at boot, so the read path still drives
-        // the frame autostart.
+        // Persistence demo: a boot counter stored in /disk/boots. It survives
+        // reboots because the disk image is a real file -- re-running `make run`
+        // shows it increment. Now backed by the ext2 write path (Phase 2):
+        // create/write/truncate go straight through to the block device.
+        if (disk) {
+            int n = 0;
+            struct file *bf = vfs_open("/disk/boots");
+            if (bf) {
+                char b[16] = {0};
+                int k = vfs_read(bf, b, 15);
+                for (int i = 0; i < k && b[i] >= '0' && b[i] <= '9'; i++) { n = n * 10 + (b[i] - '0'); }
+                vfs_close(bf);
+            }
+            n++;
+            if (!vfs_lookup("/disk/boots")) { vfs_create("/disk/boots", VN_FILE); }
+            struct file *wf = vfs_open("/disk/boots");
+            if (wf) {
+                // Rewrite from the start; truncate first so a shorter number
+                // doesn't leave a stale digit tail past the new length.
+                if (wf->vnode) { vfs_truncate(wf->vnode); }
+                char b[16]; int i = 0, v = n; char t[16]; int j = 0;
+                if (v == 0) { t[j++] = '0'; }
+                while (v) { t[j++] = (char)('0' + v % 10); v /= 10; }
+                while (j) { b[i++] = t[--j]; }
+                wf->off = 0;
+                vfs_write(wf, b, i);
+                vfs_close(wf);
+            }
+            kprintf("disk: /disk/boots boot count %d\n", n);
+        }
     } else {
         kprintf("disk: none\n");
     }

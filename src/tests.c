@@ -2069,6 +2069,133 @@ static void test_vfs_mount_at(void)
     KASSERT(vfs_lookup("/disk/nope") == 0);          // a missing one is not
 }
 
+// --- on-disk filesystem: ext2 WRITE (Phase 2) ---
+//
+// These create/write/truncate/unlink against the booted ext2 image. The
+// allocator hands out low free blocks, well away from the high scratch sectors
+// the `block:` tests scribble on, so the two never collide.
+
+static void test_ext2_create_write_read(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *vn = vfs_create("/disk/t", VN_FILE);
+    KASSERT(vn != 0 && vn->type == VN_FILE);
+    const char *msg = "hello ext2";
+    int mlen = 0; while (msg[mlen]) { mlen++; }       // 10 bytes
+    struct file fw = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw, msg, mlen) == mlen);
+
+    // Re-look-up so we read back through a fresh inode read (size from disk).
+    struct vnode *r = vfs_lookup("/disk/t");
+    KASSERT(r != 0 && (int)r->size == mlen);
+    char b[32] = {0};
+    struct file fr = { .vnode = r, .off = 0 };
+    KASSERT(vfs_read(&fr, b, sizeof(b)) == mlen);
+    for (int i = 0; i < mlen; i++) { KASSERT(b[i] == msg[i]); }
+}
+
+static void test_ext2_write_grows_indirect(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *vn = vfs_create("/disk/big", VN_FILE);
+    KASSERT(vn != 0);
+    // Write 20000 bytes of a position-dependent pattern, spanning past the 12
+    // direct blocks (12*1024 = 12288) so bmap_alloc must allocate a single-
+    // indirect block + the data block beyond it.
+    enum { N = 20000 };
+    static uint8_t w[N];
+    for (int i = 0; i < N; i++) { w[i] = (uint8_t)(i * 31 + 7); }
+    struct file fw = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw, w, N) == N);
+
+    struct vnode *r = vfs_lookup("/disk/big");
+    KASSERT(r != 0 && (int)r->size == N);
+    // Verify a byte past offset 12*1024 (file block 12 -> single indirect).
+    static uint8_t rb[N];
+    struct file fr = { .vnode = r, .off = 0 };
+    KASSERT(vfs_read(&fr, rb, N) == N);
+    KASSERT(rb[13000] == (uint8_t)(13000 * 31 + 7));
+    KASSERT(rb[N - 1] == (uint8_t)((N - 1) * 31 + 7));
+}
+
+static void test_ext2_truncate_resets(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *vn = vfs_create("/disk/tr", VN_FILE);
+    KASSERT(vn != 0);
+    struct file fw = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw, "0123456789ABCDEF", 16) == 16);   // 16 bytes
+
+    KASSERT(vfs_truncate(vn) == 0);
+    KASSERT(vn->size == 0);
+    struct file fw2 = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw2, "xyz", 3) == 3);
+
+    struct vnode *r = vfs_lookup("/disk/tr");
+    KASSERT(r != 0 && (int)r->size == 3);
+    char b[16] = {0};
+    struct file fr = { .vnode = r, .off = 0 };
+    KASSERT(vfs_read(&fr, b, sizeof(b)) == 3);
+    KASSERT(b[0] == 'x' && b[1] == 'y' && b[2] == 'z');
+}
+
+static void test_ext2_unlink(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *vn = vfs_create("/disk/u", VN_FILE);
+    KASSERT(vn != 0);
+    struct file fw = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw, "bye", 3) == 3);
+    KASSERT(vfs_lookup("/disk/u") != 0);
+
+    KASSERT(vfs_unlink("/disk/u") == 0);
+    KASSERT(vfs_lookup("/disk/u") == 0);              // gone
+}
+
+static void test_ext2_persists_remount(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *vn = vfs_create("/disk/p", VN_FILE);
+    KASSERT(vn != 0);
+    const char *msg = "persist me!";
+    int mlen = 0; while (msg[mlen]) { mlen++; }
+    struct file fw = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw, msg, mlen) == mlen);
+
+    // Drop the vnodes and mount fresh: this re-reads the superblock, group
+    // descriptors, bitmaps and inode from disk. If create/write only mutated the
+    // RAM cache, the file would be gone (or empty) here.
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *r = vfs_lookup("/disk/p");
+    KASSERT(r != 0 && (int)r->size == mlen);
+    char b[32] = {0};
+    struct file fr = { .vnode = r, .off = 0 };
+    KASSERT(vfs_read(&fr, b, sizeof(b)) == mlen);
+    for (int i = 0; i < mlen; i++) { KASSERT(b[i] == msg[i]); }
+}
+
 // --- virtio-net (Phase 21) ---
 
 static void test_net_present(void)
@@ -2859,6 +2986,11 @@ static const struct ktest tests[] = {
     { "ext2: read small file",            test_ext2_read_small_file },
     { "ext2: read large file via indirect", test_ext2_read_indirect },
     { "ext2: readdir lists /test",        test_ext2_readdir_test_dir },
+    { "ext2: create + write + read",      test_ext2_create_write_read },
+    { "ext2: write grows past direct (indirect alloc)", test_ext2_write_grows_indirect },
+    { "ext2: truncate resets",            test_ext2_truncate_resets },
+    { "ext2: unlink",                     test_ext2_unlink },
+    { "ext2: persists across remount",    test_ext2_persists_remount },
     { "vfs: mount at /disk",              test_vfs_mount_at },
     { "input: two devices present",       test_input_devices_present },
     { "input: driver present",            test_input_present },
