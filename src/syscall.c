@@ -820,6 +820,47 @@ long do_syscall(struct trapframe *tf)
         ret = (long)tf->x[0];                 // keep the restored x0 (don't clobber below)
         break;
     }
+    case SYS_RT_SIGACTION: {                  // x0=sig, x1=const act*, x2=oact*, x3=sigsetsize
+        // The real-numbered sigaction busybox's musl emits. We map it onto the
+        // same per-thread handler/trampoline slots SYS_SIGNAL uses, so the
+        // existing signals_deliver() path runs busybox's handler unchanged.
+        //
+        // The sigaction struct layout (kernel/musl aarch64, 8-byte words):
+        //   word[0] = sa_handler  (function pointer)
+        //   word[1] = sa_flags
+        //   word[2] = sa_restorer (may be 0 on aarch64 musl; we use it as sig_tramp)
+        //   word[3..] = sa_mask   (signal set, ignored for now -- no per-thread mask yet)
+        //
+        // When signals_deliver() fires, it sets x0=sig, lr(x[30])=sig_tramp and
+        // branches to the handler. When the handler returns it lands on sig_tramp
+        // which must invoke rt_sigreturn (below) to restore the saved frame.
+        struct thread *t = sched_current();
+        int sig = (int)tf->x[0];
+        const uint64_t *act  = (const uint64_t *)(uintptr_t)tf->x[1];
+        uint64_t       *oact = (uint64_t *)(uintptr_t)tf->x[2];
+        if (!t || sig <= 0 || sig >= NSIG) { ret = -EINVAL; break; }
+        if (oact) {                            // report the previous disposition
+            oact[0] = (uint64_t)(uintptr_t)t->sig_handler[sig];
+            oact[1] = 0;
+            oact[2] = t->sig_tramp;
+        }
+        if (act) {
+            t->sig_handler[sig] = (uint64_t (*)(int))(uintptr_t)act[0];
+            if (act[2]) { t->sig_tramp = act[2]; }   // sa_restorer if musl supplies one
+        }
+        ret = 0; break;
+    }
+    case SYS_RT_SIGRETURN: {                  // identical to SYS_SIGRETURN
+        // musl's signal trampoline calls rt_sigreturn (syscall #139) rather than
+        // the MyOSv2-private SYS_SIGRETURN (#22). Both restore the pre-signal
+        // trap frame that signals_deliver() pushed onto the user stack; there is
+        // no semantic difference -- only the syscall number differs.
+        const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
+        uint64_t *d = (uint64_t *)tf;
+        for (unsigned i = 0; i < sizeof(struct trapframe) / 8; i++) { d[i] = saved[i]; }
+        ret = (long)tf->x[0];
+        break;
+    }
     case SYS_REPORT:                         // x0 = pid, x1 = value read back
         kprintf("  [user] process %d read %d  (%s)\n",
                 (int)tf->x[0], (int)tf->x[1],

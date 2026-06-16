@@ -32,7 +32,9 @@
 #define SYS_IOCTL  29  // x0=fd, x1=req, x2=arg -> 0 for tty reqs (TCGETS/...), else -ENOTTY
 #define SYS_WRITEV 66  // x0=fd, x1=struct iovec*, x2=iovcnt -> bytes / -errno
 #define SYS_SET_TID_ADDRESS 96  // x0=ptr (ignored; single-threaded) -> tid
+#define SYS_RT_SIGACTION   134  // real aarch64 sigaction busybox/musl emits
 #define SYS_RT_SIGPROCMASK 135  // no per-process signal mask yet -> 0 (no-op)
+#define SYS_RT_SIGRETURN   139  // real aarch64 sigreturn (mirrors SYS_SIGRETURN=22)
 #define SYS_GETCWD 17  // x0=buf, x1=size -> bytes (incl NUL) written / -errno
 #define SYS_CHDIR  49  // x0=path -> 0 / -errno (sets the process cwd)
 #define SYS_GETDENTS64 61 // x0=fd, x1=buf, x2=count -> bytes of dirents / 0 (end)

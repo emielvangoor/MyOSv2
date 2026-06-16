@@ -2000,6 +2000,27 @@ static void test_sig_default_vs_handler(void)
     KASSERT(signal_action(t, SIGKILL) == 0);            // SIGKILL uncatchable
 }
 
+// rt_sigaction (syscall #134): busybox/musl uses this Linux-numbered sigaction
+// to install handlers. Verify that do_syscall routes it to the same per-thread
+// sig_handler/sig_tramp slots that SYS_SIGNAL uses, so signals_deliver() can
+// invoke busybox's handler without any changes to the delivery path.
+static void test_rt_sigaction_installs(void)
+{
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *t = sched_current();
+    uint64_t act[8];                          // [0]=handler,[1]=flags,[2]=restorer,[3..]=mask
+    for (int i = 0; i < 8; i++) { act[i] = 0; }
+    act[0] = 0x8000000040ULL;                 // pretend handler address in user space
+    act[2] = 0x8000000080ULL;                 // restorer (sa_restorer) == our trampoline
+    struct trapframe tf;
+    tf.x[8] = SYS_RT_SIGACTION; tf.x[0] = SIGINT;
+    tf.x[1] = (uint64_t)(uintptr_t)act; tf.x[2] = 0; tf.x[3] = 8;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);                                           // success
+    KASSERT((uint64_t)(uintptr_t)t->sig_handler[SIGINT] == 0x8000000040ULL); // handler stored
+    KASSERT(t->sig_tramp == 0x8000000080ULL);                               // tramp from sa_restorer
+}
+
 // --- virtio block device (Phase 19) ---
 
 static void test_block_present(void)
@@ -3089,6 +3110,7 @@ static const struct ktest tests[] = {
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },
     { "sig: default vs handler action",   test_sig_default_vs_handler },
+    { "sig: rt_sigaction installs handler", test_rt_sigaction_installs },
     { "sig: process groups (kill -pgid)", test_process_groups },
     { "sig: kill/setpgid linux numbers",  test_kill_setpgid_linux_numbers },
     { "block: disk present",              test_block_present },
