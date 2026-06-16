@@ -143,6 +143,12 @@ photograph itself: `(screenshot "/shot.ppm")`.
   so **unmodified static musl binaries run**: `/bin/busybox` (echo, `uname -a`,
   `ls` via `getdents64`, …) and small `aarch64-linux-musl-gcc -static` programs.
   See **[docs/superpowers/specs/2026-06-15-musl-port-design.md](docs/superpowers/specs/2026-06-15-musl-port-design.md)**.
+- **Interactive busybox shell** — `(run "busybox" "sh")` drops you into a real
+  `ash` prompt over the console: terminal `ioctl`s make `isatty()` true, and bare
+  command names (`ls`, `cat`, `grep`, …) resolve through **`/bin` symlinks** to
+  the busybox multicall binary. ext2 grew read-only **symlink** support and the
+  VFS follows them during path lookup; `rt_sigaction`/`getpgid`/`ppoll` round out
+  the job-control syscalls ash needs.
 - **Compiles C *on the machine*, against a real libc** — `/bin/tcc` is a
   static-musl [TinyCC](https://repo.or.cz/tinycc.git) that runs on MyOSv2 and
   compiles + links C in one process. A **musl sysroot is baked onto the ext2
