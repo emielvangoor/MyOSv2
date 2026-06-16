@@ -44,6 +44,9 @@ struct thread {
     void *wait_chan;       // wait-channel this thread is BLOCKED on (0 if none)
     struct addrspace *as;  // user address space (NULL for kernel threads)
     struct file *fds[16];  // open file table (a process). NULL = free.
+    char cwd[256];         // current working directory (absolute); fork copies
+                           // it, exec preserves it. Relative paths in openat/
+                           // newfstatat resolve against it. Defaults to "/".
     struct thread *parent; // who created us (NULL for the boot/idle thread)
     int exit_status;       // status passed to exit() (read by the parent's wait)
     uint64_t sig_pending;            // bitmask of posted-but-undelivered signals

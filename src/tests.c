@@ -827,6 +827,53 @@ static void test_fd_close_reuse(void)
     KASSERT(fd_a == fd_b);
 }
 
+// cwd: chdir/getcwd + relative paths resolve against the process cwd.
+static int cwd_ok;
+static void cwd_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    char buf[64];
+    int ok = 1;
+    tf.x[8] = SYS_GETCWD; tf.x[0] = (uint64_t)(uintptr_t)buf; tf.x[1] = 64;
+    do_syscall(&tf); ok = ok && bytes_eq(buf, "/", 2);              // starts at root
+    tf.x[8] = SYS_CHDIR; tf.x[0] = (uint64_t)(uintptr_t)"/a";
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == 0);
+    tf.x[8] = SYS_GETCWD; tf.x[0] = (uint64_t)(uintptr_t)buf; tf.x[1] = 64;
+    do_syscall(&tf); ok = ok && bytes_eq(buf, "/a", 3);
+    tf.x[8] = SYS_CHDIR; tf.x[0] = (uint64_t)(uintptr_t)"b";        // relative
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == 0);
+    tf.x[8] = SYS_GETCWD; tf.x[0] = (uint64_t)(uintptr_t)buf; tf.x[1] = 64;
+    do_syscall(&tf); ok = ok && bytes_eq(buf, "/a/b", 5);
+    tf.x[8] = SYS_CHDIR; tf.x[0] = (uint64_t)(uintptr_t)"..";       // pops a component
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == 0);
+    tf.x[8] = SYS_GETCWD; tf.x[0] = (uint64_t)(uintptr_t)buf; tf.x[1] = 64;
+    do_syscall(&tf); ok = ok && bytes_eq(buf, "/a", 3);
+    // a relative create lands in the cwd: "x" -> /a/x
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"x"; tf.x[2] = O_CREAT; tf.x[3] = 0;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] >= 0);
+    ok = ok && (vfs_lookup("/a/x") != 0);
+    tf.x[8] = SYS_CHDIR; tf.x[0] = (uint64_t)(uintptr_t)"/nope";    // missing -> ENOENT
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -ENOENT);
+    tf.x[8] = SYS_CHDIR; tf.x[0] = (uint64_t)(uintptr_t)"/a/f";     // a file -> ENOTDIR
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -ENOTDIR);
+    cwd_ok = ok ? 1 : -1;
+}
+static void test_cwd_chdir_getcwd(void)
+{
+    pmm_init(); kheap_init();
+    vfs_mount_root(ramfs_type());
+    vfs_create("/a", VN_DIR);
+    vfs_create("/a/b", VN_DIR);
+    vfs_create("/a/f", VN_FILE);
+    cwd_ok = 0;
+    sched_init();
+    thread_create(cwd_worker, 0, 1);
+    while (cwd_ok == 0) { yield(); }
+    KASSERT(cwd_ok == 1);
+}
+
 // getdents64: open a directory fd and read packed linux_dirent64 records.
 static uint8_t gd_buf[512];
 static long gd_n;
@@ -2720,6 +2767,7 @@ static const struct ktest tests[] = {
     { "fd: read syscall",                 test_fd_read_syscall },
     { "fd: open missing -> -1",           test_fd_open_missing },
     { "fd: close then reuse",             test_fd_close_reuse },
+    { "cwd: chdir + getcwd + relative",   test_cwd_chdir_getcwd },
     { "getdents64: lists directory",      test_getdents64_lists },
     { "cow: clone shares pages",          test_cow_clone_shares_pages },
     { "cow: clone refcount 2",            test_cow_clone_refcount },

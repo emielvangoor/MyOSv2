@@ -18,6 +18,8 @@
 #define SYS_CLONE  220
 #define SYS_EXECVE 221
 #define SYS_WAIT4  260
+#define SYS_GETCWD 17
+#define SYS_CHDIR  49
 #define SYS_GETDENTS64 61
 #define SYS_SLEEP  3
 

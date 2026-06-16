@@ -43,6 +43,51 @@ static void fill_stat(void *ubuf, struct vnode *vn)
     *(int64_t  *)(s + 64) = (int64_t)((vn->size + 511) / 512);  // st_blocks
 }
 
+// Resolve a user PATH against the current process's cwd into OUT as a canonical
+// ABSOLUTE path: a relative path is joined onto cwd, then "." components are
+// dropped and ".." pops the previous component (so "a/../b" -> "/b"). This is
+// what gives MyOSv2 a real working directory -- openat/newfstatat run every
+// path through it, so `tcc hello.c -o hello` writes hello in the cwd, not only
+// at the root. OUT must hold at least 256 bytes.
+static void resolve_path(const char *path, char *out, int outsz)
+{
+    char tmp[512];
+    int n = 0;
+    if (path[0] == '/') {                          // absolute: ignore cwd
+        for (int i = 0; path[i] && n < (int)sizeof(tmp) - 1; i++) { tmp[n++] = path[i]; }
+    } else {                                       // relative: cwd + "/" + path
+        struct thread *t = sched_current();
+        const char *c = t ? t->cwd : "/";
+        for (int i = 0; c[i] && n < (int)sizeof(tmp) - 1; i++) { tmp[n++] = c[i]; }
+        if (n == 0 || tmp[n - 1] != '/') { if (n < (int)sizeof(tmp) - 1) { tmp[n++] = '/'; } }
+        for (int i = 0; path[i] && n < (int)sizeof(tmp) - 1; i++) { tmp[n++] = path[i]; }
+    }
+    tmp[n] = 0;
+
+    // Canonicalize component by component into OUT.
+    int olen = 0;
+    int p = 0;
+    while (tmp[p]) {
+        while (tmp[p] == '/') { p++; }             // skip run of slashes
+        if (!tmp[p]) { break; }
+        int q = p;
+        while (tmp[q] && tmp[q] != '/') { q++; }   // component is [p, q)
+        int clen = q - p;
+        if (clen == 1 && tmp[p] == '.') {
+            // "." -> stay put
+        } else if (clen == 2 && tmp[p] == '.' && tmp[p + 1] == '.') {
+            while (olen > 0 && out[olen - 1] != '/') { olen--; }  // pop component
+            if (olen > 0) { olen--; }                              // drop its '/'
+        } else {
+            if (olen < outsz - 1) { out[olen++] = '/'; }
+            for (int k = p; k < q && olen < outsz - 1; k++) { out[olen++] = tmp[k]; }
+        }
+        p = q;
+    }
+    if (olen == 0) { out[olen++] = '/'; }          // everything collapsed -> root
+    out[olen] = 0;
+}
+
 long do_syscall(struct trapframe *tf)
 {
     uint64_t num = tf->x[8];
@@ -65,10 +110,11 @@ long do_syscall(struct trapframe *tf)
         break;
     }
     case SYS_OPENAT: {                      // x0=dirfd, x1=path, x2=flags, x3=mode
-        // dirfd is AT_FDCWD only (no per-process cwd/dirfd yet); paths resolve
-        // as the VFS does today. O_CREAT makes a missing file; O_TRUNC is not
-        // yet honored (the SFS can't shrink -- same as the old creat).
-        const char *path = (const char *)(uintptr_t)tf->x[1];
+        // dirfd is AT_FDCWD only; paths resolve against the process cwd (a
+        // relative path is joined onto it -- see resolve_path). O_CREAT makes a
+        // missing file; O_TRUNC is not yet honored (the SFS can't shrink).
+        char path[256];
+        resolve_path((const char *)(uintptr_t)tf->x[1], path, sizeof(path));
         int flags = (int)tf->x[2];
         struct file **fds = sched_current_fds();
         if (!fds) { ret = -EBADF; break; }
@@ -228,7 +274,9 @@ long do_syscall(struct trapframe *tf)
         break;
     }
     case SYS_NEWFSTATAT: {                    // x0=dirfd, x1=path, x2=statbuf, x3=flags
-        struct vnode *vn = vfs_lookup((const char *)(uintptr_t)tf->x[1]);
+        char path[256];
+        resolve_path((const char *)(uintptr_t)tf->x[1], path, sizeof(path));
+        struct vnode *vn = vfs_lookup(path);
         if (!vn) { ret = -ENOENT; break; }
         fill_stat((void *)(uintptr_t)tf->x[2], vn);
         ret = 0;
@@ -282,6 +330,37 @@ long do_syscall(struct trapframe *tf)
             fds[fd]->off++;
         }
         ret = (long)used;   // 0 once readdir is exhausted -> end-of-directory
+        break;
+    }
+    case SYS_CHDIR: {                        // x0 = path -> 0 / -errno
+        // Resolve PATH against the current cwd, require it to be a directory,
+        // then record it as the process's new cwd (canonical absolute form).
+        char path[256];
+        resolve_path((const char *)(uintptr_t)tf->x[0], path, sizeof(path));
+        struct vnode *vn = vfs_lookup(path);
+        if (!vn) { ret = -ENOENT; break; }
+        if (vn->type != VN_DIR) { ret = -ENOTDIR; break; }
+        struct thread *t = sched_current();
+        if (!t) { ret = -EINVAL; break; }
+        int i = 0;
+        while (path[i] && i < (int)sizeof(t->cwd) - 1) { t->cwd[i] = path[i]; i++; }
+        t->cwd[i] = 0;
+        ret = 0;
+        break;
+    }
+    case SYS_GETCWD: {                       // x0 = buf, x1 = size -> len incl NUL / -errno
+        // Linux getcwd writes the NUL-terminated cwd and returns its length
+        // including the terminator; musl's wrapper hands back the buffer.
+        char *ubuf = (char *)(uintptr_t)tf->x[0];
+        uint64_t size = tf->x[1];
+        struct thread *t = sched_current();
+        const char *c = t ? t->cwd : "/";
+        uint64_t len = 0;
+        while (c[len]) { len++; }
+        if (size < len + 1) { ret = -ERANGE; break; }   // caller's buffer too small
+        for (uint64_t i = 0; i < len; i++) { ubuf[i] = c[i]; }
+        ubuf[len] = 0;
+        ret = (long)(len + 1);
         break;
     }
     case SYS_BRK: {                          // x0 = new break (0 = query)

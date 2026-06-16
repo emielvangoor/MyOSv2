@@ -96,6 +96,7 @@ struct thread *thread_create(void (*fn)(void *), void *arg, int priority)
     t->wait_chan = 0;
     t->as        = 0;            // kernel thread: no user address space
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
+    t->cwd[0] = '/'; t->cwd[1] = 0;   // a fresh process starts at the root
     t->parent      = current;    // the creating thread is our parent
     t->exit_status = 0;
     sig_init(t);
@@ -165,6 +166,8 @@ int sched_fork(struct trapframe *parent_tf)
         t->fds[i] = current->fds[i];                 // share open files...
         if (t->fds[i]) { file_dup(t->fds[i]); }      // ...with a reference each
     }
+    { int i = 0; while (current->cwd[i] && i < 255) { t->cwd[i] = current->cwd[i]; i++; }
+      t->cwd[i] = 0; }                               // inherit the parent's cwd
     t->parent      = current;                        // the forking thread is our parent
     t->exit_status = 0;
     sig_init(t);
@@ -216,6 +219,7 @@ struct thread *thread_create_image(const void *img, uint64_t len, int priority)
     t->wait_chan = 0;
     t->as        = as_create_elf(img, len, &entry); // ELF: its own private AS
     for (int i = 0; i < 16; i++) { t->fds[i] = 0; }
+    t->cwd[0] = '/'; t->cwd[1] = 0;            // a fresh process starts at the root
     t->parent      = current;                 // the spawning thread is our parent
     t->exit_status = 0;
     sig_init(t);
