@@ -28,25 +28,26 @@ OBJ  := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) \
         $(BUILD)/user_blob.o
 DEP  := $(OBJ:.o=.d)
 
-# User programs are separate ELF64 executables linked at USER_CODE_VA, each
-# embedded into the kernel image as a C byte array (<prog>_elf / <prog>_elf_len)
-# and unpacked into /bin by the initrd. The kernel's ELF loader maps their
-# segments at load/exec time.
+# User programs are separate ELF64 executables linked at USER_CODE_VA. They are
+# staged into $(BUILD)/rootfs/bin/ and baked onto the ext2 disk image (see the
+# disk.img recipe) -- they are NOT embedded in the kernel. The kernel's ELF
+# loader maps their segments at exec time, reading the ELF from disk.
 PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest teapot
-# The .l files embedded into the kernel and unpacked to /lib by the initrd.
+# The Lisp library: .l files copied into $(BUILD)/rootfs/lib/ and baked onto the
+# ext2 disk image; /bin/lisp loads them from /lib at startup.
 LISP_FILES  := bootstrap system modes fr-repl fr-edit fr-modes fr-keys fr-files fr-mini fr-help frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 
 # Real Linux binaries, built with the musl cross-compiler (-static -no-pie so
-# the loader needs no relocations) and embedded in the initrd alongside the
-# native programs. The whole point of Phase 28: these run on the migrated ABI.
+# the loader needs no relocations) and staged onto the ext2 disk image alongside
+# the native programs. The whole point of Phase 28: these run on the migrated ABI.
 MUSL_CC     := aarch64-linux-musl-gcc
 MUSL_PROGS  := mhello mmalloc mfork mfile
 MUSL_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(MUSL_PROGS))
 
-# Prebuilt static-musl binaries embedded in the initrd as-is (built from source
-# with CONFIG_STATIC + -Wl,-Ttext-segment=0x8000000000; see user/musl/*.bin).
+# Prebuilt static-musl binaries staged onto the ext2 disk image as-is (built from
+# source with CONFIG_STATIC + -Wl,-Ttext-segment=0x8000000000; see user/musl/*.bin).
 # busybox is the forcing function for the long syscall tail.
 PREBUILT_PROGS := busybox tcc
 PREBUILT_ELFS  := $(patsubst %,$(BUILD)/user/%.elf,$(PREBUILT_PROGS))
@@ -154,7 +155,7 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycr
 	# --- /lib: the Lisp library + the crt tcc links against ---
 	for f in $(LISP_FILES); do cp user/lisp/$$f.l $(BUILD)/rootfs/lib/$$f.l; done
 	cp $(BUILD)/user/mycrt.elf $(BUILD)/rootfs/lib/mycrt.o
-	# --- seed sources (were in initrd.c); persist once edited on-device ---
+	# --- seed C sources; persist once edited on-device ---
 	printf '#include <stdio.h>\nint main(void){\n  printf("hello from tcc on myosv2: x=%%d s=%%s\\n", 42, "ok");\n  return 0;\n}\n' > $(BUILD)/rootfs/hello.c
 	printf 'void puts(const char *);\nint main(void){\n  puts("hello from tcc on myosv2\\n");\n  return 0;\n}\n' > $(BUILD)/rootfs/hellobare.c
 	# --- /usr: the musl sysroot (moved from /disk/usr to /usr) ---
@@ -217,8 +218,8 @@ $(BUILD)/user/teapot.elf: user/teapot.c user/teapot_data.h $(TGL_OBJS) $(USER_CO
 	mkdir -p $(BUILD)/user
 	$(CC) $(USER_CFLAGS) $(TGL_INC) -T user/user.ld -o $@ $(USER_COMMON) user/teapot.c $(TGL_OBJS)
 
-# Build a musl program (real Linux binary) into the initrd. We link it into the
-# CLEAN user VA range (0x80_0000_0000+, l0 index >= 1) instead of musl's default
+# Build a musl program (real Linux binary) for the ext2 disk image. We link it
+# into the CLEAN user VA range (0x80_0000_0000+, l0 index >= 1) instead of musl's default
 # 0x400000, which in our address space falls under l0[0] -- the shared kernel
 # identity map (block descriptors) -- where a user page can't be inserted.
 # (Running UNMODIFIED 0x400000 binaries would instead need block-splitting in
