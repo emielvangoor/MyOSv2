@@ -39,6 +39,7 @@ struct rd_cell { unsigned char ch, face; };
 struct rd_buffer {
     char name[32];
     char mode_line[24];             // mode name shown in the mode line ("" = none)
+    int  wrap;                      // line-wrap minor mode: 1 = wrap long lines, 0 = truncate (default)
     char *text;
     int  cap, gap_start, gap_end;
     int  point;                     // cursor position, in TEXT coordinates
