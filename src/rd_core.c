@@ -254,8 +254,8 @@ static void put_cell(struct rd_frame *f, int col, int row, int ch, int face)
     f->back[row * f->cols + col].face = (unsigned char)face;
 }
 
-// Lay out one leaf window's rect: text lines (truncated, never wrapped),
-// then its modeline on its last row.
+// Lay out one leaf window's rect: text lines (truncated by default; wrapped
+// when the buffer's line-wrap minor mode is on), then its modeline on its last row.
 static void layout_leaf(struct rd_frame *f, struct rd_win *w)
 {
     struct rd_buffer *b = w->buf;

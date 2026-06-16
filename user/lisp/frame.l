@@ -218,15 +218,72 @@ into. Keys do nothing -- it is not text."
         "Lisp Interaction: RET=newline; C-j evaluates the form before point."
         "Lisp Interaction"))
 
+;; ---- minor modes: buffer-local toggles that compose with the major mode ----
+;; A minor mode is a symbol with a registry entry (lighter keymap effect-fn):
+;; the lighter is the tag it adds to the mode line, the keymap (may be nil) is
+;; consulted by dispatch BEFORE the major-mode chain (Emacs precedence), and the
+;; effect-fn is run with t/nil whenever the mode turns on/off. Which minors are
+;; ACTIVE is a buffer-local list ('minor-modes), so each buffer toggles its own.
+(setq *minor-modes* nil)   ; alist (sym . (lighter keymap effect-fn))
+
+(defun register-minor-mode (sym lighter keymap effect-fn)
+  "Register minor mode SYM: LIGHTER (mode-line tag), optional KEYMAP, and
+EFFECT-FN called with t/nil when the mode turns on/off."
+  (setq *minor-modes* (cons (cons sym (list lighter keymap effect-fn))
+                            (filter (lambda (e) (not (eq (car e) sym))) *minor-modes*)))
+  sym)
+
+(defun minor-lighter (sym) (nth 0 (cdr (assoc sym *minor-modes*))))
+(defun minor-keymap (sym)  (nth 1 (cdr (assoc sym *minor-modes*))))
+(defun minor-effect-fn (sym) (nth 2 (cdr (assoc sym *minor-modes*))))
+
+(defun active-minor-modes () (buffer-local-get (current-buffer) 'minor-modes nil))
+(defun minor-mode-on-p (sym) (member sym (active-minor-modes)))
+
+(defun mode-line-string ()
+  "Compose '<Major> <Lighter1> <Lighter2>...' for the current buffer."
+  (let ((s (mode-line-name-of (buffer-mode (current-buffer)))))
+    (foreach (lambda (m) (setq s (string-concat s " " (minor-lighter m))))
+             (active-minor-modes))
+    s))
+
+(defun refresh-mode-line () (set-mode-line-name (mode-line-string)))
+
 (defun set-major-mode (buf mode-sym)
   "Make BUF use MODE-SYM: record it (buffer-local), select it, paint the mode
-line, and run the mode's setup-fn."
+line (major name + any active minor lighters), and run the mode's setup-fn."
   (buffer-local-set buf 'major-mode mode-sym)
   (set-buffer buf)
-  (set-mode-line-name (mode-line-name-of mode-sym))
-  ;; this Lisp has no funcall: (eval (list s)) calls the setup fn named by symbol s
+  ;; refresh-mode-line reads buffer-mode (just set) + active minors, so the bar
+  ;; always reflects major + minors -- not just the bare major name.
+  (refresh-mode-line)
+  ;; funcall needs a function VALUE, not a symbol; (eval (list s)) calls the
+  ;; setup fn named by the symbol s (s sits in function position for eval).
   (let ((s (mode-setup-fn mode-sym))) (if s (eval (list s)) nil))
   mode-sym)
+
+(defun toggle-minor-mode (sym)
+  "Flip minor mode SYM in the current buffer: update the active list, run its
+effect, repaint the mode line, redisplay, and echo the new state."
+  (let ((on (not (minor-mode-on-p sym))))
+    (buffer-local-set (current-buffer) 'minor-modes
+      (if on (cons sym (active-minor-modes))
+        (filter (lambda (m) (not (eq m sym))) (active-minor-modes))))
+    ;; effect-fn is stored as a SYMBOL; this Lisp's funcall needs a function
+    ;; VALUE, so call it the way set-major-mode calls its setup-fn: build the
+    ;; form (effect-fn on) and eval it.
+    (let ((fx (minor-effect-fn sym))) (if fx (eval (list fx on)) nil))
+    (refresh-mode-line)
+    (redisplay)
+    (echo (string-concat (symbol-name sym) (if on " enabled" " disabled")))))
+
+(defun line-wrap-effect (on) (set-line-wrap (if on 1 0)))
+(register-minor-mode 'line-wrap "Wrap" nil 'line-wrap-effect)
+
+(defun line-wrap-mode ()
+  "Toggle line wrapping in the current buffer (minor mode; lighter Wrap)."
+  (interactive)
+  (toggle-minor-mode 'line-wrap))
 
 ;; ---- lisp-interaction: evaluate the form before point (C-j) ----
 (defun sexp-ws-p (c) (or (= c 32) (= c 10) (= c 9)))   ; space/newline/tab
@@ -342,9 +399,18 @@ the whole event, not a bare char."
   (setq pending-cx nil)
   (if (run-key ev cx-keymap) nil (echo "unbound C-x key")))
 
+(defun minor-maps-lookup (ev lst)
+  "First binding for EV among the active minor modes' keymaps (a nil keymap is
+inert: key-lookup returns nil for it), or nil if none bind it."
+  (cond ((null lst) nil)
+        ((key-lookup ev (minor-keymap (car lst))))   ; nil keymap -> key-lookup nil -> nil
+        (t (minor-maps-lookup ev (cdr lst)))))
+
 (defun run-mode-or-global (ev)
-  "Run EV via the current mode's keymap chain, else the global keymap."
-  (let ((b (mode-key-lookup (buffer-mode (current-buffer)) ev)))
+  "Run EV via active minor-mode maps, then the major-mode keymap chain, then global.
+Minor maps take precedence over the major mode (Emacs order)."
+  (let ((b (or (minor-maps-lookup ev (active-minor-modes))
+               (mode-key-lookup (buffer-mode (current-buffer)) ev))))
     (if b (progn (eval (list (nth 2 b))) t)
       (if (run-key ev global-keymap) t (progn (echo "unbound key") nil)))))
 
