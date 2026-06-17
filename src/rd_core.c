@@ -524,6 +524,83 @@ void rd_buf_mark_props(struct rd_buffer *b, void (*mark)(Lobj))
 
 #endif  // LM_BUILD
 
+// ---- named face resolver (LM_BUILD only) ------------------------------------
+//
+// rd_resolve_face is the bridge between a Lisp `face` text-property value and
+// the numeric face id that a cell's .face byte carries.  Three input shapes:
+//
+//   nil / unknown symbol  ->  0 (the default face: guaranteed safe)
+//   a face-name symbol    ->  look up via gfx_face_id() (lm_gfx.c owns the
+//                             name->id registry)
+//   a LIST of face names  ->  MERGE: start from the default face, walk the list
+//                             left to right applying each face's SET attributes
+//                             (fg_set, bg_set, bold, inverse, underline); later
+//                             entries override earlier ones.  Then find an
+//                             existing slot whose attributes match the merged
+//                             result, or allocate the next free slot for it.
+//
+// The find-before-allocate step keeps the face table stable across multiple
+// redisplay passes: if the same list appears on every character of a word, the
+// second character resolves to the same id as the first (no runaway growth).
+// When the table is full (n_faces_used == RD_NFACES) we fall back to 0 rather
+// than silently stomping an existing face.
+
+#ifdef LM_BUILD
+int rd_resolve_face(struct rd_frame *f, Lobj v)
+{
+    if (IS_NIL(v)) { return 0; }
+
+    // Fast path: a single face name symbol -- just look it up.
+    if (IS_SYMBOL(v)) {
+        int id = gfx_face_id(v);
+        return (id >= 0 && id < RD_NFACES) ? id : 0;
+    }
+
+    // Merge path: a list (face1 face2 ...).
+    // Start from a copy of the default face (index 0), which has all attributes
+    // set, so the result is always fully specified even if none of the listed
+    // faces carry fg or bg.
+    if (IS_CONS(v)) {
+        struct rd_face m = f->faces[0];   // working merged result; copy, not ptr
+        for (Lobj p = v; IS_CONS(p); p = CDR(p)) {
+            int id = gfx_face_id(CAR(p));
+            if (id < 0 || id >= f->n_faces_used) { continue; }
+            struct rd_face *s = &f->faces[id];
+            // Each face in the list only OVERRIDES the attributes it explicitly
+            // specifies (fg_set/bg_set == 1); unset attributes are inherited
+            // from what was already accumulated -- the classic Emacs face merge.
+            if (s->fg_set)    { m.fg = s->fg; m.fg_set = 1; }
+            if (s->bg_set)    { m.bg = s->bg; m.bg_set = 1; }
+            if (s->bold)      { m.bold = 1; }
+            if (s->inverse)   { m.inverse = 1; }
+            if (s->underline) { m.underline = 1; }
+        }
+
+        // Scan the already-allocated face slots for an identical entry.
+        // This prevents the table from growing when the same list appears
+        // on every character of a colored span -- redisplay calls us once
+        // per character, so stability here is important.
+        for (int i = 0; i < f->n_faces_used; i++) {
+            struct rd_face *e = &f->faces[i];
+            if (e->fg == m.fg && e->bg == m.bg &&
+                e->bold == m.bold && e->inverse == m.inverse &&
+                e->underline == m.underline &&
+                e->fg_set == m.fg_set && e->bg_set == m.bg_set) {
+                return i;
+            }
+        }
+        // No existing slot matched: claim the next free one.
+        if (f->n_faces_used < RD_NFACES) {
+            f->faces[f->n_faces_used] = m;
+            return f->n_faces_used++;
+        }
+        return 0;   // table full -- fall back to default rather than clobbering
+    }
+
+    return 0;
+}
+#endif  // LM_BUILD
+
 // ---- frame & window tree --------------------------------------------------
 
 static struct rd_win *win_alloc(struct rd_frame *f)
@@ -552,11 +629,32 @@ void rd_frame_init(struct rd_frame *f, int px_w, int px_h,
     f->root = f->selected = win_alloc(f);
     f->root->buf = initial;
     // Default faces: 0 = text (light on near-black), 1 = modeline (inverse),
-    // 2 = reserved for region highlight later. Lisp can repaint these.
+    // 2 = region/selection bar.  Lisp can repaint or extend these via defface.
+    //
+    // All built-in faces specify both colors (fg_set=bg_set=1) and start with
+    // all attribute bits cleared.  The fill loop for 3..RD_NFACES copies face 0
+    // as a sane default so any unregistered slot is never garbage.
     f->faces[0].fg = 0x00D5C4A1; f->faces[0].bg = 0x001D2021;
+    f->faces[0].fg_set = 1; f->faces[0].bg_set = 1;
+    f->faces[0].bold = 0; f->faces[0].inverse = 0; f->faces[0].underline = 0;
+
     f->faces[1].fg = 0x001D2021; f->faces[1].bg = 0x00928374;
+    f->faces[1].fg_set = 1; f->faces[1].bg_set = 1;
+    f->faces[1].bold = 0; f->faces[1].inverse = 0; f->faces[1].underline = 0;
+
     f->faces[2].fg = 0x00FBF1C7; f->faces[2].bg = 0x00504945;   // selection bar
+    f->faces[2].fg_set = 1; f->faces[2].bg_set = 1;
+    f->faces[2].bold = 0; f->faces[2].inverse = 0; f->faces[2].underline = 0;
+
+    // Slots 3..RD_NFACES-1: copy default (face 0) so unregistered ids are safe.
     for (int i = 3; i < RD_NFACES; i++) { f->faces[i] = f->faces[0]; }
+
+    // n_faces_used is the single allocation cursor shared between:
+    //   • lm_gfx's defface / face_alloc (which registers named faces)
+    //   • rd_resolve_face's merge-allocator (which find-or-allocates merged slots)
+    // Initialize to 3 (the three built-ins 0/1/2 are already committed).
+    // lm_gfx_register then bumps it when it interns the built-in name symbols.
+    f->n_faces_used = 3;
     f->echo[0] = 0;
     f->echo_sel = -1;
     f->front = front; f->back = back;

@@ -60,7 +60,7 @@ struct rd_interval {
 #define RD_CELL_H 40                // the prerendered anti-aliased font's cell
                                     // (must match src/font_aa.h's FONT_AA_W/H)
 #define RD_MAX_WIN 16               // window-tree node pool (per frame)
-#define RD_NFACES 8
+#define RD_NFACES 64
 #define RD_MAX_RECTS 32
 #define RD_ECHO_MAX 10              // minibuffer: input + up to 9 candidates
 
@@ -70,7 +70,18 @@ struct rd_interval {
 #define RD_TEXT    0
 #define RD_SURFACE 1
 
-struct rd_face { uint32_t fg, bg; };          // 0x00RRGGBB each
+// A named, themeable face: two 0x00RRGGBB colors plus attribute bits.
+// fg_set / bg_set indicate whether this face explicitly specifies each color
+// (1) or defers to the next face in the merge chain (0 = inherit). This lets
+// a face like `bold` carry only bold=1 without clobbering fg/bg.
+//
+// The kernel renderer reads only fg and bg; the extra bytes are plain ints
+// (no Lobj) so the struct is kernel-safe and needs NO #ifdef guard.
+struct rd_face {
+    uint32_t fg, bg;                             // 0x00RRGGBB each
+    unsigned char bold, inverse, underline;      // attributes; inverse swaps fg/bg at paint time
+    unsigned char fg_set, bg_set;                // 1 = this face specifies the color (else inherit)
+};
 struct rd_cell { unsigned char ch, face; };
 
 // A gap buffer: the text is text[0,gap_start) + text[gap_end,cap). Insertion
@@ -116,6 +127,11 @@ struct rd_frame {
     struct rd_win wins[RD_MAX_WIN];
     struct rd_win *root, *selected;
     struct rd_face faces[RD_NFACES];   // 0 default, 1 modeline, 2 cursor
+    // High-water mark: the next free slot in faces[]. Built-in faces 0/1/2 are
+    // allocated by rd_frame_init; lm_gfx's defface and rd_resolve_face's
+    // merge-allocator BOTH claim slots from this single cursor so they never
+    // collide. Plain int -- no guard needed.
+    int n_faces_used;
     char echo[512];                 // multi-line: the minibuffer lives here
     int  echo_sel;                  // echo line drawn as the selection bar (-1 none)
     struct rd_cell *front, *back;   // cols*rows each, caller-allocated
@@ -191,4 +207,19 @@ void rd_remove_text_props(struct rd_buffer *b, int start, int end, Lobj props);
 // the mark-sweep collector can reach the property plists. Without this, a GC
 // between put-text-property and redisplay could free a face cons cell.
 void rd_buf_mark_props(struct rd_buffer *b, void (*mark)(Lobj));
+
+// ---- face name resolver (LM_BUILD only) --------------------------------------
+//
+// rd_resolve_face maps a `face` text-property value to a concrete cell face id:
+//   nil / unknown symbol -> 0 (default face)
+//   a face-name symbol   -> the id registered by gfx_face_id()
+//   a list of face names -> merge all named faces in order (later overrides),
+//                           then find-or-allocate a slot for the merged result.
+//
+// gfx_face_id is the lookup half (lm_gfx.c owns the name->id registry).
+// rd_resolve_face is the merge/resolve half (rd_core.c, guarded here).
+// Together they are the bridge that lets `face = ansi-blue` (a Lisp symbol in
+// a text-property) turn into a numeric slot id the cell grid understands.
+int  rd_resolve_face(struct rd_frame *f, Lobj face_value);
+int  gfx_face_id(Lobj name);   // implemented in lm_gfx.c
 #endif

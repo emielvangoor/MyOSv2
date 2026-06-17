@@ -34,6 +34,48 @@ static int buf_shm[NBUFS];          /* shm handle per surface buffer (-1 = none)
 static struct gfx_info gi;          /* the mapped framebuffer */
 static int frame_ready;
 
+/* ---- face name registry -------------------------------------------------- */
+/*
+ * face_names[id] is the interned symbol whose name was passed to (defface).
+ * Slot 0 = "default", 1 = "mode-line", 2 = "region" (registered at gfx init).
+ * Remaining slots are filled on demand by defface / face_alloc.
+ *
+ * WHY interned symbols are GC-safe here:
+ *   intern() adds the symbol to symtab[], and gc_collect's mark phase starts
+ *   by marking every entry in symtab[].  So any symbol returned by intern()
+ *   is a GC root and will never be swept.  Storing it in face_names[] is
+ *   therefore safe without a separate root -- but we ALSO mark it in
+ *   gfx_gc_mark_buffers() as an extra safety net (cheap, belt-and-suspenders).
+ */
+static Lobj face_names[RD_NFACES];
+
+/* Find an existing face id by name, or claim the next free slot.
+ * Returns -1 if the table is full.  The SINGLE place that increments
+ * frame.n_faces_used so defface and rd_resolve_face never collide. */
+static int face_alloc(Lobj name)
+{
+    int i;
+    /* Re-use an existing slot for the same name (idempotent defface). */
+    for (i = 0; i < frame.n_faces_used; i++) {
+        if (face_names[i] == name) { return i; }
+    }
+    if (frame.n_faces_used >= RD_NFACES) { return -1; }
+    i = frame.n_faces_used++;
+    face_names[i] = name;
+    return i;
+}
+
+/* Look up a face id by its interned name symbol.
+ * Returns 0 (default) for unknown names so callers always get a safe value.
+ * Declared in rd.h (LM_BUILD section) so rd_resolve_face can call it. */
+int gfx_face_id(Lobj name)
+{
+    for (int i = 0; i < frame.n_faces_used; i++) {
+        if (face_names[i] == name) { return i; }
+    }
+    return 0;
+}
+
 /* The selected window's buffer -- the one Lisp edits. */
 static struct rd_buffer *cur(void) { return frame.selected->buf; }
 
@@ -66,7 +108,14 @@ static const char *req_string(Lobj o, const char *who)
 /* ---- frame bring-up ------------------------------------------------------- */
 
 /* (frame-init) -> t/nil. Acquire the framebuffer and stand up the frame with
- * one buffer, "*repl*". Idempotent. */
+ * one buffer, "*repl*". Idempotent.
+ *
+ * Face-name bootstrap: rd_frame_init sets n_faces_used=3 for the three
+ * built-in slots 0/1/2.  We register their interned names here so that
+ * (face-id 'default) -> 0, 'mode-line -> 1, 'region -> 2, before any
+ * user (defface ...) call runs.  We use face_names[] directly (bypassing
+ * face_alloc) because the ids are ALREADY claimed by rd_frame_init and we
+ * must not double-increment n_faces_used. */
 DEFGFX("frame-init", Gframe_init, 0, 0) {
     (void)args; (void)env;
     if (frame_ready) { return Qt; }
@@ -75,6 +124,14 @@ DEFGFX("frame-init", Gframe_init, 0, 0) {
     buf_used[0] = 1;
     rd_buf_init(&bufs[0], "*repl*", buf_store[0], BUF_CAP);
     rd_frame_init(&frame, (int)gi.w, (int)gi.h, front_grid, back_grid, &bufs[0]);
+    /* Zero out name slots so gfx_face_id's loop never reads uninitialised Lobj
+     * values (Qnil compares unequal to any real symbol). */
+    for (int i = 0; i < RD_NFACES; i++) { face_names[i] = Qnil; }
+    /* Bind the three built-in face ids to their canonical names. */
+    face_names[0] = intern("default");
+    face_names[1] = intern("mode-line");
+    face_names[2] = intern("region");
+    /* n_faces_used is already 3 from rd_frame_init -- do NOT touch it here. */
     frame_ready = 1;
     return Qt;
 }
@@ -318,14 +375,102 @@ DEFGFX("buffer-list", Gbuffer_list, 0, 0) {
     return out;
 }
 
-/* (set-face id fg bg) -- colors as 0x00RRGGBB fixnums. */
+/* (set-face id fg bg) -- legacy numeric face setter (colors as 0x00RRGGBB).
+ * The numeric `id` path bypasses the name registry; it is kept for backward
+ * compatibility with old Lisp code that drives faces by index directly. */
 DEFGFX("set-face", Gset_face, 3, 3) {
     (void)env;
     int id = (int)req_fixnum(nth_arg(args, 0), "set-face: id");
     if (id < 0 || id >= RD_NFACES) { lm_error("set-face: bad id", nth_arg(args, 0)); }
     frame.faces[id].fg = (uint32_t)req_fixnum(nth_arg(args, 1), "set-face: fg");
     frame.faces[id].bg = (uint32_t)req_fixnum(nth_arg(args, 2), "set-face: bg");
+    /* Mark both colors as set so the numeric path integrates cleanly with the
+     * merge resolver (a face with fg_set=0 would inherit from default). */
+    frame.faces[id].fg_set = 1;
+    frame.faces[id].bg_set = 1;
     return Qt;
+}
+
+/* ---- keyword attribute parser (shared by defface and set-face-attribute) --
+ *
+ * Walk `rest` two at a time as (:kw val :kw val ...).  For each pair, update
+ * the face slot at `id` in frame.faces[].  Recognized keywords:
+ *   :foreground  0x00RRGGBB fixnum  -> fg + fg_set=1
+ *   :background  0x00RRGGBB fixnum  -> bg + bg_set=1
+ *   :bold        non-nil/nil        -> bold bit
+ *   :inverse     non-nil/nil        -> inverse bit (swaps fg/bg at paint)
+ *   :underline   non-nil/nil        -> underline bit
+ * Unknown keywords are silently skipped (future-proof). */
+static void face_set_kw(int id, Lobj rest)
+{
+    static const char kfg[]  = ":foreground";
+    static const char kbg[]  = ":background";
+    static const char kbold[] = ":bold";
+    static const char kinv[]  = ":inverse";
+    static const char kul[]   = ":underline";
+    /* Intern once -- intern() returns the canonical symbol so == comparisons
+     * work without a string compare on every pair. */
+    Lobj sfg  = intern(kfg);
+    Lobj sbg  = intern(kbg);
+    Lobj sbold = intern(kbold);
+    Lobj sinv  = intern(kinv);
+    Lobj sul   = intern(kul);
+    for (Lobj p = rest; IS_CONS(p) && IS_CONS(CDR(p)); p = CDR(CDR(p))) {
+        Lobj kw  = CAR(p);
+        Lobj val = CAR(CDR(p));
+        if (kw == sfg) {
+            frame.faces[id].fg     = (uint32_t)req_fixnum(val, "face: :foreground must be fixnum");
+            frame.faces[id].fg_set = 1;
+        } else if (kw == sbg) {
+            frame.faces[id].bg     = (uint32_t)req_fixnum(val, "face: :background must be fixnum");
+            frame.faces[id].bg_set = 1;
+        } else if (kw == sbold) {
+            frame.faces[id].bold   = IS_NIL(val) ? 0 : 1;
+        } else if (kw == sinv) {
+            frame.faces[id].inverse = IS_NIL(val) ? 0 : 1;
+        } else if (kw == sul) {
+            frame.faces[id].underline = IS_NIL(val) ? 0 : 1;
+        }
+        /* unknown keyword -> skip the pair */
+    }
+}
+
+/* (defface NAME :kw val ...) -> face id (a fixnum).
+ * Register or update a named face.  NAME must be a symbol.  Keyword/value
+ * pairs following the name set the face's attributes (see face_set_kw).
+ * If NAME was already registered its existing slot is updated in place;
+ * otherwise the next free slot is claimed (n_faces_used advances).
+ *
+ * Example: (defface 'ansi-red :foreground 0xCC2424 :background 0x1D2021) */
+DEFGFX("defface", Gdefface, 1, 64) {
+    (void)env;
+    Lobj name = CAR(args);
+    if (!IS_SYMBOL(name)) { lm_error("defface: first arg must be a symbol", name); }
+    int id = face_alloc(name);
+    if (id < 0) { lm_error("defface: face table full", name); }
+    face_set_kw(id, CDR(args));
+    return FIXNUM(id);
+}
+
+/* (set-face-attribute NAME :kw val ...) -> face id (a fixnum).
+ * Identical to defface but named to match Emacs's set-face-attribute.
+ * Updates an existing face in place; creates it if new. */
+DEFGFX("set-face-attribute", Gsetfa, 1, 64) {
+    (void)env;
+    Lobj name = CAR(args);
+    if (!IS_SYMBOL(name)) { lm_error("set-face-attribute: first arg must be a symbol", name); }
+    int id = face_alloc(name);
+    if (id < 0) { lm_error("set-face-attribute: face table full", name); }
+    face_set_kw(id, CDR(args));
+    return FIXNUM(id);
+}
+
+/* (face-id NAME) -> fixnum id, or 0 for unknown names.
+ * A lightweight inspection helper: lets Lisp tests or init code verify that
+ * (defface 'ansi-red ...) actually claimed a slot. */
+DEFGFX("face-id", Gfaceid, 1, 1) {
+    (void)env;
+    return FIXNUM(gfx_face_id(CAR(args)));
 }
 
 /* (echo "msg") -> the echo area (the frame's last line). */
@@ -745,8 +890,17 @@ DEFGFX("remove-text-properties", Grem_tp, 3, 3) {
  */
 void gfx_gc_mark_buffers(void)
 {
+    /* Mark every live buffer's text-property plists so the GC cannot sweep
+     * face cons cells that are still referenced by interval plists. */
     for (int i = 0; i < NBUFS; i++) {
         if (buf_used[i]) { rd_buf_mark_props(&bufs[i], gc_mark); }
+    }
+    /* Also mark the face name symbols stored in face_names[].
+     * Interned symbols are ALREADY GC roots via symtab[], so this is a
+     * belt-and-suspenders guard against any future refactoring that might
+     * change that invariant.  The cost is negligible (RD_NFACES mark calls). */
+    for (int i = 0; i < RD_NFACES; i++) {
+        gc_mark(face_names[i]);
     }
 }
 
@@ -764,7 +918,8 @@ void lm_gfx_register(void)
     register_Gsplit_below(); register_Gsplit_right();
     register_Gother_window(); register_Gdelete_window();
     register_Gdelete_other(); register_Gbuffer_list();
-    register_Gset_face(); register_Gecho(); register_Gselect_at();
+    register_Gset_face(); register_Gdefface(); register_Gsetfa(); register_Gfaceid();
+    register_Gecho(); register_Gselect_at();
     register_Gredisplay(); register_Gread_event();
     register_Gread_event_nb(); register_Gpoll_fd();
     register_Gframe_output();
