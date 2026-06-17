@@ -83,7 +83,19 @@ def main() -> int:
         if blue < 100:
             print("FAIL: no ANSI-blue directory text rendered (blue px=%d)" % blue); return 1
 
-        print("TEXTPROPS OK (ansi-blue px=%d, escapes stripped)" % blue)
+        # (c) NO COLOR BLEED: a `face` interval must not grow rear-ward and swallow
+        # text appended after it. Run a plain `echo` after the colored ls; its
+        # output must add ~no blue. (The bug: an interval ending at the insertion
+        # point expanded over every subsequent insert -> the whole stream turned
+        # blue and stayed blue.)
+        qmp_type('(run "busybox" "echo" "ZZPLAINTEXTZZ")\n'); time.sleep(2.0)
+        qmp_screendump(dump); time.sleep(0.3)
+        blue_after = count_blue(dump)
+        if blue_after > blue + 60:
+            print("FAIL: color bled into plain `echo` output (blue %d -> %d)"
+                  % (blue, blue_after)); return 1
+
+        print("TEXTPROPS OK (ansi-blue px=%d, no bleed, escapes stripped)" % blue)
         return 0
     finally:
         q.kill()

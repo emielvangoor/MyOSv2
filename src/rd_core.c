@@ -97,9 +97,19 @@ void rd_buf_insert(struct rd_buffer *b, const char *s)
     // Boundaries exactly at p also shift, which means newly inserted text falls
     // BEFORE the existing interval -- inserted text is property-free by default,
     // exactly as Emacs's plain insert behaves (no sticky front/rear props here).
+    // Boundary stickiness (Emacs defaults: both front- and rear-NONSTICKY):
+    //   start shifts on >= p  -> text inserted AT an interval's start lands
+    //     BEFORE it (the interval does not grow leftward).
+    //   end shifts on >  p (NOT >= p) -> text inserted AT an interval's end lands
+    //     AFTER it (the interval does not grow rightward). This is critical: a
+    //     blue `ls` name ends exactly at point, and the next plain text is
+    //     appended there; with `>=` the blue interval would swallow it and every
+    //     subsequent insert, bleeding color over the whole rest of the stream.
+    //   An interval STRADDLING p (start < p < end) correctly expands (end > p),
+    //     so inserting inside a propertized region inherits it.
     for (int i = 0; i < b->n_ivals; i++) {
         if (b->ivals[i].start >= p) { b->ivals[i].start += n; }
-        if (b->ivals[i].end   >= p) { b->ivals[i].end   += n; }
+        if (b->ivals[i].end   >  p) { b->ivals[i].end   += n; }
     }
 #endif
 }
