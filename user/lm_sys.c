@@ -110,11 +110,20 @@ DEFSYS("wait", Swait, 0, 0) {
     return make_cons(FIXNUM(pid), FIXNUM(status));
 }
 
-/* (exit [code]) -> never returns. */
+/* (exit [code]) -> exits the process. EXCEPT in init (PID 1, the Lisp machine):
+ * if init exits there is nothing left to own the terminal or reap orphans and
+ * the whole machine locks up. So init refuses to exit -- the same guard
+ * serial_repl applies on EOF. Use (shutdown) to actually power off. */
 DEFSYS("exit", Sexit, 0, 1) {
     (void)env;
+    if (sys_getpid() == 1) {
+        const char *msg = "exit ignored -- I am init; use (shutdown) to power off\n";
+        int n = 0; while (msg[n]) { n++; }
+        sys_write(1, msg, n);
+        return Qnil;
+    }
     sys_exit(IS_NIL(args) ? 0 : (int)req_fixnum(CAR(args), "exit: code must be a fixnum"));
-    return Qnil;                            /* unreachable */
+    return Qnil;                            /* unreachable for non-init */
 }
 
 /* (kill pid sig) -> 0 or -1. */
