@@ -76,19 +76,23 @@ static void gap_move(struct rd_buffer *b, int pos)
 void rd_buf_insert(struct rd_buffer *b, const char *s)
 {
 #ifdef LM_BUILD
-    // Capture insert position and length BEFORE mutating the gap buffer, so the
-    // interval adjustment sees the pre-insert text coordinate. Text coords are
+    // Capture the insert position BEFORE mutating the gap buffer, so the interval
+    // adjustment sees the pre-insert text coordinate. Text coords are
     // gap-independent (logical positions), so p == b->point is correct here.
     int p = b->point;
-    int n = 0; { const char *t = s; while (t[n]) { n++; } }
 #endif
     gap_move(b, b->point);
     for (int i = 0; s[i]; i++) {
-        if (b->gap_start == b->gap_end) { return; }   // full: drop the rest
+        if (b->gap_start == b->gap_end) { break; }    // full: drop the rest, but
+                                                      // still adjust intervals below
         b->text[b->gap_start++] = s[i];
         b->point++;
     }
 #ifdef LM_BUILD
+    // Shift by the ACTUAL number inserted (b->point - p) -- which is < strlen(s)
+    // if the gap filled mid-string. Using the requested length would corrupt
+    // interval positions when the buffer is full.
+    int n = b->point - p;
     // Shift every interval boundary that is >= the insert point by +n.
     // Boundaries exactly at p also shift, which means newly inserted text falls
     // BEFORE the existing interval -- inserted text is property-free by default,
@@ -483,11 +487,23 @@ void rd_remove_text_props(struct rd_buffer *b, int start, int end, Lobj props)
     if (end   > len) { end   = len; }
     if (start >= end) { return; }
 
-    // Walk intervals that overlap [start, end).
+    // Split any interval straddling the edges first, so every interval is then
+    // either fully inside [start, end) or fully outside -- otherwise removing a
+    // key from an interval like [2,8) for a range [5,10) would wrongly strip the
+    // property from [2,5) too. (Same split prologue as rd_put_text_prop.)
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < start && iv->end > start) { if (ival_split_at(b, i, start) < 0) { return; } break; }
+    }
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < end && iv->end > end) { if (ival_split_at(b, i, end) < 0) { return; } break; }
+    }
+
+    // Now strip keys only from intervals FULLY inside [start, end).
     for (int i = 0; i < b->n_ivals; ) {
         struct rd_interval *iv = &b->ivals[i];
-        // Skip intervals entirely before or after [start, end).
-        if (iv->end <= start || iv->start >= end) { i++; continue; }
+        if (iv->start < start || iv->end > end) { i++; continue; }
 
         // Remove each key in PROPS from this interval's plist.
         Lobj pl = iv->plist;

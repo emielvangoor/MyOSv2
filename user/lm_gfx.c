@@ -696,7 +696,11 @@ DEFGFX("substring", Gsubstring, 3, 3) {
     int b = (int)req_fixnum(nth_arg(args, 2), "substring: end");
     if (a < 0) { a = 0; }
     if (b > (int)ls->len) { b = (int)ls->len; }
-    static char tmp[512];
+    // Sized to BUF_CAP, not a token-ish 512: ansi-color-apply substrings each
+    // run of a streamed output chunk (up to ~1 KiB), so a 512 cap would silently
+    // truncate plain program output > 511 bytes. A substring of a buffer-backed
+    // string cannot exceed BUF_CAP anyway.
+    static char tmp[BUF_CAP];
     int n = 0;
     for (int i = a; i < b && n < (int)sizeof(tmp) - 1; i++) { tmp[n++] = ls->data[i]; }
     tmp[n] = 0;
