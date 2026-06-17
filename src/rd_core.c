@@ -1062,15 +1062,31 @@ static void paint_cell(const struct rd_frame *f, uint32_t *fb, int stride,
                        int col, int row, const struct rd_cell *cell, int invert)
 {
     const struct rd_face *face = &f->faces[cell->face < RD_NFACES ? cell->face : 0];
-    uint32_t fg = invert ? face->bg : face->fg;
-    uint32_t bg = invert ? face->fg : face->bg;
+    // The face's `inverse` attribute swaps fg/bg, combined (XOR) with the
+    // cursor's invert -- so an inverse cell under the cursor reads normally.
+    int inv = invert ^ (face->inverse ? 1 : 0);
+    uint32_t fg = inv ? face->bg : face->fg;
+    uint32_t bg = inv ? face->fg : face->bg;
     int ch = (cell->ch >= FONT_AA_FIRST && cell->ch <= FONT_AA_LAST) ? cell->ch : '?';
     const uint8_t *glyph = font_aa[ch - FONT_AA_FIRST];
+    int bold = face->bold;
     for (int gy = 0; gy < RD_CELL_H; gy++) {
         uint32_t *out = fb + (row * RD_CELL_H + gy) * stride + col * RD_CELL_W;
         const uint8_t *arow = glyph + gy * RD_CELL_W;
         for (int gx = 0; gx < RD_CELL_W; gx++) {
-            out[gx] = blend(bg, fg, arow[gx]);
+            uint32_t a = arow[gx];
+            // Faux-bold: we have no bold font, so thicken strokes by smearing
+            // each pixel's coverage rightward 1px (max with the left neighbor).
+            if (bold && gx > 0 && arow[gx - 1] > a) { a = arow[gx - 1]; }
+            out[gx] = blend(bg, fg, a);
+        }
+    }
+    // Underline: a 1px fg rule near the bottom of the cell.
+    if (face->underline) {
+        int uy = RD_CELL_H - 2;
+        if (uy >= 0) {
+            uint32_t *out = fb + (row * RD_CELL_H + uy) * stride + col * RD_CELL_W;
+            for (int gx = 0; gx < RD_CELL_W; gx++) { out[gx] = fg; }
         }
     }
 }
