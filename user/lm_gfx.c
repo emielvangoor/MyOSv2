@@ -132,10 +132,41 @@ DEFGFX("set-line-wrap", Gset_line_wrap, 1, 1) {
     return Qt;
 }
 
-/* (insert "str") -> insert at point in the selected window's buffer. */
+/* A propertized string (Emacs `propertize`) is represented as the 3-list
+ *   (propertized-string RAW PLIST)
+ * where RAW is the plain string and PLIST is a uniform property list applied to
+ * the whole string. `insert` recognizes it and stamps the properties onto the
+ * inserted range; everything else inserts as plain text. */
+static Lobj sym_propstr(void) { return intern("propertized-string"); }
+static int is_propstr(Lobj x) { return IS_CONS(x) && CAR(x) == sym_propstr(); }
+
+/* (propertize STRING PROP VAL ...) -> a propertized string carrying the props.
+ * The rest args are ALREADY in plist shape (PROP VAL PROP VAL ...), so we wrap
+ * them verbatim. */
+DEFGFX("propertize", Gpropertize, 1, 64) {
+    (void)env;
+    Lobj str = CAR(args);
+    if (!IS_STRING(str)) { lm_error("propertize: first arg must be a string", str); }
+    Lobj plist = CDR(args);                         // (PROP VAL PROP VAL ...) == a plist
+    return make_cons(sym_propstr(), make_cons(str, make_cons(plist, Qnil)));
+}
+
+/* (insert X) -> insert at point in the selected window's buffer. X is a plain
+ * string, OR a propertized string (then its properties are applied to the range
+ * just inserted -- this is how `ansi-color-apply` lands colored text). */
 DEFGFX("insert", Ginsert, 1, 1) {
     (void)env;
-    rd_buf_insert(cur(), req_string(CAR(args), "insert: expected a string"));
+    Lobj x = CAR(args);
+    if (is_propstr(x)) {
+        Lobj raw   = CAR(CDR(x));                    // (propertized-string RAW PLIST)
+        Lobj plist = CAR(CDR(CDR(x)));
+        int start = cur()->point;
+        rd_buf_insert(cur(), req_string(raw, "insert: propertized raw must be a string"));
+        int end = cur()->point;
+        rd_set_text_props(cur(), start, end, plist);
+        return Qt;
+    }
+    rd_buf_insert(cur(), req_string(x, "insert: expected a string"));
     return Qt;
 }
 
@@ -727,7 +758,7 @@ void lm_gfx_register(void)
     register_Gmake_buffer(); register_Gset_buffer(); register_Gcurrent_buffer();
     register_Gset_mode_line_name();
     register_Gset_line_wrap();
-    register_Ginsert(); register_Gdelete_char();
+    register_Ginsert(); register_Gdelete_char(); register_Gpropertize();
     register_Gpoint(); register_Gbuflen(); register_Ggoto_char(); register_Gbufsub();
     register_Gchar_at();
     register_Gsplit_below(); register_Gsplit_right();
