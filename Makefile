@@ -143,7 +143,8 @@ print-musl = $(shell $(MUSL_CC) -print-file-name=$(1))
 #   /usr/lib/       -- musl crt1/crti/crtn/libc.a + libtcc1.a (TCC's compiler-
 #                      support runtime; tcc-compiled programs need both)
 $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
-                   $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
+                   $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) \
+                   user/demo/colors.c | $(BUILD)
 	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test $(BUILD)/rootfs/bin $(BUILD)/rootfs/lib
 	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
 	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
@@ -168,6 +169,7 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycr
 	# --- seed C sources; persist once edited on-device ---
 	printf '#include <stdio.h>\nint main(void){\n  printf("hello from tcc on myosv2: x=%%d s=%%s\\n", 42, "ok");\n  return 0;\n}\n' > $(BUILD)/rootfs/hello.c
 	printf 'void puts(const char *);\nint main(void){\n  puts("hello from tcc on myosv2\\n");\n  return 0;\n}\n' > $(BUILD)/rootfs/hellobare.c
+	cp user/demo/colors.c $(BUILD)/rootfs/colors.c   # ANSI color showcase to compile on-device
 	# --- /usr: the musl sysroot (moved from /disk/usr to /usr) ---
 	mkdir -p $(BUILD)/rootfs/usr/include $(BUILD)/rootfs/usr/lib
 	cp -RL $(MUSL_INC)/* $(BUILD)/rootfs/usr/include/
