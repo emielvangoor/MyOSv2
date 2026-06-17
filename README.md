@@ -89,7 +89,9 @@ photograph itself: `(screenshot "/shot.ppm")`.
 - **Pipes** — `pipe` + `dup2` with refcounted file handles, so the shell runs
   pipelines like `hello | wc`.
 - **Signals** — `kill`, default actions, user handlers (with a sigreturn
-  trampoline), and **Ctrl-C** → `SIGINT` to the foreground program.
+  trampoline), and **Ctrl-C** → `SIGINT` to the foreground program. Both the
+  legacy `signal`/`sigreturn` and the real-numbered `rt_sigaction`/`rt_sigreturn`
+  feed one delivery path, so musl binaries (busybox ash) install handlers too.
 - **Block device** — a **virtio-blk** disk driver on a generic virtio-mmio +
   virtqueue layer, reading and writing 512-byte sectors.
 - **Persistent filesystem** — a real on-disk **ext2** filesystem mounted as the
@@ -99,11 +101,14 @@ photograph itself: `(screenshot "/shot.ppm")`.
   the kernel mounts it as `/` at boot and halts with a clear message if it can't.
   Full read **and** write: bitmap block/inode allocation, file
   create/write/grow (allocating indirect blocks on demand), truncate, and
-  unlink — all write-through, leaving an `e2fsck`-clean image. On-device edits
-  and newly created files survive reboots; the `/boots` counter proves it
-  (verified by `tools/persist_check.py`). Rebuilding `disk.img` (`make` when its
-  inputs change, or `make fresh-disk`) is a deliberate reflash that resets the
-  system files — the running machine never touches them except when you save.
+  unlink — all write-through, leaving an `e2fsck`-clean image. Plus read-only
+  **symlinks** (ext2 fast/slow symlinks; the VFS follows them during path
+  lookup, depth-capped) — that's how a bare `ls` resolves through `/bin/ls →
+  busybox`. On-device edits and newly created files survive reboots; the `/boots`
+  counter proves it (verified by `tools/persist_check.py`). Rebuilding `disk.img`
+  (`make` when its inputs change, or `make fresh-disk`) is a deliberate reflash
+  that resets the system files — the running machine never touches them except
+  when you save.
 - **Network interface** — a **virtio-net** driver that sends and receives raw
   Ethernet frames (verified with an ARP round-trip to QEMU's gateway).
 - **TCP/IP stack** — Ethernet, **ARP** (resolve/cache/reply), **IPv4** (checksum
