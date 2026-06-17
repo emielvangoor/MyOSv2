@@ -629,6 +629,96 @@ DEFGFX("frame-output", Gframe_output, 0, 0) {
     return s;
 }
 
+/* ---- text-property primitives --------------------------------------------- */
+/*
+ * These five primitives expose the rd_core interval store to Lisp. They operate
+ * on the SELECTED window's buffer (cur()). lm_gfx.c is only ever compiled into
+ * lm.elf (never into the kernel), and lm.elf is always built with -DLM_BUILD,
+ * so the rd.h declarations for rd_put_text_prop etc. are always visible here.
+ * No extra LM_BUILD guard is needed in this file.
+ */
+
+/* (put-text-property START END PROP VAL) -> nil
+ * Set PROP=VAL on every character in [START,END) in the current buffer,
+ * merging with any existing properties (other keys preserved). */
+DEFGFX("put-text-property", Gput_tp, 4, 4) {
+    (void)env;
+    rd_put_text_prop(cur(),
+                     (int)req_fixnum(nth_arg(args, 0), "put-text-property: start"),
+                     (int)req_fixnum(nth_arg(args, 1), "put-text-property: end"),
+                     nth_arg(args, 2),
+                     nth_arg(args, 3));
+    return Qnil;
+}
+
+/* (get-text-property POS PROP) -> value or nil
+ * Return the value of PROP at character position POS in the current buffer,
+ * or nil if POS has no text properties or PROP is absent. */
+DEFGFX("get-text-property", Gget_tp, 2, 2) {
+    (void)env;
+    return rd_get_text_prop(cur(),
+                            (int)req_fixnum(nth_arg(args, 0), "get-text-property: pos"),
+                            nth_arg(args, 1));
+}
+
+/* (text-properties-at POS) -> plist or nil
+ * Return the full property list at POS, or nil if there are no text properties
+ * there. The plist is (k1 v1 k2 v2 ...). */
+DEFGFX("text-properties-at", Gtp_at, 1, 1) {
+    (void)env;
+    return rd_text_props_at(cur(),
+                            (int)req_fixnum(CAR(args), "text-properties-at: pos"));
+}
+
+/* (set-text-properties START END PLIST) -> nil
+ * Replace the entire property list over [START,END). Every interval in the
+ * range gets plist as its new plist (no merge). Pass nil to clear all props. */
+DEFGFX("set-text-properties", Gset_tp, 3, 3) {
+    (void)env;
+    rd_set_text_props(cur(),
+                      (int)req_fixnum(nth_arg(args, 0), "set-text-properties: start"),
+                      (int)req_fixnum(nth_arg(args, 1), "set-text-properties: end"),
+                      nth_arg(args, 2));
+    return Qnil;
+}
+
+/* (remove-text-properties START END PROPS) -> nil
+ * Remove the named properties (listed as symbols in PROPS; values are ignored,
+ * matching Emacs's remove-text-properties contract) from every interval
+ * intersecting [START,END). Intervals whose plist empties are dropped. */
+DEFGFX("remove-text-properties", Grem_tp, 3, 3) {
+    (void)env;
+    rd_remove_text_props(cur(),
+                         (int)req_fixnum(nth_arg(args, 0), "remove-text-properties: start"),
+                         (int)req_fixnum(nth_arg(args, 1), "remove-text-properties: end"),
+                         nth_arg(args, 2));
+    return Qnil;
+}
+
+/* ---- GC root hook --------------------------------------------------------- */
+/*
+ * Buffer text-property plists are reachable ONLY from the buffer's interval
+ * array. The GC's mark phase starts from explicit roots (symtab, global_env,
+ * the eval argument) and conservative stack scanning, but those roots don't
+ * include buffer state -- the buffer lives in C, not in the Lisp heap.
+ *
+ * Without this hook, a GC between (put-text-property ...) and the next
+ * redisplay could sweep away the face cons cells that the intervals reference,
+ * producing a dangling pointer in the interval plist. This is exactly the same
+ * issue that makes real Emacs trace buffer text properties in its mark phase.
+ *
+ * gfx_gc_mark_buffers() is called from lm_core.c's gc_collect (under
+ * #ifdef LM_BUILD) so it runs as part of the mark phase before gc_sweep.
+ * The bufs[] array is static in this file, so this function is the natural
+ * place to own the enumeration.
+ */
+void gfx_gc_mark_buffers(void)
+{
+    for (int i = 0; i < NBUFS; i++) {
+        if (buf_used[i]) { rd_buf_mark_props(&bufs[i], gc_mark); }
+    }
+}
+
 /* ---- registration ----------------------------------------------------------- */
 
 void lm_gfx_register(void)
@@ -652,4 +742,7 @@ void lm_gfx_register(void)
     register_Gfunction_info(); register_Gall_symbols(); register_Gstring_search();
     register_Gsubstring(); register_Gecho_select();
     register_Gscreenshot();
+    /* text-property primitives (Phase 25.x: text properties + face support) */
+    register_Gput_tp(); register_Gget_tp(); register_Gtp_at();
+    register_Gset_tp(); register_Grem_tp();
 }

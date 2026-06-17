@@ -212,7 +212,11 @@ $(BUILD)/user/%.elf: user/%.c $(USER_COMMON) user/user.ld user/ulib.h user/sysca
 LM_CORE := src/lm_core.c src/lm_jmp.S src/rd_core.c
 $(BUILD)/user/lm.elf: user/lm.c user/lm_sys.c user/lm_sys.h user/lm_gfx.c $(LM_CORE) src/lm.h src/rd.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
 	mkdir -p $(BUILD)/user
-	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c user/lm_gfx.c
+	# -DLM_BUILD enables the text-property interval store in rd_core.c/rd.h and
+	# the gfx_gc_mark_buffers call in lm_core.c. Must NOT be set for the kernel
+	# build (CSRC wildcard), which must stay Lisp-free. See the dual-build note
+	# in rd.h for the full rationale.
+	$(CC) $(USER_CFLAGS) -Isrc -DLM_BUILD -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c user/lm_gfx.c
 
 # TinyGL (vendored, user/tinygl/): software OpenGL 1.x compiled freestanding
 # against the shim headers; tgl_rt.c supplies its libc/math needs over ulib.

@@ -14,8 +14,47 @@
 // paints only the changed cells into the pixel framebuffer, and reports the
 // changed area as damage rects for the caller to gfx_flush. Damage minimality
 // is not an optimization pass -- it falls out of the diff.
+//
+// DUAL-BUILD GUARD NOTE (load-bearing):
+// ======================================
+// rd_core.c is compiled into BOTH the kernel (via CSRC := $(wildcard src/*.c))
+// and the user-space lm.elf (via LM_CORE). The kernel test suite (src/tests.c)
+// includes rd.h and calls rd_buf_insert/rd_buf_len/etc., but the kernel has no
+// lm.h and no Lobj type. Therefore, every Lisp-touching piece of rd.h and
+// rd_core.c is wrapped in #ifdef LM_BUILD ... #endif. The lm.elf compile rule
+// passes -DLM_BUILD; the kernel build does not, so it sees the plain gap buffer
+// + grid exactly as it always has. KTESTs are unaffected.
 #pragma once
 #include <stdint.h>
+
+// Pull in the Lisp object type only for the lm.elf build (not the kernel).
+// This must come before struct rd_buffer, which conditionally grows a
+// text-property interval array that references Lobj.
+#ifdef LM_BUILD
+#include "lm.h"
+#endif
+
+// ---- Text-property intervals (LM_BUILD only) --------------------------------
+//
+// Each buffer can carry a small sorted array of non-overlapping intervals, each
+// covering a character range [start, end) in TEXT COORDINATES (same as point --
+// logical character positions, gap-independent). The plist is a standard Lisp
+// property list (k v k v ...) storing arbitrary per-range properties, with
+// 'face' being the display-relevant one. This is exactly Emacs's text-property
+// mechanism: the buffer owns the intervals; the GC must trace them; insert and
+// delete adjust the boundaries automatically.
+//
+// The fixed RD_MAX_INTERVALS cap (256 per buffer) keeps allocation freestanding
+// and GC tracing trivial. If a buffer fills its quota, further put-text-property
+// calls silently no-op the excess -- acceptable for the use case (ls output has
+// a bounded number of color spans per screen).
+#ifdef LM_BUILD
+struct rd_interval {
+    int start, end;   // [start, end) in text coordinates
+    Lobj plist;       // Lisp property list: (k1 v1 k2 v2 ...) or Qnil
+};
+#define RD_MAX_INTERVALS 256
+#endif
 
 #define RD_CELL_W 20
 #define RD_CELL_H 40                // the prerendered anti-aliased font's cell
@@ -48,6 +87,14 @@ struct rd_buffer {
     // into -- the EXWM move: an external renderer appearing as a buffer.
     uint32_t *canvas;
     int cv_w, cv_h;
+#ifdef LM_BUILD
+    // Text-property intervals: a sorted, non-overlapping array of intervals
+    // each carrying a Lisp plist of character properties. Only present in the
+    // lm.elf build where Lobj exists; the kernel build never sees this field.
+    // The GC must trace every plist here (see rd_buf_mark_props + gc_collect).
+    struct rd_interval ivals[RD_MAX_INTERVALS];
+    int n_ivals;
+#endif
 };
 
 struct rd_win {
@@ -108,3 +155,40 @@ const struct rd_cell *rd_cell_at(const struct rd_frame *f, int col, int row);
 // Returns the number of damage rects written (merged per cell-row run).
 int  rd_redisplay(struct rd_frame *f, uint32_t *fb, int stride_px,
                   struct rd_rect *rects, int max_rects);
+
+// ---- text properties (LM_BUILD only) ----------------------------------------
+//
+// These functions are compiled into rd_core.c only when -DLM_BUILD is set
+// (i.e. when building lm.elf). The kernel build never defines LM_BUILD and
+// therefore never sees these declarations or their implementations. All
+// position arguments are in TEXT COORDINATES (logical char positions, same
+// as rd_buffer.point -- gap-independent).
+#ifdef LM_BUILD
+// Set PROP=VAL on every character in [start, end). Other properties on
+// pre-existing intervals inside that range are PRESERVED (plist merge, like
+// Emacs put-text-property). Silently no-ops if the interval table is full.
+void rd_put_text_prop(struct rd_buffer *b, int start, int end,
+                      Lobj prop, Lobj val);
+
+// Return the value of PROP at character position POS, or Qnil if the position
+// has no covering interval or PROP is absent from its plist.
+Lobj rd_get_text_prop(struct rd_buffer *b, int pos, Lobj prop);
+
+// Return the full property list at POS (the covering interval's plist), or
+// Qnil if POS has no text properties.
+Lobj rd_text_props_at(struct rd_buffer *b, int pos);
+
+// Replace the entire property list over [start, end): every covered interval's
+// plist becomes PLIST (no merge -- like Emacs set-text-properties).
+void rd_set_text_props(struct rd_buffer *b, int start, int end, Lobj plist);
+
+// Remove the keys listed in PROPS (a list of symbols; values are ignored, just
+// like Emacs remove-text-properties) from every interval intersecting [start, end).
+// Intervals whose plist becomes empty are dropped from the table.
+void rd_remove_text_props(struct rd_buffer *b, int start, int end, Lobj props);
+
+// GC root phase helper: call mark(plist) for every interval in the buffer so
+// the mark-sweep collector can reach the property plists. Without this, a GC
+// between put-text-property and redisplay could free a face cons cell.
+void rd_buf_mark_props(struct rd_buffer *b, void (*mark)(Lobj));
+#endif

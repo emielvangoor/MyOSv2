@@ -39,6 +39,11 @@ void rd_buf_init(struct rd_buffer *b, const char *name, char *store, int cap)
     b->point = 0;
     b->kind = RD_TEXT;
     b->canvas = 0; b->cv_w = 0; b->cv_h = 0;
+#ifdef LM_BUILD
+    // Text-property interval table starts empty. n_ivals is the only state
+    // needed; the ivals[] array content is undefined until slots are filled.
+    b->n_ivals = 0;
+#endif
 }
 
 int rd_buf_len(const struct rd_buffer *b)
@@ -70,21 +75,75 @@ static void gap_move(struct rd_buffer *b, int pos)
 
 void rd_buf_insert(struct rd_buffer *b, const char *s)
 {
+#ifdef LM_BUILD
+    // Capture insert position and length BEFORE mutating the gap buffer, so the
+    // interval adjustment sees the pre-insert text coordinate. Text coords are
+    // gap-independent (logical positions), so p == b->point is correct here.
+    int p = b->point;
+    int n = 0; { const char *t = s; while (t[n]) { n++; } }
+#endif
     gap_move(b, b->point);
     for (int i = 0; s[i]; i++) {
         if (b->gap_start == b->gap_end) { return; }   // full: drop the rest
         b->text[b->gap_start++] = s[i];
         b->point++;
     }
+#ifdef LM_BUILD
+    // Shift every interval boundary that is >= the insert point by +n.
+    // Boundaries exactly at p also shift, which means newly inserted text falls
+    // BEFORE the existing interval -- inserted text is property-free by default,
+    // exactly as Emacs's plain insert behaves (no sticky front/rear props here).
+    for (int i = 0; i < b->n_ivals; i++) {
+        if (b->ivals[i].start >= p) { b->ivals[i].start += n; }
+        if (b->ivals[i].end   >= p) { b->ivals[i].end   += n; }
+    }
+#endif
 }
 
 void rd_buf_delete(struct rd_buffer *b, int n)
 {
+#ifdef LM_BUILD
+    // rd_buf_delete deletes n characters BEFORE point (backspace-style). The
+    // deleted text range is [d0, d1) where d1 = point (before), d0 = point - n.
+    // Capture these before the gap mutation so interval adjustment is correct.
+    // Note: if n > point the gap_start check below clamps, but we use the
+    // nominal n here for the boundary mapping -- intervals outside the actually
+    // deleted range are unaffected anyway (they lie at d0 or below).
+    int d1 = b->point;
+    int d0 = d1 - n;
+    if (d0 < 0) { d0 = 0; }
+#endif
     gap_move(b, b->point);
     while (n-- > 0 && b->gap_start > 0) {       // deletion = the gap eats left
         b->gap_start--;
         b->point--;
     }
+#ifdef LM_BUILD
+    // Adjust interval boundaries for the deletion of [d0, d1):
+    //   x >= d1       -> x - (d1 - d0)   (shift down by the deleted span)
+    //   d0 < x < d1   -> d0              (clamp into the deleted range)
+    //   x <= d0       -> x               (unaffected)
+    // After adjustment, drop any interval that became empty (start >= end).
+    int del = d1 - d0;   // actual characters removed (may be < n if buffer was short)
+    int w = 0;           // write cursor for compaction
+    for (int i = 0; i < b->n_ivals; i++) {
+        int s = b->ivals[i].start;
+        int e = b->ivals[i].end;
+        // Map start boundary
+        if      (s >= d1) { s -= del; }
+        else if (s >  d0) { s  = d0; }
+        // Map end boundary
+        if      (e >= d1) { e -= del; }
+        else if (e >  d0) { e  = d0; }
+        // Drop intervals that collapsed to empty
+        if (s >= e) { continue; }
+        b->ivals[w] = b->ivals[i];
+        b->ivals[w].start = s;
+        b->ivals[w].end   = e;
+        w++;
+    }
+    b->n_ivals = w;
+#endif
 }
 
 void rd_buf_set_point(struct rd_buffer *b, int pos)
@@ -94,6 +153,376 @@ void rd_buf_set_point(struct rd_buffer *b, int pos)
     if (pos > len) { pos = len; }
     b->point = pos;
 }
+
+// ---- text-property interval store (LM_BUILD only) -------------------------
+//
+// This block compiles only when -DLM_BUILD is set (i.e. in the lm.elf build).
+// The kernel build never defines LM_BUILD, so KTESTs are completely unaffected.
+//
+// Design overview (Emacs-faithful):
+//   - Intervals are kept in b->ivals[0..n_ivals) sorted by start.
+//   - They are non-overlapping and cover only propertized ranges.
+//   - A position with no covering interval has no properties (Qnil plist).
+//   - put-text-property merges (like Emacs); set-text-properties replaces;
+//     remove-text-properties strips named keys.
+//   - insert shifts boundaries; delete clamps and compacts.
+//
+// Implementation strategy: simplicity over cleverness. The bounded array
+// (RD_MAX_INTERVALS = 256) keeps allocation and GC tracing trivial. For the
+// use case (ANSI-colored ls output), 256 spans per buffer is ample.
+#ifdef LM_BUILD
+
+// ---- plist helpers ----------------------------------------------------------
+//
+// A property list is a flat list of alternating key-value pairs:
+//   (k1 v1 k2 v2 ...) or Qnil
+// plist_get returns the first value for KEY (or Qnil).
+// plist_put returns a new plist with KEY bound to VAL; the simplest correct
+// implementation is to prepend a fresh (KEY VAL) pair at the front -- since
+// plist_get returns the FIRST match, the prepended pair wins and the old one
+// is shadowed (and eventually GC'd). This is safe and correct.
+
+static Lobj plist_get(Lobj plist, Lobj key)
+{
+    // Walk (k v k v ...) stopping at the first k == key (interned symbols are
+    // unique, so == is the right comparison -- no need for equal).
+    while (IS_CONS(plist)) {
+        Lobj k = CAR(plist);
+        Lobj rest = CDR(plist);
+        Lobj v = IS_CONS(rest) ? CAR(rest) : Qnil;
+        if (k == key) { return v; }
+        plist = IS_CONS(rest) ? CDR(rest) : Qnil;
+    }
+    return Qnil;
+}
+
+static Lobj plist_put(Lobj plist, Lobj key, Lobj val)
+{
+    // Prepend (key val) to plist. The old binding (if any) is shadowed --
+    // plist_get returns the first match, so this is correct. Avoids walking
+    // the whole list to find and update an existing entry.
+    return make_cons(key, make_cons(val, plist));
+}
+
+// Remove all occurrences of KEY from plist (rebuild without them).
+static Lobj plist_remove(Lobj plist, Lobj key)
+{
+    Lobj result = Qnil;
+    Lobj tail = Qnil;
+    while (IS_CONS(plist)) {
+        Lobj k = CAR(plist);
+        Lobj rest = CDR(plist);
+        Lobj v = IS_CONS(rest) ? CAR(rest) : Qnil;
+        if (k != key) {
+            // Keep this pair: append (k v) to result.
+            Lobj pair = make_cons(k, make_cons(v, Qnil));
+            if (IS_NIL(result)) {
+                result = pair;
+                tail = CDR(pair);  // points at the inner Qnil
+            } else {
+                SETCDR(tail, pair);
+                tail = CDR(pair);
+            }
+        }
+        plist = IS_CONS(rest) ? CDR(rest) : Qnil;
+    }
+    return result;
+}
+
+// ---- interval table helpers -------------------------------------------------
+
+// Find the index of the interval covering pos (start <= pos < end), or -1.
+static int ival_find(struct rd_buffer *b, int pos)
+{
+    for (int i = 0; i < b->n_ivals; i++) {
+        if (b->ivals[i].start <= pos && pos < b->ivals[i].end) { return i; }
+    }
+    return -1;
+}
+
+// Insert a new interval at index `at`, shifting the rest right by one.
+// Returns 0 on success, -1 if the table is full.
+static int ival_insert_at(struct rd_buffer *b, int at,
+                          int start, int end, Lobj plist)
+{
+    if (b->n_ivals >= RD_MAX_INTERVALS) { return -1; }
+    // Shift intervals at [at, n_ivals) right by one.
+    for (int i = b->n_ivals; i > at; i--) {
+        b->ivals[i] = b->ivals[i - 1];
+    }
+    b->ivals[at].start = start;
+    b->ivals[at].end   = end;
+    b->ivals[at].plist = plist;
+    b->n_ivals++;
+    return 0;
+}
+
+// Remove interval at index `at`, shifting the rest left.
+static void ival_remove_at(struct rd_buffer *b, int at)
+{
+    for (int i = at; i < b->n_ivals - 1; i++) {
+        b->ivals[i] = b->ivals[i + 1];
+    }
+    b->n_ivals--;
+}
+
+// Split interval at index `idx` at position `split_pos`, producing two
+// adjacent intervals with the same plist. After the call, ivals[idx] covers
+// [original_start, split_pos) and ivals[idx+1] covers [split_pos, original_end).
+// Returns 0 on success, -1 if the table is too full for the extra slot.
+static int ival_split_at(struct rd_buffer *b, int idx, int split_pos)
+{
+    if (b->n_ivals >= RD_MAX_INTERVALS) { return -1; }
+    int orig_end = b->ivals[idx].end;
+    Lobj pl = b->ivals[idx].plist;
+    // Shrink the left half.
+    b->ivals[idx].end = split_pos;
+    // Insert the right half at idx+1.
+    return ival_insert_at(b, idx + 1, split_pos, orig_end, pl);
+}
+
+// ---- rd_put_text_prop -------------------------------------------------------
+//
+// Set PROP=VAL on every character in [start, end), MERGING with existing
+// properties (other keys in pre-existing intervals are preserved).
+//
+// Algorithm:
+//   1. Clamp [start, end) to the buffer length.
+//   2. Split any interval that straddles `start` or `end` so that every
+//      interval is either fully inside or fully outside [start, end).
+//   3. Walk the intervals that are now fully inside [start, end):
+//      - Update their plist via plist_put.
+//   4. For any sub-range of [start, end) NOT covered by an existing interval,
+//      insert a new interval with plist = (prop val . Qnil).
+//
+// This keeps the array sorted and non-overlapping.
+
+void rd_put_text_prop(struct rd_buffer *b, int start, int end,
+                      Lobj prop, Lobj val)
+{
+    int len = rd_buf_len(b);
+    // Clamp to valid text range.
+    if (start < 0)   { start = 0; }
+    if (end   > len) { end   = len; }
+    if (start >= end) { return; }
+
+    // Step 1: Split any interval straddling `start`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < start && iv->end > start) {
+            // This interval straddles the left edge: split at `start`.
+            if (ival_split_at(b, i, start) < 0) { return; } // table full
+            // After the split, ivals[i] covers [iv->start, start) and
+            // ivals[i+1] covers [start, old_end). Skip past the left half.
+            i++;  // i now points at the right half; let the loop re-examine
+            break;
+        }
+    }
+
+    // Step 2: Split any interval straddling `end`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < end && iv->end > end) {
+            if (ival_split_at(b, i, end) < 0) { return; }
+            break;  // only one interval can straddle `end`
+        }
+    }
+
+    // Step 3: Walk [start, end), updating covered intervals and inserting gaps.
+    int pos = start;
+    int i = 0;
+    // Find the first interval that touches or follows pos.
+    while (i < b->n_ivals && b->ivals[i].end <= pos) { i++; }
+
+    while (pos < end) {
+        if (i < b->n_ivals && b->ivals[i].start <= pos && b->ivals[i].end <= end) {
+            // Fully covered interval: merge the property.
+            if (b->ivals[i].start > pos) {
+                // Gap before this interval: [pos, ivals[i].start) has no props.
+                int gap_end = b->ivals[i].start;
+                Lobj new_pl = make_cons(prop, make_cons(val, Qnil));
+                if (ival_insert_at(b, i, pos, gap_end, new_pl) < 0) { return; }
+                // i now points at the new interval; the old interval is at i+1.
+                pos = gap_end;
+                i++;  // fall through to process the old interval next iteration
+                continue;
+            }
+            // Update the plist with the new property.
+            b->ivals[i].plist = plist_put(b->ivals[i].plist, prop, val);
+            pos = b->ivals[i].end;
+            i++;
+        } else if (i < b->n_ivals && b->ivals[i].start < end &&
+                   b->ivals[i].start > pos) {
+            // Gap before the next interval.
+            int gap_end = b->ivals[i].start;
+            if (gap_end > end) { gap_end = end; }
+            Lobj new_pl = make_cons(prop, make_cons(val, Qnil));
+            if (ival_insert_at(b, i, pos, gap_end, new_pl) < 0) { return; }
+            pos = gap_end;
+            i++;
+        } else {
+            // No more intervals in range: cover [pos, end) with a new one.
+            Lobj new_pl = make_cons(prop, make_cons(val, Qnil));
+            if (ival_insert_at(b, i, pos, end, new_pl) < 0) { return; }
+            pos = end;
+            i++;
+        }
+    }
+}
+
+// ---- rd_get_text_prop -------------------------------------------------------
+
+Lobj rd_get_text_prop(struct rd_buffer *b, int pos, Lobj prop)
+{
+    int i = ival_find(b, pos);
+    if (i < 0) { return Qnil; }
+    return plist_get(b->ivals[i].plist, prop);
+}
+
+// ---- rd_text_props_at -------------------------------------------------------
+
+Lobj rd_text_props_at(struct rd_buffer *b, int pos)
+{
+    int i = ival_find(b, pos);
+    if (i < 0) { return Qnil; }
+    return b->ivals[i].plist;
+}
+
+// ---- rd_set_text_props ------------------------------------------------------
+//
+// Replace (not merge) the entire plist over [start, end). This splits the
+// boundary intervals exactly like rd_put_text_prop, then overwrites plists.
+
+void rd_set_text_props(struct rd_buffer *b, int start, int end, Lobj plist)
+{
+    int len = rd_buf_len(b);
+    if (start < 0)   { start = 0; }
+    if (end   > len) { end   = len; }
+    if (start >= end) { return; }
+
+    // Split any interval straddling `start`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < start && iv->end > start) {
+            if (ival_split_at(b, i, start) < 0) { return; }
+            break;
+        }
+    }
+    // Split any interval straddling `end`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < end && iv->end > end) {
+            if (ival_split_at(b, i, end) < 0) { return; }
+            break;
+        }
+    }
+
+    // If plist is Qnil, remove all intervals fully inside [start, end).
+    // Otherwise, update or create intervals to cover [start, end) with plist.
+    int pos = start;
+    int i = 0;
+    while (i < b->n_ivals && b->ivals[i].end <= pos) { i++; }
+
+    while (pos < end) {
+        if (i < b->n_ivals && b->ivals[i].start <= pos &&
+            b->ivals[i].end <= end) {
+            if (b->ivals[i].start > pos) {
+                // Gap: [pos, ivals[i].start) -- fill or skip.
+                int gap_end = b->ivals[i].start;
+                if (!IS_NIL(plist)) {
+                    if (ival_insert_at(b, i, pos, gap_end, plist) < 0) { return; }
+                    pos = gap_end;
+                    i++;
+                } else {
+                    pos = gap_end;
+                }
+                continue;
+            }
+            if (IS_NIL(plist)) {
+                // Remove this interval.
+                int end_save = b->ivals[i].end;
+                ival_remove_at(b, i);
+                pos = end_save;
+                // i unchanged (next interval shifted into position i)
+            } else {
+                b->ivals[i].plist = plist;
+                pos = b->ivals[i].end;
+                i++;
+            }
+        } else if (i < b->n_ivals && b->ivals[i].start < end &&
+                   b->ivals[i].start > pos) {
+            // Gap before the next interval.
+            int gap_end = b->ivals[i].start;
+            if (!IS_NIL(plist)) {
+                if (ival_insert_at(b, i, pos, gap_end, plist) < 0) { return; }
+                pos = gap_end;
+                i++;
+            } else {
+                pos = gap_end;
+            }
+        } else {
+            // No more intervals in range: cover [pos, end) with plist if non-nil.
+            if (!IS_NIL(plist)) {
+                if (ival_insert_at(b, i, pos, end, plist) < 0) { return; }
+            }
+            pos = end;
+        }
+    }
+}
+
+// ---- rd_remove_text_props ---------------------------------------------------
+//
+// Remove the keys listed in PROPS (a list of symbols, values ignored) from
+// every interval intersecting [start, end). Intervals whose plist empties out
+// are dropped from the table.
+
+void rd_remove_text_props(struct rd_buffer *b, int start, int end, Lobj props)
+{
+    int len = rd_buf_len(b);
+    if (start < 0)   { start = 0; }
+    if (end   > len) { end   = len; }
+    if (start >= end) { return; }
+
+    // Walk intervals that overlap [start, end).
+    for (int i = 0; i < b->n_ivals; ) {
+        struct rd_interval *iv = &b->ivals[i];
+        // Skip intervals entirely before or after [start, end).
+        if (iv->end <= start || iv->start >= end) { i++; continue; }
+
+        // Remove each key in PROPS from this interval's plist.
+        Lobj pl = iv->plist;
+        for (Lobj kp = props; IS_CONS(kp); kp = CDR(kp)) {
+            Lobj key = CAR(kp);
+            pl = plist_remove(pl, key);
+        }
+
+        if (IS_NIL(pl)) {
+            // Plist is empty: drop this interval entirely.
+            ival_remove_at(b, i);
+            // Don't increment i: the next interval shifted into slot i.
+        } else {
+            iv->plist = pl;
+            i++;
+        }
+    }
+}
+
+// ---- rd_buf_mark_props ------------------------------------------------------
+//
+// GC root phase: call mark(plist) for every interval so the mark-sweep
+// collector can reach the property plists from the buffer. Without this hook,
+// a GC between put-text-property and the next redisplay could free a face
+// cons cell that is still referenced by an interval plist -- exactly the
+// Emacs GC issue that motivated buffer text properties being GC roots.
+
+void rd_buf_mark_props(struct rd_buffer *b, void (*mark)(Lobj))
+{
+    for (int i = 0; i < b->n_ivals; i++) {
+        mark(b->ivals[i].plist);
+    }
+}
+
+#endif  // LM_BUILD
 
 // ---- frame & window tree --------------------------------------------------
 
