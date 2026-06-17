@@ -239,6 +239,15 @@ photograph itself: `(screenshot "/shot.ppm")`.
   (the teapot canvas and friends) use `surface-mode`. The hierarchy is
   `special-mode` (inert root) → `surface-mode` + `fundamental-mode` →
   `text-mode` / `repl-mode` / `lisp-interaction-mode`.
+- **Text properties + ANSI color** — buffers carry genuine **Emacs text
+  properties**: `put-text-property` / `get-text-property` / `set-text-properties`
+  / `propertize` over character ranges (stored as intervals the GC traces), with
+  `face` the display property the renderer paints per character. Faces are named
+  and themeable (`defface` / `set-face-attribute`, merged left-to-right like
+  Emacs). An `ansi-color-apply` filter (the `ansi-color.el` analog) translates a
+  program's **SGR escape sequences** into `face` properties — so `busybox ls`
+  streams into the buffer with its directories rendered in color, the raw
+  `ESC[1;34m` bytes stripped, not shown.
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to
