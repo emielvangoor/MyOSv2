@@ -110,20 +110,22 @@ DEFSYS("wait", Swait, 0, 0) {
     return make_cons(FIXNUM(pid), FIXNUM(status));
 }
 
-/* (exit [code]) -> exits the process. EXCEPT in init (PID 1, the Lisp machine):
- * if init exits there is nothing left to own the terminal or reap orphans and
- * the whole machine locks up. So init refuses to exit -- the same guard
- * serial_repl applies on EOF. Use (shutdown) to actually power off. */
+/* (exit [code]) -> exits the process. EXCEPT when exiting would freeze the
+ * machine: init (PID 1) has nothing left to own the terminal or reap orphans,
+ * and the graphical frame OWNS the display (exiting it leaves a frozen screen).
+ * Both refuse -- the same spirit as serial_repl's EOF guard. Use (shutdown) to
+ * actually power off. */
+extern int gfx_frame_ready(void);           /* defined in lm_gfx.c (lm.elf only) */
 DEFSYS("exit", Sexit, 0, 1) {
     (void)env;
-    if (sys_getpid() == 1) {
-        const char *msg = "exit ignored -- I am init; use (shutdown) to power off\n";
-        int n = 0; while (msg[n]) { n++; }
-        sys_write(1, msg, n);
-        return Qnil;
+    if (sys_getpid() == 1 || gfx_frame_ready()) {
+        // Return the note (don't sys_write): the REPL prints the return value in
+        // BOTH the serial REPL and the frame's buffer; a bare sys_write to fd 1
+        // would only reach the serial console, invisible in the frame.
+        return make_string("exit ignored -- would freeze the machine; use (shutdown) to power off");
     }
     sys_exit(IS_NIL(args) ? 0 : (int)req_fixnum(CAR(args), "exit: code must be a fixnum"));
-    return Qnil;                            /* unreachable for non-init */
+    return Qnil;                            /* unreachable for init / the frame */
 }
 
 /* (kill pid sig) -> 0 or -1. */

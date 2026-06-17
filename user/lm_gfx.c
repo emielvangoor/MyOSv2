@@ -34,6 +34,11 @@ static int buf_shm[NBUFS];          /* shm handle per surface buffer (-1 = none)
 static struct gfx_info gi;          /* the mapped framebuffer */
 static int frame_ready;
 
+/* True once this process has acquired the framebuffer (it IS the graphical
+ * frame). Exposed so (exit) can refuse: exiting the frame process freezes the
+ * display, which looks like a machine lock. */
+int gfx_frame_ready(void) { return frame_ready; }
+
 /* ---- face name registry -------------------------------------------------- */
 /*
  * face_names[id] is the interned symbol whose name was passed to (defface).
