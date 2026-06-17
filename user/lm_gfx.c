@@ -244,6 +244,18 @@ DEFGFX("char-at", Gchar_at, 1, 1) {
     return FIXNUM(rd_buf_char_at(cur(), (int)req_fixnum(CAR(args), "char-at: pos")));
 }
 
+/* (string-ref STR I) -> the byte at index I of STR (a fixnum 0..255), or -1 past
+ * the end. char-at reads the buffer; this reads an arbitrary string -- needed by
+ * ansi-color-apply to scan a program's output chunk for ESC/CSI bytes and digits. */
+DEFGFX("string-ref", Gstring_ref, 2, 2) {
+    (void)env;
+    const char *s = req_string(CAR(args), "string-ref: expected a string");
+    int i = (int)req_fixnum(nth_arg(args, 1), "string-ref: index");
+    int n = 0; while (s[n]) { n++; }
+    if (i < 0 || i >= n) { return FIXNUM(-1); }
+    return FIXNUM((unsigned char)s[i]);
+}
+
 DEFGFX("goto-char", Ggoto_char, 1, 1) {
     (void)env;
     rd_buf_set_point(cur(), (int)req_fixnum(CAR(args), "goto-char: expected a fixnum"));
@@ -914,7 +926,7 @@ void lm_gfx_register(void)
     register_Gset_line_wrap();
     register_Ginsert(); register_Gdelete_char(); register_Gpropertize();
     register_Gpoint(); register_Gbuflen(); register_Ggoto_char(); register_Gbufsub();
-    register_Gchar_at();
+    register_Gchar_at(); register_Gstring_ref();
     register_Gsplit_below(); register_Gsplit_right();
     register_Gother_window(); register_Gdelete_window();
     register_Gdelete_other(); register_Gbuffer_list();

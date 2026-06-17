@@ -646,8 +646,18 @@ void rd_frame_init(struct rd_frame *f, int px_w, int px_h,
     f->faces[2].fg_set = 1; f->faces[2].bg_set = 1;
     f->faces[2].bold = 0; f->faces[2].inverse = 0; f->faces[2].underline = 0;
 
-    // Slots 3..RD_NFACES-1: copy default (face 0) so unregistered ids are safe.
-    for (int i = 3; i < RD_NFACES; i++) { f->faces[i] = f->faces[0]; }
+    // Slots 3..RD_NFACES-1: copy the default COLORS (so a slot used directly
+    // before it's defined still paints something readable, never black), but
+    // mark fg/bg as UNSET. This is critical for the face MERGE: an attribute-only
+    // face like `ansi-bold` (defface ... :bold t) must NOT carry a foreground,
+    // or it would clobber the color of a face merged before it -- e.g.
+    // (ansi-blue ansi-bold) would lose the blue. defface sets fg_set/bg_set=1
+    // only when :foreground/:background is actually given.
+    for (int i = 3; i < RD_NFACES; i++) {
+        f->faces[i] = f->faces[0];
+        f->faces[i].fg_set = 0;
+        f->faces[i].bg_set = 0;
+    }
 
     // n_faces_used is the single allocation cursor shared between:
     //   • lm_gfx's defface / face_alloc (which registers named faces)
