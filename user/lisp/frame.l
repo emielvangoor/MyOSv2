@@ -317,6 +317,21 @@ half a surface canvas, and run /bin/teapot (TinyGL) into it."
     (setq animate t)
     (run-in-buffer sb "teapot")))
 
+(defun gfxtest ()
+  "The /bin/gfxtest test pattern (RGB thirds + a white square), shown IN the
+frame. Like (teapot): split, give the new half a surface canvas, and run gfxtest
+into it. (Plain (run \"gfxtest\") draws the raw framebuffer, which the frame's
+redisplay immediately repaints over -- a surface buffer is how a program's
+graphics actually appear in a window.)"
+  (interactive)
+  (split-below)
+  (other-window)
+  (let ((sb (make-surface "*gfxtest*" 480 360)))
+    (set-buffer sb)
+    (other-window)
+    (setq animate t)
+    (run-in-buffer sb "gfxtest")))
+
 (defun frame-tick ()
   "ONE beat of the machine: show anything printed since last time (including
 an error from the previous tick -- each tick gets a fresh C-level recovery,
