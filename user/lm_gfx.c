@@ -174,6 +174,33 @@ DEFGFX("current-buffer", Gcurrent_buffer, 0, 0) {
     return FIXNUM((int)(frame.selected->buf - bufs));
 }
 
+/* (kill-buffer) -> close the SELECTED window's buffer: retarget every window
+ * showing it to another live buffer, then free its slot. Returns the new
+ * buffer's handle, or nil if it is the last buffer (we never kill the last one).
+ * This is how a REPL -- a "process in a buffer" -- ends: (exit) typed in a repl
+ * buffer calls this to close it, returning to whatever buffer remains. */
+DEFGFX("kill-buffer", Gkill_buffer, 0, 0) {
+    (void)args; (void)env;
+    int i = (int)(frame.selected->buf - bufs);
+    if (i < 0 || i >= NBUFS || !buf_used[i]) { return Qnil; }
+    int used = 0, other = -1;
+    for (int k = 0; k < NBUFS; k++) {
+        if (buf_used[k]) { used++; if (k != i && other < 0) { other = k; } }
+    }
+    if (used <= 1 || other < 0) { return Qnil; }     // keep at least one buffer alive
+    // Retarget every window (selected or not) that shows the dying buffer, so no
+    // window is left pointing at a freed slot.
+    for (int wi = 0; wi < RD_MAX_WIN; wi++) {
+        if (frame.wins[wi].used && frame.wins[wi].leaf && frame.wins[wi].buf == &bufs[i]) {
+            frame.wins[wi].buf = &bufs[other];
+            frame.wins[wi].top_line = 0;
+        }
+    }
+    buf_used[i] = 0;
+    buf_shm[i] = -1;            // a surface's shm object is left to the kernel
+    return FIXNUM(other);
+}
+
 /* (set-mode-line-name "str") -> set the SELECTED window's buffer's mode-line
  * name (the "(Mode)" shown in the mode line). Lisp's set-major-mode calls it. */
 DEFGFX("set-mode-line-name", Gset_mode_line_name, 1, 1) {
@@ -931,6 +958,7 @@ void lm_gfx_register(void)
 {
     register_Gframe_init();
     register_Gmake_buffer(); register_Gset_buffer(); register_Gcurrent_buffer();
+    register_Gkill_buffer();
     register_Gset_mode_line_name();
     register_Gset_line_wrap();
     register_Ginsert(); register_Gdelete_char(); register_Gpropertize();
