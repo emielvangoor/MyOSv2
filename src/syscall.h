@@ -29,10 +29,12 @@
 #define SYS_YIELD  124 // sched_yield     -> 0
 
 #define SYS_OPENAT 56  // x0=dirfd(AT_FDCWD), x1=path, x2=flags, x3=mode -> fd / -errno
-#define SYS_IOCTL  29  // x0=fd, x1=req, x2=arg -> -ENOTTY (no real ttys yet)
+#define SYS_IOCTL  29  // x0=fd, x1=req, x2=arg -> 0 for tty reqs (TCGETS/...), else -ENOTTY
 #define SYS_WRITEV 66  // x0=fd, x1=struct iovec*, x2=iovcnt -> bytes / -errno
 #define SYS_SET_TID_ADDRESS 96  // x0=ptr (ignored; single-threaded) -> tid
+#define SYS_RT_SIGACTION   134  // real aarch64 sigaction busybox/musl emits
 #define SYS_RT_SIGPROCMASK 135  // no per-process signal mask yet -> 0 (no-op)
+#define SYS_RT_SIGRETURN   139  // real aarch64 sigreturn (mirrors SYS_SIGRETURN=22)
 #define SYS_GETCWD 17  // x0=buf, x1=size -> bytes (incl NUL) written / -errno
 #define SYS_CHDIR  49  // x0=path -> 0 / -errno (sets the process cwd)
 #define SYS_GETDENTS64 61 // x0=fd, x1=buf, x2=count -> bytes of dirents / 0 (end)
@@ -51,6 +53,32 @@
 #define SYS_CLONE  220 // x0=flags(SIGCHLD), x1=child_stack -> child pid / 0 in child
 #define SYS_EXECVE 221 // x0=path, x1=argv, x2=envp -> replaces image; -errno on fail
 #define SYS_WAIT4  260 // x0=pid, x1=int* status, x2=options, x3=rusage -> pid / -errno
+
+// --- real Linux/aarch64 numbers added for busybox + musl compatibility ---
+// busybox and other musl-linked binaries use the numbers from
+// <asm-generic/unistd.h>; our native MyOSv2 programs use lower custom numbers
+// for the same operations. Both sets must coexist: the low numbers are what
+// /bin/sh (native) and our own test helpers call; the real numbers are what
+// busybox's libc emits. Both paths call the same kernel logic.
+#define SYS_PPOLL          73   // x0=pollfd*, x1=nfds, x2=timespec* (NULL=block), x3=sigmask
+#define SYS_FCNTL          25   // x0=fd, x1=cmd, x2=arg  (file-descriptor control)
+#define SYS_CLOCK_GETTIME  113  // x0=clockid (ignored), x1=struct timespec*  -> 0
+#define SYS_KILL_LINUX     129  // real aarch64 kill -- legacy SYS_KILL=20 kept for native
+#define SYS_SETPGID_LINUX  154  // real aarch64 setpgid  -- legacy SYS_SETPGID=44 kept
+#define SYS_GETPGID        155  // x0=pid (0=self) -> process group id
+#define SYS_GETSID         156  // x0=pid (0=self) -> session id (~ pgid here)
+#define SYS_SETSID         157  // -> new session id (our pid)
+#define SYS_GETTIMEOFDAY   169  // x0=struct timeval*, x1=tz (ignored)  -> 0
+#define SYS_GETPPID        173  // -> parent pid (or 1 if no parent)
+
+// fcntl(2) command codes (asm-generic values, same as Linux).
+// FD_CLOEXEC is not tracked yet -- F_GETFD/F_SETFD are accepted as no-ops,
+// F_GETFL always returns O_RDWR (2) which is sufficient for busybox's probes.
+#define F_DUPFD 0
+#define F_GETFD 1
+#define F_SETFD 2
+#define F_GETFL 3
+#define F_SETFL 4
 
 // --- still on old MyOSv2 numbers (migrate in later steps) ---
 #define SYS_SLEEP  3   // x0=ms           -> 0
@@ -82,6 +110,18 @@
 #define SYS_GFX_ACQUIRE (MYOS_SYS_BASE + 7)  // x0=struct gfx_info* -> 0 / -1
 #define SYS_GFX_FLUSH   (MYOS_SYS_BASE + 8)  // x0=x,x1=y,x2=w,x3=h -> 0 / -1
 #define SYS_SEAT_SWITCH (MYOS_SYS_BASE + 9)  // x0=seat (1-based) -> 0 / -1
+
+// Terminal ioctls (asm-generic values) -- enough for isatty()/line editing.
+// musl's isatty() calls ioctl(fd, TCGETS, &termios); a 0 return means the fd
+// is a terminal. ash then uses TCSETS* to switch to raw (no-echo) mode, and
+// TIOCGWINSZ / TIOCGPGRP for window size and foreground process group.
+#define TCGETS      0x5401
+#define TCSETS      0x5402
+#define TCSETSW     0x5403
+#define TCSETSF     0x5404
+#define TIOCGWINSZ  0x5413
+#define TIOCGPGRP   0x540F
+#define TIOCSPGRP   0x5410
 
 // Dispatch the syscall described by the trap frame (number in x[8], args in
 // x[0..]); write the result into x[0]. Returns the result too.

@@ -531,6 +531,27 @@ static void test_syscall_exit_ends_thread(void)
     KASSERT(sc_exit_log[0] == 'B');
 }
 
+// ioctl: terminal requests -- the gate that makes ash go interactive.
+// musl's isatty(fd) calls ioctl(fd, TCGETS, &termios_buf); a return of 0
+// means the fd is a terminal. Without that, ash treats stdin as a pipe and
+// runs non-interactively (no prompt). We verify both sides:
+//   - TCGETS on fd 0 succeeds (-> isatty(0) == true)
+//   - An unknown request still returns -ENOTTY (musl falls back gracefully)
+static void test_ioctl_tcgets_is_tty(void)
+{
+    pmm_init(); kheap_init();
+    // Stack buffer for the kernel to write the termios struct into; the exact
+    // contents do not matter for isatty() -- only the zero return does.
+    char termios_buf[64];
+    struct trapframe tf;
+    tf.x[8] = SYS_IOCTL; tf.x[0] = 0; tf.x[1] = TCGETS; tf.x[2] = (uint64_t)(uintptr_t)termios_buf;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);                 // success -> isatty(0) true
+    tf.x[8] = SYS_IOCTL; tf.x[0] = 0; tf.x[1] = 0xDEAD; tf.x[2] = 0;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == -ENOTTY);           // unknown request still ENOTTY
+}
+
 // --- Per-process address spaces (isolation at the page-table level) ---
 
 static void test_as_data_is_private(void)
@@ -1943,6 +1964,31 @@ static void test_process_groups(void)
     KASSERT(sched_setpgid(9999, 0) == -1);           // no such pid
 }
 
+// The real aarch64 kill/setpgid numbers (129/154) that busybox's libc emits must
+// dispatch to the same scheduler logic as the legacy MyOSv2 numbers (20/44).
+static void test_kill_setpgid_linux_numbers(void)
+{
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *a = thread_create(sig_noop, 0, 1);
+    struct thread *b = thread_create(sig_noop, 0, 1);
+    struct trapframe tf;
+    // setpgid@154: b joins a's group.
+    tf.x[8] = SYS_SETPGID_LINUX; tf.x[0] = (uint64_t)b->id; tf.x[1] = (uint64_t)a->id;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);
+    KASSERT(b->pgid == a->id);
+    // kill@129 of the whole group reaches both.
+    tf.x[8] = SYS_KILL_LINUX; tf.x[0] = (uint64_t)(-a->id); tf.x[1] = SIGTERM;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);
+    KASSERT(a->sig_pending & (1ull << SIGTERM));
+    KASSERT(b->sig_pending & (1ull << SIGTERM));
+    // kill@129 of a missing pid still fails like the legacy path.
+    tf.x[8] = SYS_KILL_LINUX; tf.x[0] = 9999; tf.x[1] = SIGTERM;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == -1);
+}
+
 static void test_sig_default_vs_handler(void)
 {
     pmm_init(); kheap_init(); vm_init(); sched_init();
@@ -1952,6 +1998,27 @@ static void test_sig_default_vs_handler(void)
     KASSERT(signal_action(t, SIGINT) == 0x8000000040ULL);
     t->sig_handler[SIGKILL] = (uint64_t (*)(int))0x8000000040ULL;
     KASSERT(signal_action(t, SIGKILL) == 0);            // SIGKILL uncatchable
+}
+
+// rt_sigaction (syscall #134): busybox/musl uses this Linux-numbered sigaction
+// to install handlers. Verify that do_syscall routes it to the same per-thread
+// sig_handler/sig_tramp slots that SYS_SIGNAL uses, so signals_deliver() can
+// invoke busybox's handler without any changes to the delivery path.
+static void test_rt_sigaction_installs(void)
+{
+    pmm_init(); kheap_init(); vm_init(); sched_init();
+    struct thread *t = sched_current();
+    uint64_t act[8];                          // [0]=handler,[1]=flags,[2]=restorer,[3..]=mask
+    for (int i = 0; i < 8; i++) { act[i] = 0; }
+    act[0] = 0x8000000040ULL;                 // pretend handler address in user space
+    act[2] = 0x8000000080ULL;                 // restorer (sa_restorer) == our trampoline
+    struct trapframe tf;
+    tf.x[8] = SYS_RT_SIGACTION; tf.x[0] = SIGINT;
+    tf.x[1] = (uint64_t)(uintptr_t)act; tf.x[2] = 0; tf.x[3] = 8;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);                                           // success
+    KASSERT((uint64_t)(uintptr_t)t->sig_handler[SIGINT] == 0x8000000040ULL); // handler stored
+    KASSERT(t->sig_tramp == 0x8000000080ULL);                               // tramp from sa_restorer
 }
 
 // --- virtio block device (Phase 19) ---
@@ -2077,6 +2144,26 @@ static void test_vfs_mount_at(void)
     KASSERT(d && d->type == VN_DIR);                 // the mounted ext2 root
     KASSERT(vfs_lookup("/disk/test/small.txt") != 0);// a baked file is found
     KASSERT(vfs_lookup("/disk/nope") == 0);          // a missing one is not
+}
+
+// Symlink following: /disk/bin/ls is a symlink pointing to "busybox" (relative).
+// vfs_lookup must follow it and return a vnode for the busybox binary itself --
+// not a VN_SYMLINK vnode. We verify:
+//   1. lookup via the symlink succeeds (not NULL).
+//   2. the result's type is VN_FILE (the symlink was followed, not returned as-is).
+//   3. the resolved vnode has the same size as the busybox vnode (same underlying file).
+static void test_ext2_symlink_follows(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+    struct vnode *via  = vfs_lookup("/disk/bin/ls");        // symlink -> busybox
+    struct vnode *real = vfs_lookup("/disk/bin/busybox");
+    KASSERT(via != 0);
+    KASSERT(real != 0);
+    KASSERT(via->type == VN_FILE);                          // followed to the regular file
+    KASSERT(via->size == real->size);                       // same underlying file
 }
 
 // --- on-disk filesystem: ext2 WRITE (Phase 2) ---
@@ -2877,6 +2964,57 @@ static void test_lm_error_goes_to_cur_out(void)
     KASSERT(lm_strhas_(buf, "nosuchvariable"));
 }
 
+// --- Busybox/musl syscalls: getppid, fcntl, clock_gettime (Phase BB2) ---
+//
+// These three KTESTs are written BEFORE the handler implementations so they go
+// red first (all return -ENOSYS) and then green once the cases are added to
+// do_syscall(). That is the test-first discipline we follow.
+//
+// Trapframe init idiom: field-by-field assignment, identical to test_ioctl_tcgets_is_tty
+// above. We never use `struct trapframe tf = {0}` in this freestanding kernel because
+// GCC lowers that to a __aeabi_memset / memset call that cannot link without libc.
+
+static void test_getppid_returns_parent(void)
+{
+    // SYS_GETPPID (173) must return >= 0. In the KTEST harness sched_current()
+    // may be the idle/boot thread (id 0) with no parent; in that case the
+    // handler returns 1 (init pid) as a safe sentinel. Either way >= 0 is correct.
+    struct trapframe tf;
+    tf.x[8] = SYS_GETPPID;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] >= 0);
+}
+
+static void test_fcntl_getfl_rdwr(void)
+{
+    // F_GETFL (3) on any open fd must return the open-mode flags.  We have no
+    // per-fd flags table yet, so we return O_RDWR (2) for everything -- the
+    // minimal answer that lets busybox probe a file-descriptor and carry on.
+    struct trapframe tf;
+    tf.x[8] = SYS_FCNTL;
+    tf.x[0] = 0;          // fd 0 (stdin)
+    tf.x[1] = F_GETFL;    // get file-status flags
+    tf.x[2] = 0;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 2);   // O_RDWR
+}
+
+static void test_clock_gettime_ok(void)
+{
+    // SYS_CLOCK_GETTIME (113): x0=clockid (ignored), x1=struct timespec*.
+    // We accept any clock id and fill tv_sec from timer_ticks()/1000,
+    // tv_nsec from the remainder. The return value must be 0 (success).
+    long ts[2];
+    ts[0] = 0; ts[1] = 0;
+    struct trapframe tf;
+    tf.x[8] = SYS_CLOCK_GETTIME;
+    tf.x[0] = 1;                              // CLOCK_MONOTONIC (ignored by us)
+    tf.x[1] = (uint64_t)(uintptr_t)ts;        // -> struct timespec {tv_sec, tv_nsec}
+    tf.x[2] = 0;
+    do_syscall(&tf);
+    KASSERT((long)tf.x[0] == 0);             // must succeed
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "lm: arithmetic",                  test_lm_arithmetic },
@@ -2918,6 +3056,10 @@ static const struct ktest tests[] = {
     { "syscall: getpid returns id",       test_syscall_getpid },
     { "syscall: sleep blocks N ticks",    test_syscall_sleep_blocks },
     { "syscall: exit ends thread",        test_syscall_exit_ends_thread },
+    { "ioctl: TCGETS is a tty",           test_ioctl_tcgets_is_tty },
+    { "syscall: getppid",                 test_getppid_returns_parent },
+    { "syscall: fcntl F_GETFL",           test_fcntl_getfl_rdwr },
+    { "syscall: clock_gettime",           test_clock_gettime_ok },
     { "vm: user data is private",         test_as_data_is_private },
     { "vm: image maps code",              test_as_image_maps_code },
     { "vm: kernel map is shared",         test_as_kernel_shared },
@@ -2988,7 +3130,9 @@ static const struct ktest tests[] = {
     { "sig: kill sets pending",           test_kill_sets_pending },
     { "sig: kill by pid",                 test_kill_by_pid },
     { "sig: default vs handler action",   test_sig_default_vs_handler },
+    { "sig: rt_sigaction installs handler", test_rt_sigaction_installs },
     { "sig: process groups (kill -pgid)", test_process_groups },
+    { "sig: kill/setpgid linux numbers",  test_kill_setpgid_linux_numbers },
     { "block: disk present",              test_block_present },
     { "block: write then read sector",    test_block_write_read },
     { "block: two sectors independent",   test_block_two_sectors },
@@ -3001,6 +3145,7 @@ static const struct ktest tests[] = {
     { "ext2: truncate resets",            test_ext2_truncate_resets },
     { "ext2: unlink",                     test_ext2_unlink },
     { "ext2: persists across remount",    test_ext2_persists_remount },
+    { "ext2: symlink follows to target",  test_ext2_symlink_follows },
     { "vfs: mount at /disk",              test_vfs_mount_at },
     { "input: two devices present",       test_input_devices_present },
     { "input: driver present",            test_input_present },

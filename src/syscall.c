@@ -174,9 +174,89 @@ long do_syscall(struct trapframe *tf)
     case SYS_SET_TID_ADDRESS:                // x0 = clear-on-exit ptr (ignored)
         ret = sched_current_id();            // single-threaded: just our TID
         break;
-    case SYS_IOCTL:                          // x0=fd, x1=request, x2=arg
-        ret = -ENOTTY;                       // no real ttys -> musl uses buffered I/O
+    case SYS_IOCTL: {                        // x0=fd, x1=request, x2=arg
+        // ioctl is the POSIX escape hatch for device-specific control. The most
+        // important callers are musl's isatty() (TCGETS -> 0 means "fd is a tty",
+        // which makes ash go interactive and print a prompt) and ash's own line
+        // editor (TCSETS* to enter raw mode, TIOCGWINSZ for terminal dimensions,
+        // TIOCGPGRP/TIOCSPGRP for job-control bookkeeping).
+        //
+        // We ignore `fd`: the machine's only tty is the UART console, so every
+        // fd that asks a tty question is answered as that one console.
+        //
+        // Our UART is char-at-a-time by nature (each SYS_READ blocks in
+        // console_getc() until one character arrives via IRQ), so all the
+        // "switch to raw" TCSETS* are accepted as no-ops -- the tty is already
+        // effectively raw. The cosmetic termios values we fill in for TCGETS
+        // advertise ICANON+ECHO so a naive caller sees a "cooked" terminal, but
+        // the actual I/O path does not change.
+        unsigned req = (unsigned)tf->x[1];
+        void *arg = (void *)(uintptr_t)tf->x[2];
+        switch (req) {
+        case TCGETS:
+            // musl's isatty(fd) does: ioctl(fd, TCGETS, &termios); return !err;
+            // Returning 0 here is what flips ash from non-interactive to
+            // interactive (prompt + line editing). We fill in a plausible termios
+            // so callers that inspect the flags aren't surprised, but the exact
+            // values are cosmetic -- only the 0 return matters.
+            if (arg) {
+                // asm-generic termios layout (musl / Linux AArch64):
+                //   c_iflag u32, c_oflag u32, c_cflag u32, c_lflag u32,
+                //   c_line u8, c_cc[19] u8 x19, c_ispeed u32, c_ospeed u32
+                // Total: 44 bytes. We zero everything then set the two flags
+                // ash cares about before it flips to raw mode.
+                struct termios {
+                    unsigned int  c_iflag, c_oflag, c_cflag, c_lflag;
+                    unsigned char c_line, c_cc[19];
+                    unsigned int  c_ispeed, c_ospeed;
+                } t;
+                // Zero every field -- we are in a freestanding kernel (no memset
+                // available here), so clear by field assignment.
+                t.c_iflag = 0; t.c_oflag = 0; t.c_cflag = 0; t.c_lflag = 0;
+                t.c_line  = 0; t.c_ispeed = 0; t.c_ospeed = 0;
+                for (int i = 0; i < 19; i++) { t.c_cc[i] = 0; }
+                // Advertise canonical mode + echo: the most benign defaults.
+                // ash replaces these immediately via TCSETS when it goes raw.
+                t.c_lflag = 0x0002 /*ICANON*/ | 0x0008 /*ECHO*/;
+                *(struct termios *)arg = t;
+            }
+            ret = 0; break;
+        case TCSETS: case TCSETSW: case TCSETSF:
+            // ash drives its own line-editing on top of our char-at-a-time UART,
+            // so we accept all three TCSETS variants as no-ops. No state to store.
+            ret = 0; break;
+        case TIOCGWINSZ:
+            // Window size: 24 rows x 80 columns is a safe default.
+            // struct winsize layout: rows u16, cols u16, xpix u16, ypix u16.
+            if (arg) {
+                unsigned short *ws = (unsigned short *)arg;
+                ws[0] = 24; ws[1] = 80; ws[2] = 0; ws[3] = 0;
+            }
+            ret = 0; break;
+        case TIOCGPGRP:
+            // Return the foreground process group of the terminal. For our
+            // single-process (or simple-fork) model, the current thread's pgid
+            // is the right answer. sched_current() may be NULL in the KTEST
+            // harness (before sched_init), so fall back to 1.
+            if (arg) {
+                struct thread *ct = sched_current();
+                *(int *)arg = ct ? ct->pgid : 1;
+            }
+            ret = 0; break;
+        case TIOCSPGRP:
+            // ash calls this to register itself as the terminal's foreground
+            // group after a fork. We have no kernel-side terminal foreground-
+            // group table yet; accepting it as a no-op is sufficient for ash
+            // to proceed without an error.
+            ret = 0; break;
+        default:
+            // Unknown ioctl: return -ENOTTY (POSIX "not a typewriter"). musl
+            // treats this as "not a tty" and falls back to buffered I/O, which
+            // is a safe degradation for any fd that isn't the UART.
+            ret = -ENOTTY; break;
+        }
         break;
+    }
     case SYS_WRITEV: {                       // x0=fd, x1=struct iovec*, x2=iovcnt
         uint64_t fd = tf->x[0];
         const uint64_t *iov = (const uint64_t *)(uintptr_t)tf->x[1];  // {base,len} pairs
@@ -433,7 +513,13 @@ long do_syscall(struct trapframe *tf)
         ret = (long)n;
         break;
     }
-    case SYS_KILL:                           // x0 = pid, x1 = sig
+    case SYS_KILL:                           // x0 = pid, x1 = sig  (legacy MyOSv2 number 20)
+        ret = sched_kill((int)tf->x[0], (int)tf->x[1]);
+        break;
+    case SYS_KILL_LINUX:
+        // Real Linux/aarch64 kill number (129) used by busybox + musl binaries.
+        // Native MyOSv2 programs still call SYS_KILL (20) -- both map to the same
+        // sched_kill() logic so there is no duplication at the implementation level.
         ret = sched_kill((int)tf->x[0], (int)tf->x[1]);
         break;
     case SYS_SIGNAL: {                        // x0 = sig, x1 = handler, x2 = trampoline
@@ -526,6 +612,18 @@ long do_syscall(struct trapframe *tf)
         }
         break;
     }
+    case SYS_PPOLL:                           // busybox ash polls stdin per keystroke
+        // ppoll(fds, nfds, const struct timespec *tmo, sigmask): like poll(), but
+        // the timeout is a timespec pointer (NULL = block forever) and there is a
+        // signal-mask arg we ignore (we have no per-call mask). Convert the
+        // timespec to the millisecond timeout SYS_POLL already understands and
+        // fall through to the shared poll loop. Without this, ash's line editor
+        // floods the console with one unhandled-syscall line per character typed.
+        {
+            const long *ts = (const long *)(uintptr_t)tf->x[2];   // [0]=sec, [1]=nsec
+            tf->x[2] = ts ? (uint64_t)(ts[0] * 1000 + ts[1] / 1000000) : (uint64_t)-1;
+        }
+        /* fall through */
     case SYS_POLL: {                          // x0=pollfd*, x1=nfds, x2=timeout_ms
         struct file **fds = sched_current_fds();
         struct pollfd *pf = (struct pollfd *)(uintptr_t)tf->x[0];
@@ -597,9 +695,112 @@ long do_syscall(struct trapframe *tf)
         }
         break;
     }
-    case SYS_SETPGID:                        // x0 = pid (0=self), x1 = pgid (0=own)
+    case SYS_SETPGID:                        // x0 = pid (0=self), x1 = pgid (0=own)  [legacy #44]
         ret = sched_setpgid((int)tf->x[0], (int)tf->x[1]);
         break;
+    case SYS_SETPGID_LINUX:
+        // Real Linux/aarch64 setpgid number (154). Same rationale as SYS_KILL_LINUX:
+        // musl-linked programs arrive here; native programs use the legacy number.
+        // Both call through to sched_setpgid() unchanged.
+        ret = sched_setpgid((int)tf->x[0], (int)tf->x[1]);
+        break;
+    case SYS_GETPGID: {
+        // Process-group id of pid (0 = self). busybox's ash calls this in its
+        // interactive job-control loop and compares it to tcgetpgrp() (our
+        // ioctl TIOCGPGRP). BOTH must report the same value or ash spins forever
+        // trying to claim the terminal -- so this returns the same ->pgid that
+        // TIOCGPGRP does. (We have no real sessions; the group id is enough.)
+        struct thread *t = sched_current();
+        ret = t ? t->pgid : 1;
+        break;
+    }
+    case SYS_GETSID: {
+        // Session id. We don't model sessions separately from process groups,
+        // so report the group id -- enough for ash's bookkeeping.
+        struct thread *t = sched_current();
+        ret = t ? t->pgid : 1;
+        break;
+    }
+    case SYS_SETSID: {
+        // "Start a new session": we have no session objects, so just report a
+        // plausible new session id (our own pid). Keeps setsid()-callers happy.
+        struct thread *t = sched_current();
+        ret = t ? t->id : 1;
+        break;
+    }
+    case SYS_GETPPID: {
+        // Return the parent's pid. If there is no parent (the idle/boot thread, or
+        // a thread that outlived its parent) return 1, mimicking init adoption --
+        // the same convention Linux uses when a reparented process calls getppid().
+        struct thread *t = sched_current();
+        ret = (t && t->parent) ? t->parent->id : 1;
+        break;
+    }
+    case SYS_FCNTL: {
+        // File-descriptor control. We do not maintain per-fd open-mode flags yet,
+        // so we return the most permissive plausible value for each query command:
+        //   F_GETFD  -> 0 (FD_CLOEXEC not set; we don't track cloexec)
+        //   F_SETFD  -> 0 (accepted, ignored)
+        //   F_GETFL  -> O_RDWR (2): busybox probes fds to decide blocking vs. non-blocking;
+        //              O_RDWR is the safest answer -- it implies no O_NONBLOCK bit.
+        //   F_SETFL  -> 0 (accepted, ignored; we are always blocking)
+        //   F_DUPFD  -> dup the fd into the lowest free slot >= arg (real dup:
+        //              ash uses this for job control, so 0/stdin would be wrong)
+        //   unknown  -> 0 (lenient no-op; prevents ENOSYS from breaking shell scripts)
+        int cmd = (int)tf->x[1];
+        switch (cmd) {
+        case F_GETFD: ret = 0; break;
+        case F_SETFD: ret = 0; break;
+        case F_GETFL: ret = 2; break;   // O_RDWR
+        case F_SETFL: ret = 0; break;
+        case F_DUPFD: {                 // x0=fd, x2=lowest acceptable new fd
+            struct file **fds = sched_current_fds();
+            uint64_t fd = tf->x[0];
+            int min = (int)tf->x[2];
+            if (!fds || fd >= 16 || !fds[fd]) { ret = -EBADF; break; }
+            if (min < 0) { min = 0; }
+            ret = -EMFILE;
+            for (int i = min; i < 16; i++) {
+                if (!fds[i]) { fds[i] = file_dup(fds[fd]); ret = i; break; }
+            }
+            break;
+        }
+        default:      ret = 0; break;
+        }
+        break;
+    }
+    case SYS_CLOCK_GETTIME: {
+        // POSIX clock_gettime(clockid, timespec*). We support only one clock
+        // (CLOCK_REALTIME and CLOCK_MONOTONIC are both sourced from timer_ticks()
+        // which counts milliseconds since boot). The clockid argument is ignored --
+        // all clocks tell the same uptime. A NULL pointer is safe to ignore too
+        // (though no sane caller should pass one).
+        // tv_sec  = ticks / 1000      (whole seconds)
+        // tv_nsec = (ticks % 1000) * 1000000  (remaining ms -> nanoseconds)
+        long *ts = (long *)(uintptr_t)tf->x[1];
+        if (ts) {
+            uint64_t ms = timer_ticks();
+            ts[0] = (long)(ms / 1000);
+            ts[1] = (long)((ms % 1000) * 1000000UL);
+        }
+        ret = 0;
+        break;
+    }
+    case SYS_GETTIMEOFDAY: {
+        // Legacy BSD/POSIX gettimeofday(timeval*, tz*). The timezone argument is
+        // ignored (POSIX says it may be NULL and recommends that anyway). Same
+        // time source as CLOCK_GETTIME: timer_ticks() in milliseconds.
+        // tv_sec  = ticks / 1000
+        // tv_usec = (ticks % 1000) * 1000  (remaining ms -> microseconds)
+        long *tv = (long *)(uintptr_t)tf->x[0];
+        if (tv) {
+            uint64_t ms = timer_ticks();
+            tv[0] = (long)(ms / 1000);
+            tv[1] = (long)((ms % 1000) * 1000UL);
+        }
+        ret = 0;
+        break;
+    }
     case SYS_SEAT_SWITCH: {                   // x0 = seat number (1-based)
         int n = (int)tf->x[0];
         if (seat_switch(n) != 0) { ret = -1; break; }
@@ -653,6 +854,47 @@ long do_syscall(struct trapframe *tf)
         uint64_t *d = (uint64_t *)tf;
         for (unsigned i = 0; i < sizeof(struct trapframe) / 8; i++) { d[i] = saved[i]; }
         ret = (long)tf->x[0];                 // keep the restored x0 (don't clobber below)
+        break;
+    }
+    case SYS_RT_SIGACTION: {                  // x0=sig, x1=const act*, x2=oact*, x3=sigsetsize
+        // The real-numbered sigaction busybox's musl emits. We map it onto the
+        // same per-thread handler/trampoline slots SYS_SIGNAL uses, so the
+        // existing signals_deliver() path runs busybox's handler unchanged.
+        //
+        // The sigaction struct layout (kernel/musl aarch64, 8-byte words):
+        //   word[0] = sa_handler  (function pointer)
+        //   word[1] = sa_flags
+        //   word[2] = sa_restorer (may be 0 on aarch64 musl; we use it as sig_tramp)
+        //   word[3..] = sa_mask   (signal set, ignored for now -- no per-thread mask yet)
+        //
+        // When signals_deliver() fires, it sets x0=sig, lr(x[30])=sig_tramp and
+        // branches to the handler. When the handler returns it lands on sig_tramp
+        // which must invoke rt_sigreturn (below) to restore the saved frame.
+        struct thread *t = sched_current();
+        int sig = (int)tf->x[0];
+        const uint64_t *act  = (const uint64_t *)(uintptr_t)tf->x[1];
+        uint64_t       *oact = (uint64_t *)(uintptr_t)tf->x[2];
+        if (!t || sig <= 0 || sig >= NSIG) { ret = -EINVAL; break; }
+        if (oact) {                            // report the previous disposition
+            oact[0] = (uint64_t)(uintptr_t)t->sig_handler[sig];
+            oact[1] = 0;
+            oact[2] = t->sig_tramp;
+        }
+        if (act) {
+            t->sig_handler[sig] = (uint64_t (*)(int))(uintptr_t)act[0];
+            if (act[2]) { t->sig_tramp = act[2]; }   // sa_restorer if musl supplies one
+        }
+        ret = 0; break;
+    }
+    case SYS_RT_SIGRETURN: {                  // identical to SYS_SIGRETURN
+        // musl's signal trampoline calls rt_sigreturn (syscall #139) rather than
+        // the MyOSv2-private SYS_SIGRETURN (#22). Both restore the pre-signal
+        // trap frame that signals_deliver() pushed onto the user stack; there is
+        // no semantic difference -- only the syscall number differs.
+        const uint64_t *saved = (const uint64_t *)(uintptr_t)tf->sp_el0;
+        uint64_t *d = (uint64_t *)tf;
+        for (unsigned i = 0; i < sizeof(struct trapframe) / 8; i++) { d[i] = saved[i]; }
+        ret = (long)tf->x[0];
         break;
     }
     case SYS_REPORT:                         // x0 = pid, x1 = value read back

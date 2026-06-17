@@ -14,4 +14,8 @@ for f in \
 do
   if [ ! -e "$R/$f" ]; then echo "MISSING: $R/$f"; fail=1; fi
 done
+# busybox applet names must be staged as SYMLINKS -> busybox (not copies).
+for l in bin/ls bin/cat bin/grep; do
+  if [ ! -L "$R/$l" ]; then echo "NOT A SYMLINK: $R/$l"; fail=1; fi
+done
 if [ "$fail" = 0 ]; then echo "rootfs staging OK"; else echo "rootfs staging FAILED"; exit 1; fi
