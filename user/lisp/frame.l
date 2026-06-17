@@ -45,10 +45,20 @@ hex); recolor any of these with (set-face-attribute 'ansi-blue ':foreground N)."
   (defface 'ansi-bright-green   ':foreground 12106534)  (defface 'ansi-bright-yellow  ':foreground 16432431)
   (defface 'ansi-bright-blue    ':foreground 8627608)   (defface 'ansi-bright-magenta ':foreground 13862555)
   (defface 'ansi-bright-cyan    ':foreground 9355388)   (defface 'ansi-bright-white   ':foreground 15457202)
-  (defface 'ansi-bold ':bold t) (defface 'ansi-underline ':underline t) (defface 'ansi-inverse ':inverse t))
+  (defface 'ansi-bold ':bold t) (defface 'ansi-underline ':underline t) (defface 'ansi-inverse ':inverse t)
+  ;; Background variants (SGR 40-47 / 100-107): same palette, set as :background
+  ;; so merging one tints the cell behind the text without touching the fg.
+  (defface 'ansi-bg-black   ':background 2631720)   (defface 'ansi-bg-red     ':background 13378589)
+  (defface 'ansi-bg-green   ':background 10000154)  (defface 'ansi-bg-yellow  ':background 14129441)
+  (defface 'ansi-bg-blue    ':background 4556168)   (defface 'ansi-bg-magenta ':background 11625094)
+  (defface 'ansi-bg-cyan    ':background 6856042)   (defface 'ansi-bg-white   ':background 11049348)
+  (defface 'ansi-bg-bright-black   ':background 9601908)   (defface 'ansi-bg-bright-red     ':background 16468276)
+  (defface 'ansi-bg-bright-green   ':background 12106534)  (defface 'ansi-bg-bright-yellow  ':background 16432431)
+  (defface 'ansi-bg-bright-blue    ':background 8627608)   (defface 'ansi-bg-bright-magenta ':background 13862555)
+  (defface 'ansi-bg-bright-cyan    ':background 9355388)   (defface 'ansi-bg-bright-white   ':background 15457202))
 
-;; Active style state (carried across chunks). fg is a single face symbol.
-(setq *ansi-fg* nil) (setq *ansi-bold* nil) (setq *ansi-ul* nil) (setq *ansi-inv* nil)
+;; Active style state (carried across chunks). fg/bg are single face symbols.
+(setq *ansi-fg* nil) (setq *ansi-bg* nil) (setq *ansi-bold* nil) (setq *ansi-ul* nil) (setq *ansi-inv* nil)
 (setq *ansi-frag* "")        ; an incomplete trailing escape, prepended to the next chunk
 (setq *ansi-colors*
   (list 'ansi-black 'ansi-red 'ansi-green 'ansi-yellow
@@ -56,12 +66,18 @@ hex); recolor any of these with (set-face-attribute 'ansi-blue ':foreground N)."
 (setq *ansi-bright*
   (list 'ansi-bright-black 'ansi-bright-red 'ansi-bright-green 'ansi-bright-yellow
         'ansi-bright-blue 'ansi-bright-magenta 'ansi-bright-cyan 'ansi-bright-white))
+(setq *ansi-bg-colors*
+  (list 'ansi-bg-black 'ansi-bg-red 'ansi-bg-green 'ansi-bg-yellow
+        'ansi-bg-blue 'ansi-bg-magenta 'ansi-bg-cyan 'ansi-bg-white))
+(setq *ansi-bg-bright*
+  (list 'ansi-bg-bright-black 'ansi-bg-bright-red 'ansi-bg-bright-green 'ansi-bg-bright-yellow
+        'ansi-bg-bright-blue 'ansi-bg-bright-magenta 'ansi-bg-bright-cyan 'ansi-bg-bright-white))
 
 (defun ansi-reset ()
-  (setq *ansi-fg* nil) (setq *ansi-bold* nil) (setq *ansi-ul* nil) (setq *ansi-inv* nil))
+  (setq *ansi-fg* nil) (setq *ansi-bg* nil) (setq *ansi-bold* nil) (setq *ansi-ul* nil) (setq *ansi-inv* nil))
 
 (defun ansi-apply-code (n)
-  "Update the active style for one SGR parameter N (bg/256-color codes ignored)."
+  "Update the active style for one SGR parameter N (256-color codes ignored)."
   (cond ((= n 0) (ansi-reset))
         ((= n 1) (setq *ansi-bold* t))
         ((= n 4) (setq *ansi-ul* t))
@@ -70,8 +86,11 @@ hex); recolor any of these with (set-face-attribute 'ansi-blue ':foreground N)."
         ((= n 24) (setq *ansi-ul* nil))
         ((= n 27) (setq *ansi-inv* nil))
         ((= n 39) (setq *ansi-fg* nil))
+        ((= n 49) (setq *ansi-bg* nil))
         ((and (>= n 30) (<= n 37)) (setq *ansi-fg* (nth (- n 30) *ansi-colors*)))
         ((and (>= n 90) (<= n 97)) (setq *ansi-fg* (nth (- n 90) *ansi-bright*)))
+        ((and (>= n 40) (<= n 47)) (setq *ansi-bg* (nth (- n 40) *ansi-bg-colors*)))
+        ((and (>= n 100) (<= n 107)) (setq *ansi-bg* (nth (- n 100) *ansi-bg-bright*)))
         (t nil)))
 
 (defun ansi-faces ()
@@ -80,6 +99,7 @@ hex); recolor any of these with (set-face-attribute 'ansi-blue ':foreground N)."
     (if *ansi-inv* (setq fs (cons 'ansi-inverse fs)) nil)
     (if *ansi-ul*  (setq fs (cons 'ansi-underline fs)) nil)
     (if *ansi-bold* (setq fs (cons 'ansi-bold fs)) nil)
+    (if *ansi-bg*  (setq fs (cons *ansi-bg* fs)) nil)
     (if *ansi-fg*  (setq fs (cons *ansi-fg* fs)) nil)
     fs))
 

@@ -7,9 +7,9 @@
  *                                  ; SGR escapes translated to `face` props
  *
  * MyOSv2's ansi-color-apply handles the 16 SGR foreground colors (30-37 normal,
- * 90-97 bright) plus bold(1)/underline(4)/inverse(7) and reset(0). 256-color
- * (38;5;n) and background codes are recognized-and-ignored, so this demo sticks
- * to what actually renders.
+ * 90-97 bright), the 16 background colors (40-47 / 100-107), and
+ * bold(1)/underline(4)/inverse(7) + reset(0). 256-color (38;5;n) and 24-bit
+ * (38;2;r;g;b) are recognized-and-ignored, so this demo sticks to what renders.
  */
 #include <stdio.h>
 
@@ -40,6 +40,14 @@ int main(void)
     printf("bold     (1;30-1;37):\n  ");
     for (int i = 0; i < 8; i++) {
         printf("\033[1;3%dm%-9s\033[0m", i, name[i]);
+    }
+    printf("\n\n");
+
+    /* The 8 standard background colors (SGR 40-47): default text on a colored
+     * cell background. */
+    printf("background (40-47):\n  ");
+    for (int i = 0; i < 8; i++) {
+        printf("\033[4%dm %-7s \033[0m", i, name[i]);
     }
     printf("\n\n");
 
