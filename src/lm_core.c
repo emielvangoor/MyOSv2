@@ -20,6 +20,23 @@
 #include "lm.h"
 
 /* ================================================================
+ * FORWARD DECLARATIONS FOR CROSS-UNIT HOOKS (LM_BUILD only)
+ * ================================================================
+ *
+ * gfx_gc_mark_buffers() lives in user/lm_gfx.c (which owns the bufs[] array).
+ * It is called during the GC mark phase to trace every buffer's text-property
+ * plists so they cannot be swept between put-text-property and redisplay.
+ *
+ * This declaration is guarded because lm_gfx.c is NOT linked into the kernel
+ * build (it calls user-space syscalls), so an unguarded extern would produce a
+ * linker error when building the kernel. -DLM_BUILD is only set for lm.elf,
+ * where lm_gfx.c IS linked, so the extern is valid exactly when it is needed.
+ */
+#ifdef LM_BUILD
+extern void gfx_gc_mark_buffers(void);
+#endif
+
+/* ================================================================
  * GLOBALS
  * ================================================================ */
 
@@ -306,6 +323,17 @@ void gc_collect(Lobj env)
     for (int i = 0; i < symtab_count; i++) { gc_mark(symtab[i]); }
     gc_mark(global_env);
     gc_mark(env);
+
+#ifdef LM_BUILD
+    /* 1b. Buffer text-property roots: every buffer's interval plists are live
+     *     Lisp objects reachable only from the buffer array in lm_gfx.c. Without
+     *     this call, a GC between (put-text-property ...) and the next redisplay
+     *     would sweep away the face cons cells stored in interval plists. The
+     *     gfx_gc_mark_buffers() function is defined in user/lm_gfx.c, which is
+     *     always linked into lm.elf but never into the kernel. The guard ensures
+     *     the kernel build (which does NOT link lm_gfx.c) never tries to call it. */
+    gfx_gc_mark_buffers();
+#endif
 
     /* 2. Conservative roots: flush callee-saved registers into a buffer (also a
      *    set of potential roots) and scan it plus the live C stack. */

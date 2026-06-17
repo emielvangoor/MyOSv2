@@ -143,7 +143,8 @@ print-musl = $(shell $(MUSL_CC) -print-file-name=$(1))
 #   /usr/lib/       -- musl crt1/crti/crtn/libc.a + libtcc1.a (TCC's compiler-
 #                      support runtime; tcc-compiled programs need both)
 $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
-                   $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) | $(BUILD)
+                   $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) \
+                   user/demo/colors.c | $(BUILD)
 	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test $(BUILD)/rootfs/bin $(BUILD)/rootfs/lib
 	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
 	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
@@ -168,6 +169,7 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycr
 	# --- seed C sources; persist once edited on-device ---
 	printf '#include <stdio.h>\nint main(void){\n  printf("hello from tcc on myosv2: x=%%d s=%%s\\n", 42, "ok");\n  return 0;\n}\n' > $(BUILD)/rootfs/hello.c
 	printf 'void puts(const char *);\nint main(void){\n  puts("hello from tcc on myosv2\\n");\n  return 0;\n}\n' > $(BUILD)/rootfs/hellobare.c
+	cp user/demo/colors.c $(BUILD)/rootfs/colors.c   # ANSI color showcase to compile on-device
 	# --- /usr: the musl sysroot (moved from /disk/usr to /usr) ---
 	mkdir -p $(BUILD)/rootfs/usr/include $(BUILD)/rootfs/usr/lib
 	cp -RL $(MUSL_INC)/* $(BUILD)/rootfs/usr/include/
@@ -212,7 +214,11 @@ $(BUILD)/user/%.elf: user/%.c $(USER_COMMON) user/user.ld user/ulib.h user/sysca
 LM_CORE := src/lm_core.c src/lm_jmp.S src/rd_core.c
 $(BUILD)/user/lm.elf: user/lm.c user/lm_sys.c user/lm_sys.h user/lm_gfx.c $(LM_CORE) src/lm.h src/rd.h $(USER_COMMON) user/user.ld user/ulib.h user/syscalls.h | $(BUILD)
 	mkdir -p $(BUILD)/user
-	$(CC) $(USER_CFLAGS) -Isrc -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c user/lm_gfx.c
+	# -DLM_BUILD enables the text-property interval store in rd_core.c/rd.h and
+	# the gfx_gc_mark_buffers call in lm_core.c. Must NOT be set for the kernel
+	# build (CSRC wildcard), which must stay Lisp-free. See the dual-build note
+	# in rd.h for the full rationale.
+	$(CC) $(USER_CFLAGS) -Isrc -DLM_BUILD -T user/user.ld -o $@ $(USER_COMMON) $(LM_CORE) user/lm.c user/lm_sys.c user/lm_gfx.c
 
 # TinyGL (vendored, user/tinygl/): software OpenGL 1.x compiled freestanding
 # against the shim headers; tgl_rt.c supplies its libc/math needs over ulib.

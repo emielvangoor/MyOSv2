@@ -39,6 +39,11 @@ void rd_buf_init(struct rd_buffer *b, const char *name, char *store, int cap)
     b->point = 0;
     b->kind = RD_TEXT;
     b->canvas = 0; b->cv_w = 0; b->cv_h = 0;
+#ifdef LM_BUILD
+    // Text-property interval table starts empty. n_ivals is the only state
+    // needed; the ivals[] array content is undefined until slots are filled.
+    b->n_ivals = 0;
+#endif
 }
 
 int rd_buf_len(const struct rd_buffer *b)
@@ -70,21 +75,89 @@ static void gap_move(struct rd_buffer *b, int pos)
 
 void rd_buf_insert(struct rd_buffer *b, const char *s)
 {
+#ifdef LM_BUILD
+    // Capture the insert position BEFORE mutating the gap buffer, so the interval
+    // adjustment sees the pre-insert text coordinate. Text coords are
+    // gap-independent (logical positions), so p == b->point is correct here.
+    int p = b->point;
+#endif
     gap_move(b, b->point);
     for (int i = 0; s[i]; i++) {
-        if (b->gap_start == b->gap_end) { return; }   // full: drop the rest
+        if (b->gap_start == b->gap_end) { break; }    // full: drop the rest, but
+                                                      // still adjust intervals below
         b->text[b->gap_start++] = s[i];
         b->point++;
     }
+#ifdef LM_BUILD
+    // Shift by the ACTUAL number inserted (b->point - p) -- which is < strlen(s)
+    // if the gap filled mid-string. Using the requested length would corrupt
+    // interval positions when the buffer is full.
+    int n = b->point - p;
+    // Shift every interval boundary that is >= the insert point by +n.
+    // Boundaries exactly at p also shift, which means newly inserted text falls
+    // BEFORE the existing interval -- inserted text is property-free by default,
+    // exactly as Emacs's plain insert behaves (no sticky front/rear props here).
+    // Boundary stickiness (Emacs defaults: both front- and rear-NONSTICKY):
+    //   start shifts on >= p  -> text inserted AT an interval's start lands
+    //     BEFORE it (the interval does not grow leftward).
+    //   end shifts on >  p (NOT >= p) -> text inserted AT an interval's end lands
+    //     AFTER it (the interval does not grow rightward). This is critical: a
+    //     blue `ls` name ends exactly at point, and the next plain text is
+    //     appended there; with `>=` the blue interval would swallow it and every
+    //     subsequent insert, bleeding color over the whole rest of the stream.
+    //   An interval STRADDLING p (start < p < end) correctly expands (end > p),
+    //     so inserting inside a propertized region inherits it.
+    for (int i = 0; i < b->n_ivals; i++) {
+        if (b->ivals[i].start >= p) { b->ivals[i].start += n; }
+        if (b->ivals[i].end   >  p) { b->ivals[i].end   += n; }
+    }
+#endif
 }
 
 void rd_buf_delete(struct rd_buffer *b, int n)
 {
+#ifdef LM_BUILD
+    // rd_buf_delete deletes n characters BEFORE point (backspace-style). The
+    // deleted text range is [d0, d1) where d1 = point (before), d0 = point - n.
+    // Capture these before the gap mutation so interval adjustment is correct.
+    // Note: if n > point the gap_start check below clamps, but we use the
+    // nominal n here for the boundary mapping -- intervals outside the actually
+    // deleted range are unaffected anyway (they lie at d0 or below).
+    int d1 = b->point;
+    int d0 = d1 - n;
+    if (d0 < 0) { d0 = 0; }
+#endif
     gap_move(b, b->point);
     while (n-- > 0 && b->gap_start > 0) {       // deletion = the gap eats left
         b->gap_start--;
         b->point--;
     }
+#ifdef LM_BUILD
+    // Adjust interval boundaries for the deletion of [d0, d1):
+    //   x >= d1       -> x - (d1 - d0)   (shift down by the deleted span)
+    //   d0 < x < d1   -> d0              (clamp into the deleted range)
+    //   x <= d0       -> x               (unaffected)
+    // After adjustment, drop any interval that became empty (start >= end).
+    int del = d1 - d0;   // actual characters removed (may be < n if buffer was short)
+    int w = 0;           // write cursor for compaction
+    for (int i = 0; i < b->n_ivals; i++) {
+        int s = b->ivals[i].start;
+        int e = b->ivals[i].end;
+        // Map start boundary
+        if      (s >= d1) { s -= del; }
+        else if (s >  d0) { s  = d0; }
+        // Map end boundary
+        if      (e >= d1) { e -= del; }
+        else if (e >  d0) { e  = d0; }
+        // Drop intervals that collapsed to empty
+        if (s >= e) { continue; }
+        b->ivals[w] = b->ivals[i];
+        b->ivals[w].start = s;
+        b->ivals[w].end   = e;
+        w++;
+    }
+    b->n_ivals = w;
+#endif
 }
 
 void rd_buf_set_point(struct rd_buffer *b, int pos)
@@ -94,6 +167,465 @@ void rd_buf_set_point(struct rd_buffer *b, int pos)
     if (pos > len) { pos = len; }
     b->point = pos;
 }
+
+// ---- text-property interval store (LM_BUILD only) -------------------------
+//
+// This block compiles only when -DLM_BUILD is set (i.e. in the lm.elf build).
+// The kernel build never defines LM_BUILD, so KTESTs are completely unaffected.
+//
+// Design overview (Emacs-faithful):
+//   - Intervals are kept in b->ivals[0..n_ivals) sorted by start.
+//   - They are non-overlapping and cover only propertized ranges.
+//   - A position with no covering interval has no properties (Qnil plist).
+//   - put-text-property merges (like Emacs); set-text-properties replaces;
+//     remove-text-properties strips named keys.
+//   - insert shifts boundaries; delete clamps and compacts.
+//
+// Implementation strategy: simplicity over cleverness. The bounded array
+// (RD_MAX_INTERVALS = 256) keeps allocation and GC tracing trivial. For the
+// use case (ANSI-colored ls output), 256 spans per buffer is ample.
+#ifdef LM_BUILD
+
+// ---- plist helpers ----------------------------------------------------------
+//
+// A property list is a flat list of alternating key-value pairs:
+//   (k1 v1 k2 v2 ...) or Qnil
+// plist_get returns the first value for KEY (or Qnil).
+// plist_put returns a new plist with KEY bound to VAL; the simplest correct
+// implementation is to prepend a fresh (KEY VAL) pair at the front -- since
+// plist_get returns the FIRST match, the prepended pair wins and the old one
+// is shadowed (and eventually GC'd). This is safe and correct.
+
+static Lobj plist_get(Lobj plist, Lobj key)
+{
+    // Walk (k v k v ...) stopping at the first k == key (interned symbols are
+    // unique, so == is the right comparison -- no need for equal).
+    while (IS_CONS(plist)) {
+        Lobj k = CAR(plist);
+        Lobj rest = CDR(plist);
+        Lobj v = IS_CONS(rest) ? CAR(rest) : Qnil;
+        if (k == key) { return v; }
+        plist = IS_CONS(rest) ? CDR(rest) : Qnil;
+    }
+    return Qnil;
+}
+
+static Lobj plist_put(Lobj plist, Lobj key, Lobj val)
+{
+    // Prepend (key val) to plist. The old binding (if any) is shadowed --
+    // plist_get returns the first match, so this is correct. Avoids walking
+    // the whole list to find and update an existing entry.
+    return make_cons(key, make_cons(val, plist));
+}
+
+// Remove all occurrences of KEY from plist (rebuild without them).
+static Lobj plist_remove(Lobj plist, Lobj key)
+{
+    Lobj result = Qnil;
+    Lobj tail = Qnil;
+    while (IS_CONS(plist)) {
+        Lobj k = CAR(plist);
+        Lobj rest = CDR(plist);
+        Lobj v = IS_CONS(rest) ? CAR(rest) : Qnil;
+        if (k != key) {
+            // Keep this pair: append (k v) to result.
+            Lobj pair = make_cons(k, make_cons(v, Qnil));
+            if (IS_NIL(result)) {
+                result = pair;
+                tail = CDR(pair);  // points at the inner Qnil
+            } else {
+                SETCDR(tail, pair);
+                tail = CDR(pair);
+            }
+        }
+        plist = IS_CONS(rest) ? CDR(rest) : Qnil;
+    }
+    return result;
+}
+
+// ---- interval table helpers -------------------------------------------------
+
+// Find the index of the interval covering pos (start <= pos < end), or -1.
+static int ival_find(struct rd_buffer *b, int pos)
+{
+    for (int i = 0; i < b->n_ivals; i++) {
+        if (b->ivals[i].start <= pos && pos < b->ivals[i].end) { return i; }
+    }
+    return -1;
+}
+
+// Insert a new interval at index `at`, shifting the rest right by one.
+// Returns 0 on success, -1 if the table is full.
+static int ival_insert_at(struct rd_buffer *b, int at,
+                          int start, int end, Lobj plist)
+{
+    if (b->n_ivals >= RD_MAX_INTERVALS) { return -1; }
+    // Shift intervals at [at, n_ivals) right by one.
+    for (int i = b->n_ivals; i > at; i--) {
+        b->ivals[i] = b->ivals[i - 1];
+    }
+    b->ivals[at].start = start;
+    b->ivals[at].end   = end;
+    b->ivals[at].plist = plist;
+    b->n_ivals++;
+    return 0;
+}
+
+// Remove interval at index `at`, shifting the rest left.
+static void ival_remove_at(struct rd_buffer *b, int at)
+{
+    for (int i = at; i < b->n_ivals - 1; i++) {
+        b->ivals[i] = b->ivals[i + 1];
+    }
+    b->n_ivals--;
+}
+
+// Split interval at index `idx` at position `split_pos`, producing two
+// adjacent intervals with the same plist. After the call, ivals[idx] covers
+// [original_start, split_pos) and ivals[idx+1] covers [split_pos, original_end).
+// Returns 0 on success, -1 if the table is too full for the extra slot.
+static int ival_split_at(struct rd_buffer *b, int idx, int split_pos)
+{
+    if (b->n_ivals >= RD_MAX_INTERVALS) { return -1; }
+    int orig_end = b->ivals[idx].end;
+    Lobj pl = b->ivals[idx].plist;
+    // Shrink the left half.
+    b->ivals[idx].end = split_pos;
+    // Insert the right half at idx+1.
+    return ival_insert_at(b, idx + 1, split_pos, orig_end, pl);
+}
+
+// ---- rd_put_text_prop -------------------------------------------------------
+//
+// Set PROP=VAL on every character in [start, end), MERGING with existing
+// properties (other keys in pre-existing intervals are preserved).
+//
+// Algorithm:
+//   1. Clamp [start, end) to the buffer length.
+//   2. Split any interval that straddles `start` or `end` so that every
+//      interval is either fully inside or fully outside [start, end).
+//   3. Walk the intervals that are now fully inside [start, end):
+//      - Update their plist via plist_put.
+//   4. For any sub-range of [start, end) NOT covered by an existing interval,
+//      insert a new interval with plist = (prop val . Qnil).
+//
+// This keeps the array sorted and non-overlapping.
+
+void rd_put_text_prop(struct rd_buffer *b, int start, int end,
+                      Lobj prop, Lobj val)
+{
+    int len = rd_buf_len(b);
+    // Clamp to valid text range.
+    if (start < 0)   { start = 0; }
+    if (end   > len) { end   = len; }
+    if (start >= end) { return; }
+
+    // Step 1: Split any interval straddling `start`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < start && iv->end > start) {
+            // This interval straddles the left edge: split at `start`.
+            if (ival_split_at(b, i, start) < 0) { return; } // table full
+            // After the split, ivals[i] covers [iv->start, start) and
+            // ivals[i+1] covers [start, old_end). Skip past the left half.
+            i++;  // i now points at the right half; let the loop re-examine
+            break;
+        }
+    }
+
+    // Step 2: Split any interval straddling `end`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < end && iv->end > end) {
+            if (ival_split_at(b, i, end) < 0) { return; }
+            break;  // only one interval can straddle `end`
+        }
+    }
+
+    // Step 3: Walk [start, end), updating covered intervals and inserting gaps.
+    int pos = start;
+    int i = 0;
+    // Find the first interval that touches or follows pos.
+    while (i < b->n_ivals && b->ivals[i].end <= pos) { i++; }
+
+    while (pos < end) {
+        if (i < b->n_ivals && b->ivals[i].start <= pos && b->ivals[i].end <= end) {
+            // Fully covered interval: merge the property.
+            if (b->ivals[i].start > pos) {
+                // Gap before this interval: [pos, ivals[i].start) has no props.
+                int gap_end = b->ivals[i].start;
+                Lobj new_pl = make_cons(prop, make_cons(val, Qnil));
+                if (ival_insert_at(b, i, pos, gap_end, new_pl) < 0) { return; }
+                // i now points at the new interval; the old interval is at i+1.
+                pos = gap_end;
+                i++;  // fall through to process the old interval next iteration
+                continue;
+            }
+            // Update the plist with the new property.
+            b->ivals[i].plist = plist_put(b->ivals[i].plist, prop, val);
+            pos = b->ivals[i].end;
+            i++;
+        } else if (i < b->n_ivals && b->ivals[i].start < end &&
+                   b->ivals[i].start > pos) {
+            // Gap before the next interval.
+            int gap_end = b->ivals[i].start;
+            if (gap_end > end) { gap_end = end; }
+            Lobj new_pl = make_cons(prop, make_cons(val, Qnil));
+            if (ival_insert_at(b, i, pos, gap_end, new_pl) < 0) { return; }
+            pos = gap_end;
+            i++;
+        } else {
+            // No more intervals in range: cover [pos, end) with a new one.
+            Lobj new_pl = make_cons(prop, make_cons(val, Qnil));
+            if (ival_insert_at(b, i, pos, end, new_pl) < 0) { return; }
+            pos = end;
+            i++;
+        }
+    }
+}
+
+// ---- rd_get_text_prop -------------------------------------------------------
+
+Lobj rd_get_text_prop(struct rd_buffer *b, int pos, Lobj prop)
+{
+    int i = ival_find(b, pos);
+    if (i < 0) { return Qnil; }
+    return plist_get(b->ivals[i].plist, prop);
+}
+
+// ---- rd_text_props_at -------------------------------------------------------
+
+Lobj rd_text_props_at(struct rd_buffer *b, int pos)
+{
+    int i = ival_find(b, pos);
+    if (i < 0) { return Qnil; }
+    return b->ivals[i].plist;
+}
+
+// ---- rd_set_text_props ------------------------------------------------------
+//
+// Replace (not merge) the entire plist over [start, end). This splits the
+// boundary intervals exactly like rd_put_text_prop, then overwrites plists.
+
+void rd_set_text_props(struct rd_buffer *b, int start, int end, Lobj plist)
+{
+    int len = rd_buf_len(b);
+    if (start < 0)   { start = 0; }
+    if (end   > len) { end   = len; }
+    if (start >= end) { return; }
+
+    // Split any interval straddling `start`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < start && iv->end > start) {
+            if (ival_split_at(b, i, start) < 0) { return; }
+            break;
+        }
+    }
+    // Split any interval straddling `end`.
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < end && iv->end > end) {
+            if (ival_split_at(b, i, end) < 0) { return; }
+            break;
+        }
+    }
+
+    // If plist is Qnil, remove all intervals fully inside [start, end).
+    // Otherwise, update or create intervals to cover [start, end) with plist.
+    int pos = start;
+    int i = 0;
+    while (i < b->n_ivals && b->ivals[i].end <= pos) { i++; }
+
+    while (pos < end) {
+        if (i < b->n_ivals && b->ivals[i].start <= pos &&
+            b->ivals[i].end <= end) {
+            if (b->ivals[i].start > pos) {
+                // Gap: [pos, ivals[i].start) -- fill or skip.
+                int gap_end = b->ivals[i].start;
+                if (!IS_NIL(plist)) {
+                    if (ival_insert_at(b, i, pos, gap_end, plist) < 0) { return; }
+                    pos = gap_end;
+                    i++;
+                } else {
+                    pos = gap_end;
+                }
+                continue;
+            }
+            if (IS_NIL(plist)) {
+                // Remove this interval.
+                int end_save = b->ivals[i].end;
+                ival_remove_at(b, i);
+                pos = end_save;
+                // i unchanged (next interval shifted into position i)
+            } else {
+                b->ivals[i].plist = plist;
+                pos = b->ivals[i].end;
+                i++;
+            }
+        } else if (i < b->n_ivals && b->ivals[i].start < end &&
+                   b->ivals[i].start > pos) {
+            // Gap before the next interval.
+            int gap_end = b->ivals[i].start;
+            if (!IS_NIL(plist)) {
+                if (ival_insert_at(b, i, pos, gap_end, plist) < 0) { return; }
+                pos = gap_end;
+                i++;
+            } else {
+                pos = gap_end;
+            }
+        } else {
+            // No more intervals in range: cover [pos, end) with plist if non-nil.
+            if (!IS_NIL(plist)) {
+                if (ival_insert_at(b, i, pos, end, plist) < 0) { return; }
+            }
+            pos = end;
+        }
+    }
+}
+
+// ---- rd_remove_text_props ---------------------------------------------------
+//
+// Remove the keys listed in PROPS (a list of symbols, values ignored) from
+// every interval intersecting [start, end). Intervals whose plist empties out
+// are dropped from the table.
+
+void rd_remove_text_props(struct rd_buffer *b, int start, int end, Lobj props)
+{
+    int len = rd_buf_len(b);
+    if (start < 0)   { start = 0; }
+    if (end   > len) { end   = len; }
+    if (start >= end) { return; }
+
+    // Split any interval straddling the edges first, so every interval is then
+    // either fully inside [start, end) or fully outside -- otherwise removing a
+    // key from an interval like [2,8) for a range [5,10) would wrongly strip the
+    // property from [2,5) too. (Same split prologue as rd_put_text_prop.)
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < start && iv->end > start) { if (ival_split_at(b, i, start) < 0) { return; } break; }
+    }
+    for (int i = 0; i < b->n_ivals; i++) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < end && iv->end > end) { if (ival_split_at(b, i, end) < 0) { return; } break; }
+    }
+
+    // Now strip keys only from intervals FULLY inside [start, end).
+    for (int i = 0; i < b->n_ivals; ) {
+        struct rd_interval *iv = &b->ivals[i];
+        if (iv->start < start || iv->end > end) { i++; continue; }
+
+        // Remove each key in PROPS from this interval's plist.
+        Lobj pl = iv->plist;
+        for (Lobj kp = props; IS_CONS(kp); kp = CDR(kp)) {
+            Lobj key = CAR(kp);
+            pl = plist_remove(pl, key);
+        }
+
+        if (IS_NIL(pl)) {
+            // Plist is empty: drop this interval entirely.
+            ival_remove_at(b, i);
+            // Don't increment i: the next interval shifted into slot i.
+        } else {
+            iv->plist = pl;
+            i++;
+        }
+    }
+}
+
+// ---- rd_buf_mark_props ------------------------------------------------------
+//
+// GC root phase: call mark(plist) for every interval so the mark-sweep
+// collector can reach the property plists from the buffer. Without this hook,
+// a GC between put-text-property and the next redisplay could free a face
+// cons cell that is still referenced by an interval plist -- exactly the
+// Emacs GC issue that motivated buffer text properties being GC roots.
+
+void rd_buf_mark_props(struct rd_buffer *b, void (*mark)(Lobj))
+{
+    for (int i = 0; i < b->n_ivals; i++) {
+        mark(b->ivals[i].plist);
+    }
+}
+
+#endif  // LM_BUILD
+
+// ---- named face resolver (LM_BUILD only) ------------------------------------
+//
+// rd_resolve_face is the bridge between a Lisp `face` text-property value and
+// the numeric face id that a cell's .face byte carries.  Three input shapes:
+//
+//   nil / unknown symbol  ->  0 (the default face: guaranteed safe)
+//   a face-name symbol    ->  look up via gfx_face_id() (lm_gfx.c owns the
+//                             name->id registry)
+//   a LIST of face names  ->  MERGE: start from the default face, walk the list
+//                             left to right applying each face's SET attributes
+//                             (fg_set, bg_set, bold, inverse, underline); later
+//                             entries override earlier ones.  Then find an
+//                             existing slot whose attributes match the merged
+//                             result, or allocate the next free slot for it.
+//
+// The find-before-allocate step keeps the face table stable across multiple
+// redisplay passes: if the same list appears on every character of a word, the
+// second character resolves to the same id as the first (no runaway growth).
+// When the table is full (n_faces_used == RD_NFACES) we fall back to 0 rather
+// than silently stomping an existing face.
+
+#ifdef LM_BUILD
+int rd_resolve_face(struct rd_frame *f, Lobj v)
+{
+    if (IS_NIL(v)) { return 0; }
+
+    // Fast path: a single face name symbol -- just look it up.
+    if (IS_SYMBOL(v)) {
+        int id = gfx_face_id(v);
+        return (id >= 0 && id < RD_NFACES) ? id : 0;
+    }
+
+    // Merge path: a list (face1 face2 ...).
+    // Start from a copy of the default face (index 0), which has all attributes
+    // set, so the result is always fully specified even if none of the listed
+    // faces carry fg or bg.
+    if (IS_CONS(v)) {
+        struct rd_face m = f->faces[0];   // working merged result; copy, not ptr
+        for (Lobj p = v; IS_CONS(p); p = CDR(p)) {
+            int id = gfx_face_id(CAR(p));
+            if (id < 0 || id >= f->n_faces_used) { continue; }
+            struct rd_face *s = &f->faces[id];
+            // Each face in the list only OVERRIDES the attributes it explicitly
+            // specifies (fg_set/bg_set == 1); unset attributes are inherited
+            // from what was already accumulated -- the classic Emacs face merge.
+            if (s->fg_set)    { m.fg = s->fg; m.fg_set = 1; }
+            if (s->bg_set)    { m.bg = s->bg; m.bg_set = 1; }
+            if (s->bold)      { m.bold = 1; }
+            if (s->inverse)   { m.inverse = 1; }
+            if (s->underline) { m.underline = 1; }
+        }
+
+        // Scan the already-allocated face slots for an identical entry.
+        // This prevents the table from growing when the same list appears
+        // on every character of a colored span -- redisplay calls us once
+        // per character, so stability here is important.
+        for (int i = 0; i < f->n_faces_used; i++) {
+            struct rd_face *e = &f->faces[i];
+            if (e->fg == m.fg && e->bg == m.bg &&
+                e->bold == m.bold && e->inverse == m.inverse &&
+                e->underline == m.underline &&
+                e->fg_set == m.fg_set && e->bg_set == m.bg_set) {
+                return i;
+            }
+        }
+        // No existing slot matched: claim the next free one.
+        if (f->n_faces_used < RD_NFACES) {
+            f->faces[f->n_faces_used] = m;
+            return f->n_faces_used++;
+        }
+        return 0;   // table full -- fall back to default rather than clobbering
+    }
+
+    return 0;
+}
+#endif  // LM_BUILD
 
 // ---- frame & window tree --------------------------------------------------
 
@@ -123,11 +655,42 @@ void rd_frame_init(struct rd_frame *f, int px_w, int px_h,
     f->root = f->selected = win_alloc(f);
     f->root->buf = initial;
     // Default faces: 0 = text (light on near-black), 1 = modeline (inverse),
-    // 2 = reserved for region highlight later. Lisp can repaint these.
+    // 2 = region/selection bar.  Lisp can repaint or extend these via defface.
+    //
+    // All built-in faces specify both colors (fg_set=bg_set=1) and start with
+    // all attribute bits cleared.  The fill loop for 3..RD_NFACES copies face 0
+    // as a sane default so any unregistered slot is never garbage.
     f->faces[0].fg = 0x00D5C4A1; f->faces[0].bg = 0x001D2021;
+    f->faces[0].fg_set = 1; f->faces[0].bg_set = 1;
+    f->faces[0].bold = 0; f->faces[0].inverse = 0; f->faces[0].underline = 0;
+
     f->faces[1].fg = 0x001D2021; f->faces[1].bg = 0x00928374;
+    f->faces[1].fg_set = 1; f->faces[1].bg_set = 1;
+    f->faces[1].bold = 0; f->faces[1].inverse = 0; f->faces[1].underline = 0;
+
     f->faces[2].fg = 0x00FBF1C7; f->faces[2].bg = 0x00504945;   // selection bar
-    for (int i = 3; i < RD_NFACES; i++) { f->faces[i] = f->faces[0]; }
+    f->faces[2].fg_set = 1; f->faces[2].bg_set = 1;
+    f->faces[2].bold = 0; f->faces[2].inverse = 0; f->faces[2].underline = 0;
+
+    // Slots 3..RD_NFACES-1: copy the default COLORS (so a slot used directly
+    // before it's defined still paints something readable, never black), but
+    // mark fg/bg as UNSET. This is critical for the face MERGE: an attribute-only
+    // face like `ansi-bold` (defface ... :bold t) must NOT carry a foreground,
+    // or it would clobber the color of a face merged before it -- e.g.
+    // (ansi-blue ansi-bold) would lose the blue. defface sets fg_set/bg_set=1
+    // only when :foreground/:background is actually given.
+    for (int i = 3; i < RD_NFACES; i++) {
+        f->faces[i] = f->faces[0];
+        f->faces[i].fg_set = 0;
+        f->faces[i].bg_set = 0;
+    }
+
+    // n_faces_used is the single allocation cursor shared between:
+    //   • lm_gfx's defface / face_alloc (which registers named faces)
+    //   • rd_resolve_face's merge-allocator (which find-or-allocates merged slots)
+    // Initialize to 3 (the three built-ins 0/1/2 are already committed).
+    // lm_gfx_register then bumps it when it interns the built-in name symbols.
+    f->n_faces_used = 3;
     f->echo[0] = 0;
     f->echo_sel = -1;
     f->front = front; f->back = back;
@@ -254,6 +817,22 @@ static void put_cell(struct rd_frame *f, int col, int row, int ch, int face)
     f->back[row * f->cols + col].face = (unsigned char)face;
 }
 
+// The cell face id for the character at text position `p`: read its `face`
+// text property and resolve it (a face name, or a list of faces merged). In the
+// kernel build (no Lisp) there are no text properties, so it's always face 0 --
+// buffer text renders exactly as before until properties exist.
+#ifdef LM_BUILD
+static int char_face(struct rd_frame *f, struct rd_buffer *b, int p)
+{
+    static Lobj sym_face = 0;                 // interned once: the `face` property key
+    if (sym_face == 0) { sym_face = intern("face"); }
+    return rd_resolve_face(f, rd_get_text_prop(b, p, sym_face));
+}
+#else
+static int char_face(struct rd_frame *f, struct rd_buffer *b, int p)
+{ (void)f; (void)b; (void)p; return 0; }
+#endif
+
 // Lay out one leaf window's rect: text lines (truncated by default; wrapped
 // when the buffer's line-wrap minor mode is on), then its modeline on its last row.
 static void layout_leaf(struct rd_frame *f, struct rd_win *w)
@@ -329,7 +908,7 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
                     row++; col = 0;               // continue the SAME logical line
                     if (row >= text_rows) { break; }
                 }
-                put_cell(f, w->x + col, w->y + row, c, 0);
+                put_cell(f, w->x + col, w->y + row, c, char_face(f, b, p));
                 if (w == f->selected && b->point == p) {
                     f->cursor_col = w->x + col; f->cursor_row = w->y + row;
                 }
@@ -371,7 +950,7 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
                 int c = rd_buf_char_at(b, p);
                 if (c == '\n') { break; }
                 if (col < w->w) {                 // truncate at the window edge
-                    put_cell(f, w->x + col, w->y + row, c, 0);
+                    put_cell(f, w->x + col, w->y + row, c, char_face(f, b, p));
                 }
                 // The cursor lives where point is, in the selected window.
                 if (b->point == p && w == f->selected && col < w->w) {
@@ -482,16 +1061,32 @@ static inline uint32_t blend(uint32_t bg, uint32_t fg, uint32_t a)
 static void paint_cell(const struct rd_frame *f, uint32_t *fb, int stride,
                        int col, int row, const struct rd_cell *cell, int invert)
 {
-    const struct rd_face *face = &f->faces[cell->face < RD_NFACES ? cell->face : 0];
-    uint32_t fg = invert ? face->bg : face->fg;
-    uint32_t bg = invert ? face->fg : face->bg;
+    const struct rd_face *face = &f->faces[cell->face];   // face is a uint8 id; RD_NFACES==256 covers it
+    // The face's `inverse` attribute swaps fg/bg, combined (XOR) with the
+    // cursor's invert -- so an inverse cell under the cursor reads normally.
+    int inv = invert ^ (face->inverse ? 1 : 0);
+    uint32_t fg = inv ? face->bg : face->fg;
+    uint32_t bg = inv ? face->fg : face->bg;
     int ch = (cell->ch >= FONT_AA_FIRST && cell->ch <= FONT_AA_LAST) ? cell->ch : '?';
     const uint8_t *glyph = font_aa[ch - FONT_AA_FIRST];
+    int bold = face->bold;
     for (int gy = 0; gy < RD_CELL_H; gy++) {
         uint32_t *out = fb + (row * RD_CELL_H + gy) * stride + col * RD_CELL_W;
         const uint8_t *arow = glyph + gy * RD_CELL_W;
         for (int gx = 0; gx < RD_CELL_W; gx++) {
-            out[gx] = blend(bg, fg, arow[gx]);
+            uint32_t a = arow[gx];
+            // Faux-bold: we have no bold font, so thicken strokes by smearing
+            // each pixel's coverage rightward 1px (max with the left neighbor).
+            if (bold && gx > 0 && arow[gx - 1] > a) { a = arow[gx - 1]; }
+            out[gx] = blend(bg, fg, a);
+        }
+    }
+    // Underline: a 1px fg rule near the bottom of the cell.
+    if (face->underline) {
+        int uy = RD_CELL_H - 2;
+        if (uy >= 0) {
+            uint32_t *out = fb + (row * RD_CELL_H + uy) * stride + col * RD_CELL_W;
+            for (int gx = 0; gx < RD_CELL_W; gx++) { out[gx] = fg; }
         }
     }
 }

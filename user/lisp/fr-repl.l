@@ -37,11 +37,20 @@ the buffer, read-string turns text into a form, eval runs it."
     ;; cursor happens to sit -- otherwise we splice them into the line.
     (goto-char (buffer-length))
     (insert "\n")
-    (let ((val (eval (read-string src))))
-      (flush-output)                ; princ'd text lands HERE, before the value
-      (insert (prin1-to-string val))
-      (insert "\n")
-      (prompt))))
+    (let ((form (read-string src)))
+      ;; A REPL is a process in a buffer: (exit) (or bare `exit`) CLOSES this
+      ;; buffer instead of evaluating -- like typing `exit` in a shell. (The
+      ;; eval'd `exit` primitive is separately guarded to never exit the frame
+      ;; process; this comint-style close is the REPL-layer behavior.)
+      (if (or (eq form 'exit) (and (consp form) (eq (car form) 'exit)))
+          (if (kill-buffer)
+              (redisplay)                       ; closed -> window shows what's left
+            (progn (insert "exit: this is the last buffer\n") (prompt)))
+        (let ((val (eval form)))
+          (flush-output)              ; princ'd text lands HERE, before the value
+          (insert (prin1-to-string val))
+          (insert "\n")
+          (prompt))))))
 
 (defun repl-set-input (s)
   "Replace the current REPL input (everything after the prompt) with S."

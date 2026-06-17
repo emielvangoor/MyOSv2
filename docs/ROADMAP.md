@@ -613,6 +613,32 @@ The OS now boots from a **real, persistent on-disk ext2 filesystem** mounted as
 
 ---
 
+## Phase 30 — Text properties + ANSI color  ✅ DONE
+
+Buffers gained genuine **Emacs text properties**, and Unix/ANSI styling is
+translated into them, so program output renders colored in the frame instead of
+showing raw `ESC[..m` escape bytes.
+
+- ✅ **30.1 — text-property store**: `struct rd_buffer` carries an interval list
+  (`{start, end, plist}`) the mark-sweep GC traces (via `gfx_gc_mark_buffers`);
+  `put-text-property` / `get-text-property` / `set-text-properties` /
+  `remove-text-properties` / `text-properties-at`; intervals shift on
+  insert/delete. (`#ifdef LM_BUILD`-guarded so the kernel build of `rd_core.c`
+  stays Lisp-free.)
+- ✅ **30.2 — propertize + insert**: `(propertize STR ...)` → a propertized
+  string; `insert` stamps its plist onto the inserted range.
+- ✅ **30.3 — named themeable faces**: `defface` / `set-face-attribute`; the
+  `face` property value is a face name or a list merged left-to-right (Emacs
+  semantics). Renderer resolves each character's face to a cell color.
+- ✅ **30.4 — ANSI translation**: a themeable `ansi-*` palette and a stateful
+  `ansi-color-apply` (the `ansi-color.el` analog) that strips SGR escapes and
+  emits `face`-propertized pieces, carried across stream chunks; wired into the
+  frame's output streamer.
+- ✅ **30.5 — verified**: `tools/textprops_check.py` runs `busybox ls` in the
+  frame and asserts directories render in ANSI blue with no escape litter.
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
