@@ -781,6 +781,22 @@ static void put_cell(struct rd_frame *f, int col, int row, int ch, int face)
     f->back[row * f->cols + col].face = (unsigned char)face;
 }
 
+// The cell face id for the character at text position `p`: read its `face`
+// text property and resolve it (a face name, or a list of faces merged). In the
+// kernel build (no Lisp) there are no text properties, so it's always face 0 --
+// buffer text renders exactly as before until properties exist.
+#ifdef LM_BUILD
+static int char_face(struct rd_frame *f, struct rd_buffer *b, int p)
+{
+    static Lobj sym_face = 0;                 // interned once: the `face` property key
+    if (sym_face == 0) { sym_face = intern("face"); }
+    return rd_resolve_face(f, rd_get_text_prop(b, p, sym_face));
+}
+#else
+static int char_face(struct rd_frame *f, struct rd_buffer *b, int p)
+{ (void)f; (void)b; (void)p; return 0; }
+#endif
+
 // Lay out one leaf window's rect: text lines (truncated by default; wrapped
 // when the buffer's line-wrap minor mode is on), then its modeline on its last row.
 static void layout_leaf(struct rd_frame *f, struct rd_win *w)
@@ -856,7 +872,7 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
                     row++; col = 0;               // continue the SAME logical line
                     if (row >= text_rows) { break; }
                 }
-                put_cell(f, w->x + col, w->y + row, c, 0);
+                put_cell(f, w->x + col, w->y + row, c, char_face(f, b, p));
                 if (w == f->selected && b->point == p) {
                     f->cursor_col = w->x + col; f->cursor_row = w->y + row;
                 }
@@ -898,7 +914,7 @@ static void layout_leaf(struct rd_frame *f, struct rd_win *w)
                 int c = rd_buf_char_at(b, p);
                 if (c == '\n') { break; }
                 if (col < w->w) {                 // truncate at the window edge
-                    put_cell(f, w->x + col, w->y + row, c, 0);
+                    put_cell(f, w->x + col, w->y + row, c, char_face(f, b, p));
                 }
                 // The cursor lives where point is, in the selected window.
                 if (b->point == p && w == f->selected && col < w->w) {
