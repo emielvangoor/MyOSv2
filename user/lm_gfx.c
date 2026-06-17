@@ -183,10 +183,20 @@ DEFGFX("kill-buffer", Gkill_buffer, 0, 0) {
     (void)args; (void)env;
     int i = (int)(frame.selected->buf - bufs);
     if (i < 0 || i >= NBUFS || !buf_used[i]) { return Qnil; }
-    int used = 0, other = -1;
+    // Choose where to land: prefer a buffer that is NOT a "*repl*" (so closing a
+    // REPL returns you to *scratch* or a file, not a look-alike REPL); fall back
+    // to any other live buffer.
+    int used = 0, other = -1, nonrepl = -1;
     for (int k = 0; k < NBUFS; k++) {
-        if (buf_used[k]) { used++; if (k != i && other < 0) { other = k; } }
+        if (!buf_used[k]) { continue; }
+        used++;
+        if (k == i) { continue; }
+        if (other < 0) { other = k; }
+        { const char *nm = bufs[k].name; const char *r = "*repl*"; int e = 1;
+          while (*nm && *nm == *r) { nm++; r++; } if (*nm != *r) { e = 0; }
+          if (nonrepl < 0 && !e) { nonrepl = k; } }
     }
+    if (nonrepl >= 0) { other = nonrepl; }
     if (used <= 1 || other < 0) { return Qnil; }     // keep at least one buffer alive
     // Retarget every window (selected or not) that shows the dying buffer, so no
     // window is left pointing at a freed slot.
