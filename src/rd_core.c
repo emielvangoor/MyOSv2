@@ -1061,7 +1061,7 @@ static inline uint32_t blend(uint32_t bg, uint32_t fg, uint32_t a)
 static void paint_cell(const struct rd_frame *f, uint32_t *fb, int stride,
                        int col, int row, const struct rd_cell *cell, int invert)
 {
-    const struct rd_face *face = &f->faces[cell->face < RD_NFACES ? cell->face : 0];
+    const struct rd_face *face = &f->faces[cell->face];   // face is a uint8 id; RD_NFACES==256 covers it
     // The face's `inverse` attribute swaps fg/bg, combined (XOR) with the
     // cursor's invert -- so an inverse cell under the cursor reads normally.
     int inv = invert ^ (face->inverse ? 1 : 0);

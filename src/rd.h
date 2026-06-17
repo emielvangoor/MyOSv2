@@ -60,7 +60,12 @@ struct rd_interval {
 #define RD_CELL_H 40                // the prerendered anti-aliased font's cell
                                     // (must match src/font_aa.h's FONT_AA_W/H)
 #define RD_MAX_WIN 16               // window-tree node pool (per frame)
-#define RD_NFACES 64
+// 256 = the most a uint8_t cell.face can index. We register ~38 named faces
+// (3 built-in + 16 fg + 16 bg + bold/underline/inverse) and rd_resolve_face
+// allocates a slot per distinct MERGED combo (fg+bg+attrs) seen during render;
+// 64 exhausted it (the bg row + attributes fell back to `default`), so use the
+// full 256. find-or-allocate dedups, so per-character redisplay doesn't grow it.
+#define RD_NFACES 256
 #define RD_MAX_RECTS 32
 #define RD_ECHO_MAX 10              // minibuffer: input + up to 9 candidates
 
