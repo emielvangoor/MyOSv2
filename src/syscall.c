@@ -117,8 +117,8 @@ static long pipe_make(int *ufd)
     // to be a socket file would otherwise hand this pipe a stale socket pointer
     // (found live: pipelines returned 0 bytes after a socket-using program had
     // exited).
-    rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->sock = 0; rf->writable = 0; rf->ref = 1;
-    wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->sock = 0; wf->writable = 1; wf->ref = 1;
+    rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->sock = 0; rf->pty = 0; rf->is_master = 0; rf->writable = 0; rf->ref = 1;
+    wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->sock = 0; wf->pty = 0; wf->is_master = 0; wf->writable = 1; wf->ref = 1;
     // Allocate from fd 3 up: fds 0/1/2 stay reserved for stdin/stdout/stderr
     // (NULL there means "the console"), so a pipe never clobbers them.
     int r = -1, w = -1;
@@ -169,7 +169,7 @@ static struct vnode console_vnode = { .type = VN_FILE, .size = 0, .ops = &consol
 static struct file *console_file_new(void)
 {
     struct file *f = kmalloc(sizeof(struct file));
-    f->vnode = &console_vnode; f->off = 0; f->pipe = 0; f->sock = 0; f->writable = 1; f->ref = 1;
+    f->vnode = &console_vnode; f->off = 0; f->pipe = 0; f->sock = 0; f->pty = 0; f->is_master = 0; f->writable = 1; f->ref = 1;
     return f;
 }
 
@@ -801,7 +801,7 @@ long do_syscall(struct trapframe *tf)
         struct socket *s = socket_alloc((int)tf->x[0]);
         if (!fds || !s) { if (s) { socket_free(s); } ret = -1; break; }
         struct file *f = kmalloc(sizeof(struct file));
-        f->vnode = 0; f->off = 0; f->pipe = 0; f->sock = s; f->writable = 0; f->ref = 1;
+        f->vnode = 0; f->off = 0; f->pipe = 0; f->sock = s; f->pty = 0; f->is_master = 0; f->writable = 0; f->ref = 1;
         ret = -1;
         for (int i = 3; i < 16; i++) { if (!fds[i]) { fds[i] = f; ret = i; break; } }
         if (ret < 0) { socket_free(s); kfree(f); }   // table full
@@ -857,7 +857,7 @@ long do_syscall(struct trapframe *tf)
             struct socket *ns = socket_accept(fds[fd]->sock);   // blocks for a peer
             if (ns) {
                 struct file *f = kmalloc(sizeof(struct file));
-                f->vnode = 0; f->off = 0; f->pipe = 0; f->sock = ns; f->writable = 0; f->ref = 1;
+                f->vnode = 0; f->off = 0; f->pipe = 0; f->sock = ns; f->pty = 0; f->is_master = 0; f->writable = 0; f->ref = 1;
                 for (int i = 3; i < 16; i++) { if (!fds[i]) { fds[i] = f; ret = i; break; } }
                 if (ret < 0) { socket_free(ns); kfree(f); }     // fd table full
             }

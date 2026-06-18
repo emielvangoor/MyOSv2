@@ -25,6 +25,7 @@
 #include "elf.h"
 #include "shm.h"
 #include "pipe.h"
+#include "pty.h"
 #include "signal.h"
 #include "block.h"
 #include "ext2.h"
@@ -3512,6 +3513,95 @@ static void test_syscall_mkdirat(void)
     KASSERT(mkdir_ok == 1);
 }
 
+// --- PTY line discipline -------------------------------------------------
+//
+// A PTY is a tty with a REAL line discipline (unlike the UART console, which
+// only fakes one). These pin the behaviours vi/less/the shell depend on. They
+// pre-feed input and read with data already present, so the blocking read paths
+// return immediately -- no threads needed.
+
+// Compare the first n bytes of buf against a C string literal.
+static int pty_buf_eq(const char *buf, int n, const char *want)
+{
+    int wl = 0; while (want[wl]) { wl++; }
+    if (n != wl) { return 0; }
+    for (int i = 0; i < n; i++) { if (buf[i] != want[i]) { return 0; } }
+    return 1;
+}
+
+// Cooked mode: typed bytes are buffered and delivered as a whole line on RET.
+static void test_pty_cooked_line(void)
+{
+    pmm_init(); kheap_init();
+    struct pty *p = pty_alloc();
+    pty_master_write(p, "hi\n", 3);          // user types "hi" + RET
+    char b[16];
+    int n = pty_slave_read(p, b, sizeof(b)); // program reads one line
+    KASSERT(n == 3);
+    KASSERT(pty_buf_eq(b, n, "hi\n"));
+}
+
+// Cooked mode: ERASE (DEL) rubs out the last pending char before commit.
+static void test_pty_cooked_erase(void)
+{
+    pmm_init(); kheap_init();
+    struct pty *p = pty_alloc();
+    pty_master_write(p, "ab\x7f" "c\n", 5);  // a b <DEL> c RET -> "ac"
+    char b[16];
+    int n = pty_slave_read(p, b, sizeof(b));
+    KASSERT(pty_buf_eq(b, n, "ac\n"));
+}
+
+// Cooked + ECHO: typed bytes bounce back to the screen (output ring), with NL
+// expanded to CR-NL so the emulator returns the cursor to column 0.
+static void test_pty_echo(void)
+{
+    pmm_init(); kheap_init();
+    struct pty *p = pty_alloc();
+    pty_master_write(p, "hi\n", 3);
+    char b[16];
+    int n = pty_master_read(p, b, sizeof(b)); // read the echo
+    KASSERT(pty_buf_eq(b, n, "hi\r\n"));
+}
+
+// Raw mode (vi): ICANON/ECHO cleared -> every byte delivered immediately,
+// unbuffered, and NOT echoed.
+static void test_pty_raw_passthrough(void)
+{
+    pmm_init(); kheap_init();
+    struct pty *p = pty_alloc();
+    p->tio.c_lflag = 0;                       // raw: no ICANON, ECHO, ISIG
+    pty_master_write(p, "hi", 2);             // no newline needed
+    char b[16];
+    int n = pty_slave_read(p, b, sizeof(b));
+    KASSERT(n == 2);
+    KASSERT(pty_buf_eq(b, n, "hi"));
+    KASSERT(!pty_master_readable(p));         // nothing echoed
+}
+
+// Output OPOST|ONLCR: a cooked program's bare '\n' reaches the emulator as
+// '\r\n'.
+static void test_pty_output_onlcr(void)
+{
+    pmm_init(); kheap_init();
+    struct pty *p = pty_alloc();
+    pty_slave_write(p, "a\nb", 3);
+    char b[16];
+    int n = pty_master_read(p, b, sizeof(b));
+    KASSERT(pty_buf_eq(b, n, "a\r\nb"));
+}
+
+// ISIG: the INTR char (^C) is consumed by the discipline (not delivered as data
+// and not echoed). With no foreground pgrp set, no signal is sent.
+static void test_pty_intr_consumed(void)
+{
+    pmm_init(); kheap_init();
+    struct pty *p = pty_alloc();              // ISIG on by default, fg_pgrp 0
+    pty_master_write(p, "\x03", 1);           // ^C
+    KASSERT(!pty_slave_readable(p));          // not delivered to the program
+    KASSERT(!pty_master_readable(p));         // not echoed to the screen
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "lm: arithmetic",                  test_lm_arithmetic },
@@ -3627,6 +3717,12 @@ static const struct ktest tests[] = {
     { "pipe: write -1 when no readers",   test_pipe_broken },
     { "pipe: ring buffer wraps",          test_pipe_wraps },
     { "pipe: reader blocks, not spins",   test_pipe_read_blocks_not_spins },
+    { "pty: cooked line on RET",          test_pty_cooked_line },
+    { "pty: cooked ERASE edits line",     test_pty_cooked_erase },
+    { "pty: ECHO bounces to screen",      test_pty_echo },
+    { "pty: raw mode passthrough",        test_pty_raw_passthrough },
+    { "pty: output ONLCR maps NL",        test_pty_output_onlcr },
+    { "pty: ISIG consumes ^C",            test_pty_intr_consumed },
     { "poll: pipe readiness scan",        test_poll_pipe_readiness },
     { "tcp: cc slow start",               test_tcp_cc_slow_start },
     { "tcp: cc avoidance + loss",         test_tcp_cc_avoidance_and_loss },

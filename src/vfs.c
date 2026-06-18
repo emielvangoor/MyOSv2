@@ -10,6 +10,7 @@
 #include "vfs.h"
 #include "kheap.h"
 #include "pipe.h"
+#include "pty.h"
 #include "socket.h"
 
 static struct vnode *root;
@@ -269,6 +270,8 @@ struct file *vfs_open(const char *path)
     f->off = 0;
     f->pipe = 0;
     f->sock = 0;
+    f->pty = 0;
+    f->is_master = 0;
     f->writable = 0;
     f->ref = 1;
     return f;
@@ -277,6 +280,9 @@ struct file *vfs_open(const char *path)
 int vfs_read(struct file *f, void *buf, uint64_t len)
 {
     if (f->pipe) { return pipe_read(f, buf, len); }    // pipe end
+    // pty end: master reads the program's output, slave reads keystrokes.
+    if (f->pty) { return f->is_master ? pty_master_read(f->pty, buf, len)
+                                      : pty_slave_read(f->pty, buf, len); }
     if (!f->vnode->ops->read) { return -1; }
     int n = f->vnode->ops->read(f->vnode, f->off, buf, len);
     if (n > 0) { f->off += (uint64_t)n; }
@@ -286,6 +292,9 @@ int vfs_read(struct file *f, void *buf, uint64_t len)
 int vfs_write(struct file *f, const void *buf, uint64_t len)
 {
     if (f->pipe) { return pipe_write(f, buf, len); }   // pipe end
+    // pty end: master writes keystrokes (line discipline), slave writes output.
+    if (f->pty) { return f->is_master ? pty_master_write(f->pty, buf, len)
+                                      : pty_slave_write(f->pty, buf, len); }
     if (!f->vnode->ops->write) { return -1; }
     int n = f->vnode->ops->write(f->vnode, f->off, buf, len);
     if (n > 0) { f->off += (uint64_t)n; }
@@ -308,6 +317,7 @@ void vfs_close(struct file *f)
 {
     if (--f->ref > 0) { return; }     // other fds still reference this file
     if (f->pipe) { pipe_close(f); }   // drop our end of the pipe
+    if (f->pty)  { pty_close(f); }    // drop our end of the pty
     if (f->sock) { socket_free(f->sock); }   // release the socket (see socket.h)
     kfree(f);
 }
