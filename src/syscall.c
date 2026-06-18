@@ -17,6 +17,8 @@
 #include "proc.h"
 #include "shm.h"
 #include "pipe.h"
+#include "pty.h"
+#include "string.h"
 #include "kheap.h"
 #include "signal.h"
 #include "net.h"
@@ -129,6 +131,32 @@ static long pipe_make(int *ufd)
         return -EMFILE;
     }
     ufd[0] = r; ufd[1] = w;
+    return 0;
+}
+
+// Allocate a pseudo-terminal and install both ends in the fd table. Mirrors
+// pipe_make, but the two files share one struct pty and are distinguished by
+// ->is_master (which side of the line discipline they sit on). ufd is filled
+// {master, slave}: /bin/term keeps the master and hands the slave to the shell
+// it forks (dup'd onto fd 0/1/2). Every struct file field is initialised -- the
+// same stale-pointer discipline pipe_make documents.
+static long pty_make(int *ufd)
+{
+    struct file **fds = sched_current_fds();
+    if (!fds) { return -EFAULT; }
+    struct pty *p = pty_alloc();
+    struct file *mf = kmalloc(sizeof(struct file));
+    struct file *sf = kmalloc(sizeof(struct file));
+    mf->vnode = 0; mf->off = 0; mf->pipe = 0; mf->sock = 0; mf->pty = p; mf->is_master = 1; mf->writable = 1; mf->ref = 1;
+    sf->vnode = 0; sf->off = 0; sf->pipe = 0; sf->sock = 0; sf->pty = p; sf->is_master = 0; sf->writable = 1; sf->ref = 1;
+    int m = -1, s = -1;
+    for (int i = 3; i < 16 && m < 0; i++) { if (!fds[i]) { fds[i] = mf; m = i; } }
+    for (int i = 3; i < 16 && s < 0; i++) { if (!fds[i]) { fds[i] = sf; s = i; } }
+    if (m < 0 || s < 0) {                // no room: undo
+        if (m >= 0) { fds[m] = 0; } vfs_close(mf); vfs_close(sf);
+        return -EMFILE;
+    }
+    ufd[0] = m; ufd[1] = s;
     return 0;
 }
 
@@ -289,6 +317,45 @@ long do_syscall(struct trapframe *tf)
         // the actual I/O path does not change.
         unsigned req = (unsigned)tf->x[1];
         void *arg = (void *)(uintptr_t)tf->x[2];
+
+        // A real PTY answers tty questions from its OWN per-instance state, not
+        // the global console's. This is what makes a slave's tcsetattr() take
+        // effect: TCSETS stores the termios here, and the line discipline reads
+        // it on the very next byte -- so vi's switch to raw mode is real. (The
+        // console fall-through below keeps the UART tty working as before.)
+        {
+            struct file **pfds = sched_current_fds();
+            uint64_t ifd = tf->x[0];
+            if (pfds && ifd < 16 && pfds[ifd] && pfds[ifd]->pty) {
+                struct pty *p = pfds[ifd]->pty;
+                switch (req) {
+                case TCGETS:
+                    if (arg) { memcpy(arg, &p->tio, sizeof(p->tio)); }
+                    ret = 0; break;
+                case TCSETS: case TCSETSW: case TCSETSF:
+                    if (arg) { memcpy(&p->tio, arg, sizeof(p->tio)); }
+                    ret = 0; break;
+                case TIOCGWINSZ:
+                    if (arg) { memcpy(arg, &p->ws, sizeof(p->ws)); }
+                    ret = 0; break;
+                case TIOCSWINSZ:
+                    // Record the new size; SIGWINCH delivery is deferred (this
+                    // kernel has no SIGWINCH yet -- /bin/term sets the size once
+                    // before exec, so a running resize isn't needed for v1).
+                    if (arg) { memcpy(&p->ws, arg, sizeof(p->ws)); }
+                    ret = 0; break;
+                case TIOCGPGRP:
+                    if (arg) { *(int *)arg = (p->fg_pgrp > 0) ? p->fg_pgrp : 1; }
+                    ret = 0; break;
+                case TIOCSPGRP:
+                    if (arg) { p->fg_pgrp = *(int *)arg; }
+                    ret = 0; break;
+                default:
+                    ret = -ENOTTY; break;
+                }
+                break;   // handled the PTY ioctl -- leave the SYS_IOCTL case
+            }
+        }
         switch (req) {
         case TCGETS:
             // musl's isatty(fd) does: ioctl(fd, TCGETS, &termios); return !err;
@@ -730,6 +797,11 @@ long do_syscall(struct trapframe *tf)
         // O_CLOEXEC/O_NONBLOCK, neither of which we track yet, so it is ignored.
         // Negative-errno return (unlike legacy SYS_PIPE) so musl sets errno.
         ret = pipe_make((int *)(uintptr_t)tf->x[0]);
+        break;
+    }
+    case SYS_OPENPT: {                       // x0 = int fd[2] -> {master, slave}
+        long r = pty_make((int *)(uintptr_t)tf->x[0]);
+        ret = (r == 0) ? 0 : -1;             // native caller: -1 on error
         break;
     }
     case SYS_DUP2: {                         // x0 = oldfd, x1 = newfd

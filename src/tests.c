@@ -3602,6 +3602,56 @@ static void test_pty_intr_consumed(void)
     KASSERT(!pty_master_readable(p));         // not echoed to the screen
 }
 
+// openpty syscall + ioctl routing, end to end through do_syscall(): the slave
+// answers TCGETS (so isatty() is true) and a TCSETS that clears ICANON REALLY
+// switches the line discipline to raw -- the behaviour vi depends on.
+static volatile int openpty_ok;
+static void openpty_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    int ufd[2] = { -1, -1 };                 // {master, slave}
+    tf.x[8] = SYS_OPENPT; tf.x[0] = (uint64_t)(uintptr_t)ufd; do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 0);
+    ok = ok && (ufd[0] >= 3) && (ufd[1] >= 3) && (ufd[0] != ufd[1]);
+    int master = ufd[0], slave = ufd[1];
+
+    // TCGETS on the slave succeeds and reports the cooked default (ICANON set).
+    struct pty_termios t;
+    tf.x[8] = SYS_IOCTL; tf.x[0] = (uint64_t)slave; tf.x[1] = TCGETS;
+    tf.x[2] = (uint64_t)(uintptr_t)&t; do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 0) && ((t.c_lflag & T_ICANON) != 0);
+
+    // Switch the slave to raw by clearing the local flags; TCSETS must store it.
+    t.c_lflag = 0;
+    tf.x[8] = SYS_IOCTL; tf.x[0] = (uint64_t)slave; tf.x[1] = TCSETS;
+    tf.x[2] = (uint64_t)(uintptr_t)&t; do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 0);
+
+    // In raw mode one byte written to the master is immediately readable on the
+    // slave -- no newline, no line buffering.
+    char wb = 'R';
+    tf.x[8] = SYS_WRITE; tf.x[0] = (uint64_t)master;
+    tf.x[1] = (uint64_t)(uintptr_t)&wb; tf.x[2] = 1; do_syscall(&tf);
+    char rb = 0;
+    tf.x[8] = SYS_READ; tf.x[0] = (uint64_t)slave;
+    tf.x[1] = (uint64_t)(uintptr_t)&rb; tf.x[2] = 1; do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 1) && (rb == 'R');
+
+    openpty_ok = ok ? 1 : -1;
+}
+static void test_syscall_openpty(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    openpty_ok = 0;
+    sched_init();
+    thread_create(openpty_worker, 0, 1);
+    while (openpty_ok == 0) { yield(); }
+    KASSERT(openpty_ok == 1);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "lm: arithmetic",                  test_lm_arithmetic },
@@ -3723,6 +3773,7 @@ static const struct ktest tests[] = {
     { "pty: raw mode passthrough",        test_pty_raw_passthrough },
     { "pty: output ONLCR maps NL",        test_pty_output_onlcr },
     { "pty: ISIG consumes ^C",            test_pty_intr_consumed },
+    { "pty: openpty + raw via ioctl",     test_syscall_openpty },
     { "poll: pipe readiness scan",        test_poll_pipe_readiness },
     { "tcp: cc slow start",               test_tcp_cc_slow_start },
     { "tcp: cc avoidance + loss",         test_tcp_cc_avoidance_and_loss },

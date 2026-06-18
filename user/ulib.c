@@ -133,4 +133,5 @@ int  input_poll(struct input_event *ev) { return (int)syscall3(SYS_INPUT_READ, (
 int  gfx_acquire(struct gfx_info *gi) { return (int)syscall3(SYS_GFX_ACQUIRE, (long)gi, 0, 0); }
 int  gfx_flush(int x, int y, int w, int h) { return (int)syscall5(SYS_GFX_FLUSH, x, y, w, h, 0); }
 int  seat_switch(int n) { return (int)syscall3(SYS_SEAT_SWITCH, n, 0, 0); }
+int  openpty(int fd[2]) { return (int)syscall3(SYS_OPENPT, (long)fd, 0, 0); }
 int  sys_getc(void) { char c; long n = syscall3(SYS_READ, 0, (long)&c, 1); return n == 1 ? (int)(unsigned char)c : -1; }

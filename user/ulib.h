@@ -74,6 +74,7 @@ struct gfx_info { void *fb; unsigned int w, h, pitch; };
 int gfx_acquire(struct gfx_info *gi);
 int gfx_flush(int x, int y, int w, int h);
 int seat_switch(int n);   // VT switch to seat n (also: Ctrl-Alt-Fn)
+int openpty(int fd[2]);   // allocate a pty; fills {master, slave} fds -> 0/-1
 
 #define SIGINT  2
 #define SIGKILL 9

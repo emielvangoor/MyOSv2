@@ -17,6 +17,7 @@
 // recognise and optimise them; we are not chasing word-at-a-time speed here.
 
 #include <stddef.h>
+#include "string.h"
 
 void *memset(void *dst, int c, size_t n)
 {

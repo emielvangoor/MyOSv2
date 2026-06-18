@@ -58,3 +58,4 @@
 #define SYS_ACCEPT   (MYOS_SYS_BASE + 16)
 #define SYS_POLL     (MYOS_SYS_BASE + 17)
 #define SYS_SOCKSHUT (MYOS_SYS_BASE + 18)
+#define SYS_OPENPT   (MYOS_SYS_BASE + 19)

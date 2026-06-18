@@ -140,6 +140,7 @@
 #define SYS_ACCEPT   (MYOS_SYS_BASE + 16) // x0=fd -> new connected fd, or -1
 #define SYS_POLL     (MYOS_SYS_BASE + 17) // x0=pollfd*, x1=nfds, x2=timeout_ms -> #ready/0/-1
 #define SYS_SOCKSHUT (MYOS_SYS_BASE + 18) // x0=fd, x1=how (SHUT_WR/...) -> 0/-1 (TCP half-close)
+#define SYS_OPENPT   (MYOS_SYS_BASE + 19) // x0=int fd[2] -> fills {master, slave}; 0 / -1
 
 // Terminal ioctls (asm-generic values) -- enough for isatty()/line editing.
 // musl's isatty() calls ioctl(fd, TCGETS, &termios); a 0 return means the fd
@@ -150,6 +151,7 @@
 #define TCSETSW     0x5403
 #define TCSETSF     0x5404
 #define TIOCGWINSZ  0x5413
+#define TIOCSWINSZ  0x5414
 #define TIOCGPGRP   0x540F
 #define TIOCSPGRP   0x5410
 
