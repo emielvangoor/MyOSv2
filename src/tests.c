@@ -417,6 +417,23 @@ static void test_console_ctrlc_signals_foreground(void)
     sched_set_foreground(0);
 }
 
+// Ctrl-C signals the terminal's FOREGROUND PROCESS GROUP (set via tcsetpgrp/
+// TIOCSPGRP) -- so a whole job dies, even one a job-control shell put in its own
+// group. This is the kernel half of the fix for C-c not interrupting a command
+// run inside busybox sh in the frame.
+static void test_tty_intr_signals_fg_pgrp(void)
+{
+    pmm_init(); kheap_init(); sched_init();
+    struct thread *job   = thread_create(noop_worker, 0, 1);  // pgid defaults to its id
+    struct thread *other = thread_create(noop_worker, 0, 1);  // a different group
+    sched_set_foreground(0);               // force the GROUP path, not the thread fallback
+    tty_set_fg_pgrp(job->pgid);            // terminal foreground group = the job's
+    console_input(3);                      // Ctrl-C -> tty_intr -> kill(-fg_pgrp)
+    KASSERT(job->sig_pending & (1ull << SIGINT));       // the fg group got SIGINT
+    KASSERT(!(other->sig_pending & (1ull << SIGINT)));  // an unrelated group did NOT
+    tty_set_fg_pgrp(0);                    // reset the shared tty state for later tests
+}
+
 // --- System calls (do_syscall dispatch) ---
 
 static void test_syscall_write_returns_len(void)
@@ -3529,6 +3546,7 @@ static const struct ktest tests[] = {
     { "sched: wait_event early wake",     test_wait_event_early_wake },
     { "console: ring is FIFO",            test_console_ring_fifo },
     { "console: Ctrl-C signals fg",       test_console_ctrlc_signals_foreground },
+    { "console: Ctrl-C signals fg pgrp",  test_tty_intr_signals_fg_pgrp },
     { "syscall: write returns len",       test_syscall_write_returns_len },
     { "syscall: unknown returns -1",      test_syscall_unknown },
     { "syscall: yield returns 0",         test_syscall_yield },

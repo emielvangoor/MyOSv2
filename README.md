@@ -89,9 +89,16 @@ photograph itself: `(screenshot "/shot.ppm")`.
 - **Pipes** — `pipe` + `dup2` with refcounted file handles, so the shell runs
   pipelines like `hello | wc`.
 - **Signals** — `kill`, default actions, user handlers (with a sigreturn
-  trampoline), and **Ctrl-C** → `SIGINT` to the foreground program. Both the
-  legacy `signal`/`sigreturn` and the real-numbered `rt_sigaction`/`rt_sigreturn`
-  feed one delivery path, so musl binaries (busybox ash) install handlers too.
+  trampoline), and **Ctrl-C** → `SIGINT` to the terminal's **foreground process
+  group**. The tty tracks that group (`tcsetpgrp`/`TIOCSPGRP`, which ash sets per
+  job), so a single `tty_intr()` — shared by the serial line discipline and the
+  graphical keyboard (consumed in `SYS_INPUT_READ`) — interrupts a whole job,
+  including one a busybox-sh put in its own group, while the shell survives. Both
+  the legacy `signal`/`sigreturn` and the real-numbered `rt_sigaction`/
+  `rt_sigreturn` feed one delivery path, so musl binaries install handlers too.
+  (Interrupting a CPU-bound *Lisp eval* in the graphical frame is a known gap —
+  the frame polls input, so a runaway eval isn't seen until the input ISR learns
+  to spot Ctrl-C, as the UART one does.)
 - **Block device** — a **virtio-blk** disk driver on a generic virtio-mmio +
   virtqueue layer, reading and writing 512-byte sectors.
 - **Persistent filesystem** — a real on-disk **ext2** filesystem mounted as the
@@ -229,8 +236,9 @@ photograph itself: `(screenshot "/shot.ppm")`.
   tessellated and lit — spinning at 25fps inside an Emacs-style buffer:
   type `(teapot)` at the REPL. It keeps spinning while other commands
   stream output, and C-c interrupts a whole job -- the kernel grew Unix
-  **process groups** (`setpgid`, `kill -pgid`) so the frame's Ctrl-C
-  reaches the program doing the work, not just the wrapper that forked it.
+  **process groups** (`setpgid`) and a tty **foreground process group**
+  (`tcsetpgrp`), so the graphical Ctrl-C signals the program doing the work
+  (even one busybox-sh placed in its own group), not the shell around it.
   ![the Utah teapot spinning in a buffer while ping streams into the REPL](docs/images/phase-26-teapot.png)
 - **Interactive input in the buffer** — a program run from the frame reads its
   **stdin from the frame's own keyboard**, not the serial port: what you type

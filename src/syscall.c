@@ -331,20 +331,22 @@ long do_syscall(struct trapframe *tf)
             }
             ret = 0; break;
         case TIOCGPGRP:
-            // Return the foreground process group of the terminal. For our
-            // single-process (or simple-fork) model, the current thread's pgid
-            // is the right answer. sched_current() may be NULL in the KTEST
-            // harness (before sched_init), so fall back to 1.
+            // The terminal's foreground process group. Return whatever the last
+            // tcsetpgrp set (TIOCSPGRP); if nothing has, fall back to the
+            // caller's own pgid (the historical answer). sched_current() may be
+            // NULL in the KTEST harness (before sched_init), so fall back to 1.
             if (arg) {
+                int g = tty_fg_pgrp();
                 struct thread *ct = sched_current();
-                *(int *)arg = ct ? ct->pgid : 1;
+                *(int *)arg = (g > 0) ? g : (ct ? ct->pgid : 1);
             }
             ret = 0; break;
         case TIOCSPGRP:
-            // ash calls this to register itself as the terminal's foreground
-            // group after a fork. We have no kernel-side terminal foreground-
-            // group table yet; accepting it as a no-op is sufficient for ash
-            // to proceed without an error.
+            // tcsetpgrp: a job-control shell (ash) registers its current
+            // foreground job's group here. We now RECORD it so the tty INTR
+            // (Ctrl-C, via tty_intr) can signal that group -- which is what lets
+            // C-c kill a job ash put in its own process group.
+            if (arg) { tty_set_fg_pgrp(*(int *)arg); }
             ret = 0; break;
         default:
             // Unknown ioctl: return -ENOTTY (POSIX "not a typewriter"). musl
@@ -924,7 +926,9 @@ long do_syscall(struct trapframe *tf)
                 continue;
             }
             if (input_poll_event(out)) {
-                if (out->type == EV_KEY && out->code == 29) { hk_ctrl = (out->value != 0); }
+                if (out->type == EV_KEY && (out->code == 29 || out->code == 97)) {
+                    hk_ctrl = (out->value != 0);              // left/right Ctrl held
+                }
                 if (out->type == EV_KEY && out->code == 56) { hk_alt  = (out->value != 0); }
                 if (out->type == EV_KEY && out->value == 1 && hk_ctrl && hk_alt &&
                     out->code >= 59 && out->code <= 62) {     // F1..F4
@@ -933,6 +937,16 @@ long do_syscall(struct trapframe *tf)
                         gfx_show(n);                          // replay its pixels
                         sched_wake(input_waitq());            // unblock the new owner
                     }
+                    continue;                                 // consumed
+                }
+                if (out->type == EV_KEY && out->value == 1 && hk_ctrl &&
+                    out->code == 46) {                        // Ctrl-C (KEY_C)
+                    // The graphical INTR: signal the terminal's foreground group
+                    // exactly like the serial Ctrl-C, and consume the keystroke
+                    // (so it never reaches the program as a literal 'c'). This is
+                    // what interrupts a job running in the frame -- including one
+                    // a busybox-sh put in its own process group.
+                    tty_intr();
                     continue;                                 // consumed
                 }
                 ret = 0; break;
