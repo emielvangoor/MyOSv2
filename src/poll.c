@@ -2,6 +2,7 @@
 #include "poll.h"
 #include "vfs.h"
 #include "pipe.h"
+#include "pty.h"
 #include "socket.h"
 
 int poll_scan(struct file **fds, struct pollfd *pf, int nfds, int nfd_slots)
@@ -26,6 +27,11 @@ int poll_scan(struct file **fds, struct pollfd *pf, int nfds, int nfd_slots)
             rd = pipe_readable(f);
             wr = pipe_writable(f);
             hup = pipe_hangup(f);
+        } else if (f->pty) {
+            // A pty end is readable when its inbound ring has bytes (or the peer
+            // hung up); always writable -- the rings drop on overflow, never block.
+            rd = f->is_master ? pty_master_readable(f->pty) : pty_slave_readable(f->pty);
+            wr = 1;
         } else {
             // A regular file (or the console placeholder): treat as always ready;
             // ordinary file reads/writes don't block here.

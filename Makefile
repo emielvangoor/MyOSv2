@@ -142,11 +142,11 @@ print-musl = $(shell $(MUSL_CC) -print-file-name=$(1))
 #                      no symlink support, so the image must hold real files)
 #   /usr/lib/       -- musl crt1/crti/crtn/libc.a + libtcc1.a (TCC's compiler-
 #                      support runtime; tcc-compiled programs need both)
-$(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
+$(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(BUILD)/user/term.elf $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
                    $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) \
                    user/demo/colors.c | $(BUILD)
 	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test $(BUILD)/rootfs/bin $(BUILD)/rootfs/lib
-	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
+	printf '(run-bg "lisp" "-frame")\n(run-bg "term")\n' > $(BUILD)/rootfs/init.l
 	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
 	yes 0123456789ABCDEF | head -c 16384 > $(BUILD)/rootfs/test/big.bin
 	# --- /bin: the userland ELFs (init == lisp == lm.elf) ---
@@ -154,6 +154,8 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(PREBUILT_ELFS) $(BUILD)/user/mycr
 	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/lisp
 	for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do \
 	  cp $(BUILD)/user/$$p.elf $(BUILD)/rootfs/bin/$$p; done
+	cp $(BUILD)/user/term.elf $(BUILD)/rootfs/bin/term   # /bin/term: VT100 terminal
+
 	# busybox applet names: each is a symlink -> busybox, so a bare `ls`/`cat`/...
 	# in busybox sh resolves (via the kernel's symlink-following path lookup) to
 	# the multicall binary, which dispatches the applet by argv[0]. mke2fs -d bakes
@@ -245,6 +247,23 @@ MUSL_TEXT := 0x8000000000
 $(BUILD)/user/%.elf: user/musl/%.c | $(BUILD)
 	mkdir -p $(BUILD)/user
 	$(MUSL_CC) -static -no-pie -Os -Wl,-Ttext-segment=$(MUSL_TEXT) -o $@ $<
+
+# /bin/term: a standalone full-screen VT100 terminal (musl static) that links the
+# vendored libvterm and renders with the kernel's font_aa glyphs (-Isrc). An
+# explicit rule (not the generic user/musl/%.c one) so we can add libvterm's
+# objects + include paths. -w silences libvterm's third-party warnings.
+LIBVTERM_SRC  := $(wildcard user/libvterm/src/*.c)
+LIBVTERM_OBJS := $(patsubst user/libvterm/src/%.c,$(BUILD)/user/libvterm/%.o,$(LIBVTERM_SRC))
+LIBVTERM_INC  := -Iuser/libvterm/include -Iuser/libvterm/src
+
+$(BUILD)/user/libvterm/%.o: user/libvterm/src/%.c | $(BUILD)
+	@mkdir -p $(BUILD)/user/libvterm
+	$(MUSL_CC) -static -no-pie -Os -w $(LIBVTERM_INC) -c $< -o $@
+
+$(BUILD)/user/term.elf: user/musl/term.c $(LIBVTERM_OBJS) src/font_aa.h | $(BUILD)
+	mkdir -p $(BUILD)/user
+	$(MUSL_CC) -static -no-pie -Os -Wl,-Ttext-segment=$(MUSL_TEXT) \
+	  $(LIBVTERM_INC) -o $@ user/musl/term.c $(LIBVTERM_OBJS)
 
 # Prebuilt binaries: just copy them into place for the blob.
 $(BUILD)/user/%.elf: user/musl/%.bin | $(BUILD)
