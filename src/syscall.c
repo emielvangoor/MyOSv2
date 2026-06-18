@@ -194,6 +194,12 @@ static const struct vnode_ops console_ops = {
 };
 static struct vnode console_vnode = { .type = VN_FILE, .size = 0, .ops = &console_ops, .priv = 0 };
 
+// A terminal emulator (/bin/term) registers its pid here via SYS_SET_RAWKB so
+// the graphical Ctrl-C is delivered to IT as a keystroke (which it forwards to
+// its pty, whose line discipline then does the right thing) instead of the
+// kernel's legacy tty_intr(). -1 = nobody wants raw keys (default behaviour).
+static int g_rawkb_pid = -1;
+
 static struct file *console_file_new(void)
 {
     struct file *f = kmalloc(sizeof(struct file));
@@ -804,6 +810,11 @@ long do_syscall(struct trapframe *tf)
         ret = (r == 0) ? 0 : -1;             // native caller: -1 on error
         break;
     }
+    case SYS_SET_RAWKB: {                     // x0 = on (1=register caller, 0=clear)
+        g_rawkb_pid = (tf->x[0] != 0) ? (int)sched_current_id() : -1;
+        ret = 0;
+        break;
+    }
     case SYS_DUP2: {                         // x0 = oldfd, x1 = newfd
         struct file **fds = sched_current_fds();
         uint64_t o = tf->x[0], n = tf->x[1];
@@ -1012,12 +1023,16 @@ long do_syscall(struct trapframe *tf)
                     continue;                                 // consumed
                 }
                 if (out->type == EV_KEY && out->value == 1 && hk_ctrl &&
-                    out->code == 46) {                        // Ctrl-C (KEY_C)
+                    out->code == 46 &&                        // Ctrl-C (KEY_C)
+                    (int)sched_current_id() != g_rawkb_pid) {
                     // The graphical INTR: signal the terminal's foreground group
                     // exactly like the serial Ctrl-C, and consume the keystroke
                     // (so it never reaches the program as a literal 'c'). This is
                     // what interrupts a job running in the frame -- including one
-                    // a busybox-sh put in its own process group.
+                    // a busybox-sh put in its own process group. A raw-keyboard
+                    // client (/bin/term) is the exception: it gets ^C delivered
+                    // and forwards it to its pty, so its OWN line discipline
+                    // decides SIGINT (cooked) vs raw 0x03 (vi).
                     tty_intr();
                     continue;                                 // consumed
                 }

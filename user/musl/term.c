@@ -45,6 +45,7 @@
 #define SYS_GFX_ACQUIRE 0x1007   // x0=struct gfx_info* -> 0/-1 (also claims a seat)
 #define SYS_GFX_FLUSH   0x1008   // x0=x,x1=y,x2=w,x3=h -> 0/-1 (active seat only)
 #define SYS_OPENPT      0x1013   // x0=int fd[2] -> {master, slave}; 0/-1
+#define SYS_SET_RAWKB   0x1014   // x0=on -> deliver ^C to us (we forward to pty)
 
 struct gfx_info { void *fb; unsigned int w, h, pitch; };
 struct input_event { uint16_t type, code; uint32_t value; };
@@ -160,9 +161,13 @@ static void render_all(void)
     gfx_flush(0, 0, (int)SW, (int)SH);
 }
 
-// --- keyboard: evdev keycode -> byte (Phase 2 minimal: US ASCII) -------------
-// Indexed by Linux evdev KEY_* code. Phase 3 replaces this with the full
-// libvterm key encoder (arrows, F-keys, modifiers).
+// --- keyboard: evdev keycode -> libvterm key/char ----------------------------
+// We hand keys to libvterm's encoder (vterm_keyboard_*), which emits the right
+// bytes for the terminal's current mode (e.g. cursor-key application mode) and
+// modifiers -- the bytes flow out through out_cb to the shell. Printable keys go
+// through unichar; named keys (arrows, F-keys, editing) through key.
+//
+// US-ASCII printable maps, indexed by Linux evdev KEY_* code.
 static const char kc_lower[128] = {
     [2]='1',[3]='2',[4]='3',[5]='4',[6]='5',[7]='6',[8]='7',[9]='8',[10]='9',[11]='0',
     [12]='-',[13]='=',[16]='q',[17]='w',[18]='e',[19]='r',[20]='t',[21]='y',[22]='u',
@@ -180,27 +185,61 @@ static const char kc_upper[128] = {
     [53]='?',[57]=' ',
 };
 
-static int shift_down;   // tracks Left/Right Shift
+static int mod_shift, mod_ctrl, mod_alt;   // live modifier state
 
-// Translate one evdev key event into bytes written to the shell. Returns 0 on a
-// key we handled (so the caller knows input happened).
+// Map an evdev keycode to a named VTermKey, or VTERM_KEY_NONE for ordinary keys.
+static VTermKey keycode_to_vtkey(int code)
+{
+    switch (code) {
+    case 28: case 96:  return VTERM_KEY_ENTER;       // Enter / KP-Enter
+    case 15:           return VTERM_KEY_TAB;
+    case 14:           return VTERM_KEY_BACKSPACE;
+    case 1:            return VTERM_KEY_ESCAPE;
+    case 103:          return VTERM_KEY_UP;
+    case 108:          return VTERM_KEY_DOWN;
+    case 105:          return VTERM_KEY_LEFT;
+    case 106:          return VTERM_KEY_RIGHT;
+    case 110:          return VTERM_KEY_INS;
+    case 111:          return VTERM_KEY_DEL;
+    case 102:          return VTERM_KEY_HOME;
+    case 107:          return VTERM_KEY_END;
+    case 104:          return VTERM_KEY_PAGEUP;
+    case 109:          return VTERM_KEY_PAGEDOWN;
+    default: break;
+    }
+    if (code >= 59 && code <= 68) { return VTERM_KEY_FUNCTION(code - 58); }  // F1..F10
+    if (code == 87)               { return VTERM_KEY_FUNCTION(11); }
+    if (code == 88)               { return VTERM_KEY_FUNCTION(12); }
+    return VTERM_KEY_NONE;
+}
+
+// Feed one evdev key event to libvterm. Modifier keys update state; press/repeat
+// of a real key is encoded; releases are ignored.
 static void handle_key(const struct input_event *ev)
 {
     if (ev->type != EV_KEY) { return; }
     int code = ev->code, down = (ev->value != 0);   // 1=press, 2=repeat, 0=release
-    if (code == 42 || code == 54) { shift_down = down; return; }   // L/R Shift
-    if (!down) { return; }                                          // act on press only
-    char b = 0;
     switch (code) {
-    case 28: b = '\r'; break;     // Enter -> CR (ICRNL maps to NL for the shell)
-    case 14: b = 0x7f; break;     // Backspace -> DEL (the VERASE default)
-    case 15: b = '\t'; break;     // Tab
-    case 1:  b = 0x1b; break;     // Esc
-    default:
-        if (code >= 0 && code < 128) { b = shift_down ? kc_upper[code] : kc_lower[code]; }
-        break;
+    case 42: case 54:  mod_shift = down; return;     // L/R Shift
+    case 29: case 97:  mod_ctrl  = down; return;     // L/R Ctrl
+    case 56: case 100: mod_alt   = down; return;     // L/R Alt
+    default: break;
     }
-    if (b) { (void)!write(g_master, &b, 1); }
+    if (!down) { return; }
+
+    VTermModifier mod = (mod_shift ? VTERM_MOD_SHIFT : 0)
+                      | (mod_ctrl  ? VTERM_MOD_CTRL  : 0)
+                      | (mod_alt   ? VTERM_MOD_ALT   : 0);
+
+    VTermKey k = keycode_to_vtkey(code);
+    if (k != VTERM_KEY_NONE) { vterm_keyboard_key(vt, k, mod); return; }
+
+    if (code >= 0 && code < 128) {
+        // Ctrl combos use the UNSHIFTED letter so libvterm computes the control
+        // code (Ctrl-C -> 0x03); otherwise honour Shift for the printable glyph.
+        char c = (mod_ctrl ? kc_lower[code] : (mod_shift ? kc_upper[code] : kc_lower[code]));
+        if (c) { vterm_keyboard_unichar(vt, (uint32_t)(unsigned char)c, mod); }
+    }
 }
 
 int main(void)
@@ -209,6 +248,10 @@ int main(void)
     if (gfx_acquire(&gi) != 0) { return 1; }
     FB = (uint32_t *)gi.fb; SW = gi.w; SH = gi.h; STRIDE = (int)(gi.pitch / 4);
     COLS = (int)(gi.w / CELL_W); ROWS = (int)(gi.h / CELL_H);
+
+    // Ask the kernel to deliver Ctrl-C to us as a keystroke (we forward it to the
+    // pty) instead of firing the legacy graphical INTR at the console's group.
+    svc5(SYS_SET_RAWKB, 1, 0, 0, 0, 0);
 
     int fd[2];
     if (openpt(fd) != 0) { return 1; }

@@ -141,6 +141,7 @@
 #define SYS_POLL     (MYOS_SYS_BASE + 17) // x0=pollfd*, x1=nfds, x2=timeout_ms -> #ready/0/-1
 #define SYS_SOCKSHUT (MYOS_SYS_BASE + 18) // x0=fd, x1=how (SHUT_WR/...) -> 0/-1 (TCP half-close)
 #define SYS_OPENPT   (MYOS_SYS_BASE + 19) // x0=int fd[2] -> fills {master, slave}; 0 / -1
+#define SYS_SET_RAWKB (MYOS_SYS_BASE + 20) // x0=on -> deliver ^C to caller instead of tty_intr
 
 // Terminal ioctls (asm-generic values) -- enough for isatty()/line editing.
 // musl's isatty() calls ioctl(fd, TCGETS, &termios); a 0 return means the fd
