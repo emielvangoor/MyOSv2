@@ -211,6 +211,55 @@ int vfs_unlink(const char *path)
     return dir->ops->unlink(dir, name);
 }
 
+// Split an absolute PATH into its parent directory path (>=128 bytes) and final
+// component NAME (>=64 bytes). Returns 0, or -1 if PATH has no '/'. Mirrors the
+// inline split in vfs_create/vfs_unlink, shared by the symlink/rename wrappers.
+static int split_parent(const char *path, char *parent, char *name)
+{
+    int len = 0;
+    while (path[len]) { len++; }
+    int slash = -1;
+    for (int i = 0; i < len; i++) { if (path[i] == '/') { slash = i; } }
+    if (slash < 0) { return -1; }
+    if (slash == 0) { parent[0] = '/'; parent[1] = '\0'; }
+    else { for (int i = 0; i < slash; i++) { parent[i] = path[i]; } parent[slash] = '\0'; }
+    int j = 0;
+    for (int i = slash + 1; i < len && j < 63; i++) { name[j++] = path[i]; }
+    name[j] = '\0';
+    return 0;
+}
+
+int vfs_symlink(const char *linkpath, const char *target)
+{
+    char parent[128], name[64];
+    if (split_parent(linkpath, parent, name) != 0) { return -1; }
+    struct vnode *dir = vfs_lookup(parent);
+    if (!dir || !dir->ops->symlink) { return -1; }
+    return dir->ops->symlink(dir, name, target);
+}
+
+int vfs_rename(const char *oldpath, const char *newpath)
+{
+    char op[128], on[64], np[128], nn[64];
+    if (split_parent(oldpath, op, on) != 0) { return -1; }
+    if (split_parent(newpath, np, nn) != 0) { return -1; }
+    struct vnode *od = vfs_lookup(op);
+    struct vnode *nd = vfs_lookup(np);
+    if (!od || !nd || !od->ops->rename) { return -1; }
+    return od->ops->rename(od, on, nd, nn);
+}
+
+int vfs_link(const char *oldpath, const char *newpath)
+{
+    struct vnode *target = vfs_lookup(oldpath);   // the existing inode to share
+    if (!target) { return -1; }
+    char parent[128], name[64];
+    if (split_parent(newpath, parent, name) != 0) { return -1; }
+    struct vnode *dir = vfs_lookup(parent);
+    if (!dir || !dir->ops->link) { return -1; }
+    return dir->ops->link(dir, name, target);
+}
+
 struct file *vfs_open(const char *path)
 {
     struct vnode *vn = vfs_lookup(path);

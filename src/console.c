@@ -48,13 +48,34 @@ static int cpop(void)
 
 int console_has_input(void) { return chead != ctail; }
 
+// The controlling terminal's FOREGROUND process group -- what Ctrl-C signals.
+// A job-control shell (busybox ash) publishes its current foreground job's
+// group here via tcsetpgrp() -> ioctl(TIOCSPGRP). 0 means "unset" -- fall back
+// to the single foreground thread the scheduler tracks (the innermost wait4
+// target), which is what makes Ctrl-C work even when no shell has claimed the
+// terminal (e.g. a program run straight from the frame or the serial REPL).
+static int g_fg_pgrp;
+void tty_set_fg_pgrp(int pgrp) { g_fg_pgrp = pgrp; }
+int  tty_fg_pgrp(void)         { return g_fg_pgrp; }
+
+// Deliver SIGINT the way a tty INTR (Ctrl-C) does: to the terminal's foreground
+// process GROUP if one is set (so a whole job dies, even when a shell put it in
+// its own group), else to the single foreground thread. Shared by the serial
+// line discipline (here) and the graphical keyboard (SYS_INPUT_READ).
+void tty_intr(void)
+{
+    extern int sched_kill(int pid, int sig);
+    if (g_fg_pgrp > 0 && sched_kill(-g_fg_pgrp, SIGINT) == 0) { return; }
+    struct thread *fg = sched_foreground();
+    if (fg) { signal_send(fg, SIGINT); }
+}
+
 // Line discipline for one received byte. Ctrl-C interrupts the foreground
 // program; every other byte is queued for the reader.
 void console_input(int c)
 {
     if (c == 3) {                          // Ctrl-C (the INTR character)
-        struct thread *fg = sched_foreground();
-        if (fg) { signal_send(fg, SIGINT); }
+        tty_intr();
         return;                            // consumed -- not echoed or queued
     }
     cpush(c);

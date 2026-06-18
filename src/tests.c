@@ -417,6 +417,23 @@ static void test_console_ctrlc_signals_foreground(void)
     sched_set_foreground(0);
 }
 
+// Ctrl-C signals the terminal's FOREGROUND PROCESS GROUP (set via tcsetpgrp/
+// TIOCSPGRP) -- so a whole job dies, even one a job-control shell put in its own
+// group. This is the kernel half of the fix for C-c not interrupting a command
+// run inside busybox sh in the frame.
+static void test_tty_intr_signals_fg_pgrp(void)
+{
+    pmm_init(); kheap_init(); sched_init();
+    struct thread *job   = thread_create(noop_worker, 0, 1);  // pgid defaults to its id
+    struct thread *other = thread_create(noop_worker, 0, 1);  // a different group
+    sched_set_foreground(0);               // force the GROUP path, not the thread fallback
+    tty_set_fg_pgrp(job->pgid);            // terminal foreground group = the job's
+    console_input(3);                      // Ctrl-C -> tty_intr -> kill(-fg_pgrp)
+    KASSERT(job->sig_pending & (1ull << SIGINT));       // the fg group got SIGINT
+    KASSERT(!(other->sig_pending & (1ull << SIGINT)));  // an unrelated group did NOT
+    tty_set_fg_pgrp(0);                    // reset the shared tty state for later tests
+}
+
 // --- System calls (do_syscall dispatch) ---
 
 static void test_syscall_write_returns_len(void)
@@ -2265,6 +2282,82 @@ static void test_ext2_unlink(void)
     KASSERT(vfs_lookup("/disk/u") == 0);              // gone
 }
 
+// ext2_symlink: create a fast symlink whose target is an existing file, then
+// resolve THROUGH it (vfs_lookup follows symlinks) and confirm we land on the
+// target's contents. Proves the inode is written as a link and the target is
+// stored/read back correctly.
+static void test_ext2_symlink_create(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *t = vfs_create("/disk/sltarget", VN_FILE);
+    KASSERT(t != 0);
+    struct file fw = { .vnode = t, .off = 0 };
+    KASSERT(vfs_write(&fw, "linked!", 7) == 7);
+
+    KASSERT(vfs_symlink("/disk/sllink", "sltarget") == 0);   // relative target
+    struct vnode *via = vfs_lookup("/disk/sllink");          // follows the link
+    KASSERT(via != 0);
+    KASSERT(via->type == VN_FILE && (int)via->size == 7);    // landed on the target
+    char b[8] = {0};
+    struct file fr = { .vnode = via, .off = 0 };
+    KASSERT(vfs_read(&fr, b, 7) == 7 && bytes_eq(b, "linked!", 7));
+}
+
+// ext2_rename: move a file to a new name; the old name disappears and the new
+// name carries the SAME contents (the inode is relinked, not copied).
+static void test_ext2_rename_moves(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *vn = vfs_create("/disk/rnA", VN_FILE);
+    KASSERT(vn != 0);
+    struct file fw = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw, "movable", 7) == 7);
+
+    KASSERT(vfs_rename("/disk/rnA", "/disk/rnB") == 0);
+    KASSERT(vfs_lookup("/disk/rnA") == 0);                   // old name gone
+    struct vnode *r = vfs_lookup("/disk/rnB");
+    KASSERT(r != 0 && (int)r->size == 7);                    // new name, same data
+    char b[8] = {0};
+    struct file fr = { .vnode = r, .off = 0 };
+    KASSERT(vfs_read(&fr, b, 7) == 7 && bytes_eq(b, "movable", 7));
+}
+
+// ext2_link: a hard link gives one inode a second name. Both names read the
+// same data, and removing one leaves the other intact (link count > 0).
+static void test_ext2_hardlink(void)
+{
+    if (!DISK_TESTS) { return; }
+    pmm_init(); kheap_init(); virtio_blk_init();
+    vfs_mount_root(ramfs_type());
+    vfs_mount_at("/disk", ext2_mount());
+
+    struct vnode *vn = vfs_create("/disk/hlA", VN_FILE);
+    KASSERT(vn != 0);
+    struct file fw = { .vnode = vn, .off = 0 };
+    KASSERT(vfs_write(&fw, "shared", 6) == 6);
+
+    KASSERT(vfs_link("/disk/hlA", "/disk/hlB") == 0);
+    struct vnode *b = vfs_lookup("/disk/hlB");
+    KASSERT(b != 0 && (int)b->size == 6);                 // second name, same data
+    char buf[8] = {0};
+    struct file fr = { .vnode = b, .off = 0 };
+    KASSERT(vfs_read(&fr, buf, 6) == 6 && bytes_eq(buf, "shared", 6));
+
+    // Removing one name keeps the data reachable through the other.
+    KASSERT(vfs_unlink("/disk/hlA") == 0);
+    KASSERT(vfs_lookup("/disk/hlA") == 0);
+    struct vnode *still = vfs_lookup("/disk/hlB");
+    KASSERT(still != 0 && (int)still->size == 6);
+}
+
 static void test_ext2_persists_remount(void)
 {
     if (!DISK_TESTS) { return; }
@@ -3015,6 +3108,410 @@ static void test_clock_gettime_ok(void)
     KASSERT((long)tf.x[0] == 0);             // must succeed
 }
 
+// dup3(oldfd, newfd, flags): the real aarch64 number musl's dup2()/dup3() emit
+// (the kernel previously only had the legacy MyOSv2 dup2 #19, which musl never
+// calls). A shell uses it for redirection: `>file` opens the file then dups it
+// onto fd 1. We duplicate oldfd into the EXACT slot newfd (closing whatever was
+// there first), and -- unlike dup2 -- reject oldfd==newfd with EINVAL.
+static int dup3_ok;
+static void dup3_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0; tf.x[3] = 0;
+    do_syscall(&tf);
+    long fd = (long)tf.x[0];
+    ok = ok && (fd >= 3);
+    // Duplicate onto a specific high slot; dup3 must return that exact fd.
+    tf.x[8] = SYS_DUP3; tf.x[0] = (uint64_t)fd; tf.x[1] = 7; tf.x[2] = 0;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 7);
+    struct file **fds = sched_current_fds();
+    ok = ok && fds && fds[7] && (fds[7]->vnode == fds[fd]->vnode);   // same underlying file
+    // dup3 of a fd onto itself is EINVAL (this is the one way it differs from dup2).
+    tf.x[8] = SYS_DUP3; tf.x[0] = (uint64_t)fd; tf.x[1] = (uint64_t)fd; tf.x[2] = 0;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == -EINVAL);
+    dup3_ok = ok ? 1 : -1;
+}
+static void test_syscall_dup3(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    dup3_ok = 0;
+    sched_init();
+    thread_create(dup3_worker, 0, 1);
+    while (dup3_ok == 0) { yield(); }
+    KASSERT(dup3_ok == 1);
+}
+
+// pipe2(int fd[2], flags): the real aarch64 number musl's pipe() emits (aarch64
+// Linux has no plain pipe). Identical to the legacy SYS_PIPE except for the
+// flags arg (O_CLOEXEC/O_NONBLOCK -- ignored) and negative-errno on failure. A
+// shell needs it for `a | b`. We verify it returns two distinct usable fds and
+// that bytes written to the write end come back out the read end.
+static int pipe2_ok;
+static void pipe2_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    int ufd[2] = { -1, -1 };
+    tf.x[8] = SYS_PIPE2; tf.x[0] = (uint64_t)(uintptr_t)ufd; tf.x[1] = 0;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 0);
+    ok = ok && (ufd[0] >= 3) && (ufd[1] >= 3) && (ufd[0] != ufd[1]);
+    // Round-trip a byte through the pipe.
+    char wb = 'Z';
+    tf.x[8] = SYS_WRITE; tf.x[0] = (uint64_t)ufd[1];
+    tf.x[1] = (uint64_t)(uintptr_t)&wb; tf.x[2] = 1; do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 1);
+    char rb = 0;
+    tf.x[8] = SYS_READ; tf.x[0] = (uint64_t)ufd[0];
+    tf.x[1] = (uint64_t)(uintptr_t)&rb; tf.x[2] = 1; do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 1) && (rb == 'Z');
+    pipe2_ok = ok ? 1 : -1;
+}
+static void test_syscall_pipe2(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    pipe2_ok = 0;
+    sched_init();
+    thread_create(pipe2_worker, 0, 1);
+    while (pipe2_ok == 0) { yield(); }
+    KASSERT(pipe2_ok == 1);
+}
+
+// nanosleep(req, rem): the real number musl's sleep()/usleep() emit. We convert
+// the timespec to milliseconds and route to the same sleep_ms() blocking path
+// SYS_SLEEP uses, so the thread must actually de-schedule for the requested time
+// and resume after. Mirrors test_syscall_sleep_blocks: req = 3 ms blocks for
+// exactly 3 timer ticks. (rem is for interrupted sleeps; unused on this path.)
+static char ns_log[8];
+static int ns_n;
+static void nanosleep_worker(void *a)
+{
+    (void)a;
+    long req[2] = { 0, 3 * 1000000L };   // {tv_sec=0, tv_nsec=3,000,000} = 3 ms
+    ns_log[ns_n++] = 'S';
+    struct trapframe tf;
+    tf.x[8] = SYS_NANOSLEEP;
+    tf.x[0] = (uint64_t)(uintptr_t)req;
+    tf.x[1] = 0;
+    do_syscall(&tf);
+    ns_log[ns_n++] = 'W';
+}
+static void test_syscall_nanosleep_blocks(void)
+{
+    pmm_init(); kheap_init();
+    ns_n = 0;
+    sched_init();
+    thread_create(nanosleep_worker, 0, 1);
+    yield(); KASSERT(ns_n == 1); KASSERT(ns_log[0] == 'S');   // slept, not yet woken
+    sched_tick(); yield(); KASSERT(ns_n == 1);
+    sched_tick(); yield(); KASSERT(ns_n == 1);
+    sched_tick(); yield();
+    KASSERT(ns_n == 2); KASSERT(ns_log[1] == 'W');            // woke after 3 ticks
+}
+
+// fchmodat(dirfd, path, mode, flags): busybox `chmod` emits it. We store no
+// permission bits (single-user system, everything is root-owned and accessible),
+// so it is an existence-checked no-op: 0 if the path resolves, -ENOENT if not --
+// which is enough for `chmod` to succeed on a real file and fail on a missing
+// one. (Same shape as faccessat/utimensat.)
+static int fchmodat_ok;
+static void fchmodat_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    tf.x[8] = SYS_FCHMODAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0644; tf.x[3] = 0;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 0);
+    tf.x[8] = SYS_FCHMODAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/nope"; tf.x[2] = 0644; tf.x[3] = 0;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == -ENOENT);
+    fchmodat_ok = ok ? 1 : -1;
+}
+static void test_syscall_fchmodat(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    fchmodat_ok = 0;
+    sched_init();
+    thread_create(fchmodat_worker, 0, 1);
+    while (fchmodat_ok == 0) { yield(); }
+    KASSERT(fchmodat_ok == 1);
+}
+
+// utimensat + faccessat share fchmodat's existence-checked contract: 0 on a real
+// path, -ENOENT on a missing one. (touch's timestamp update / access's R_W_X
+// query are no-ops on a single-user system.)
+static int atexist_ok;
+static void atexist_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    tf.x[8] = SYS_UTIMENSAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0; tf.x[3] = 0;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == 0);
+    tf.x[8] = SYS_UTIMENSAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/nope"; tf.x[2] = 0; tf.x[3] = 0;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -ENOENT);
+    tf.x[8] = SYS_FACCESSAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0; tf.x[3] = 0;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == 0);
+    tf.x[8] = SYS_FACCESSAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/nope"; tf.x[2] = 0; tf.x[3] = 0;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -ENOENT);
+    atexist_ok = ok ? 1 : -1;
+}
+static void test_syscall_utimensat_faccessat(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    atexist_ok = 0;
+    sched_init();
+    thread_create(atexist_worker, 0, 1);
+    while (atexist_ok == 0) { yield(); }
+    KASSERT(atexist_ok == 1);
+}
+
+// ftruncate(fd, length): we support truncation to ZERO only (our ext2/ramfs
+// truncate frees all blocks -- it cannot extend), which is the common case
+// (`: > file`). length 0 resets the file to empty and returns 0; any nonzero
+// length is rejected with EINVAL rather than silently lying. /hello.txt starts
+// at 15 bytes; after ftruncate(fd, 0) fstat must report size 0.
+static int ftrunc_ok;
+static void ftrunc_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = O_RDWR; tf.x[3] = 0;
+    do_syscall(&tf);
+    long fd = (long)tf.x[0];
+    ok = ok && (fd >= 3);
+    // nonzero length is unsupported -> EINVAL, and must NOT alter the file.
+    tf.x[8] = SYS_FTRUNCATE; tf.x[0] = (uint64_t)fd; tf.x[1] = 5;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -EINVAL);
+    // truncate to empty.
+    tf.x[8] = SYS_FTRUNCATE; tf.x[0] = (uint64_t)fd; tf.x[1] = 0;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == 0);
+    char sb[128];
+    tf.x[8] = SYS_FSTAT; tf.x[0] = (uint64_t)fd; tf.x[1] = (uint64_t)(uintptr_t)sb;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 0) && (*(int64_t *)(sb + 48) == 0);   // st_size == 0
+    ftrunc_ok = ok ? 1 : -1;
+}
+static void test_syscall_ftruncate(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    ftrunc_ok = 0;
+    sched_init();
+    thread_create(ftrunc_worker, 0, 1);
+    while (ftrunc_ok == 0) { yield(); }
+    KASSERT(ftrunc_ok == 1);
+}
+
+// readlinkat(dirfd, path, buf, bufsiz): reads a symlink's target. Here we test
+// the ERROR contract -- EINVAL for a non-symlink, ENOENT for a missing path --
+// because the test FS (ramfs) has no symlinks. The success path (returning the
+// target bytes) is proven end-to-end on ext2 by the integration check
+// (`readlink /bin/ls` -> `busybox`, since the applets are real ext2 symlinks).
+static int readlinkat_ok;
+static void readlinkat_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    char buf[64];
+    int ok = 1;
+    tf.x[8] = SYS_READLINKAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt";       // a regular file, not a link
+    tf.x[2] = (uint64_t)(uintptr_t)buf; tf.x[3] = sizeof(buf);
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -EINVAL);
+    tf.x[8] = SYS_READLINKAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/nope";
+    tf.x[2] = (uint64_t)(uintptr_t)buf; tf.x[3] = sizeof(buf);
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -ENOENT);
+    readlinkat_ok = ok ? 1 : -1;
+}
+static void test_syscall_readlinkat_errors(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    readlinkat_ok = 0;
+    sched_init();
+    thread_create(readlinkat_worker, 0, 1);
+    while (readlinkat_ok == 0) { yield(); }
+    KASSERT(readlinkat_ok == 1);
+}
+
+// sendfile(out_fd, in_fd, off, count): copy bytes directly between two
+// descriptors in the kernel. musl's `cat` uses it (falling back to read/write
+// only on ENOSYS). With off=NULL it copies from in_fd's current position and
+// advances it. We copy /hello.txt ("Hello, MyOSv2!\n", 15 bytes) into a fresh
+// file and verify both the returned count and the destination contents.
+static int sendfile_ok;
+static void sendfile_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/hello.txt"; tf.x[2] = 0; tf.x[3] = 0;
+    do_syscall(&tf); long in = (long)tf.x[0];
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/out"; tf.x[2] = O_CREAT | O_RDWR; tf.x[3] = 0;
+    do_syscall(&tf); long out = (long)tf.x[0];
+    ok = ok && (in >= 3) && (out >= 3);
+    tf.x[8] = SYS_SENDFILE; tf.x[0] = (uint64_t)out; tf.x[1] = (uint64_t)in;
+    tf.x[2] = 0; tf.x[3] = 100;                 // off=NULL, count >= file size
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 15);           // whole file copied
+    // Read /out back and compare.
+    struct file *f = vfs_open("/out");
+    char buf[16] = {0};
+    ok = ok && f && (vfs_read(f, buf, 15) == 15) && bytes_eq(buf, "Hello, MyOSv2!\n", 15);
+    if (f) { vfs_close(f); }
+    sendfile_ok = ok ? 1 : -1;
+}
+static void test_syscall_sendfile(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    sendfile_ok = 0;
+    sched_init();
+    thread_create(sendfile_worker, 0, 1);
+    while (sendfile_ok == 0) { yield(); }
+    KASSERT(sendfile_ok == 1);
+}
+
+// The console (stdin/stdout/stderr) lives in NULL fd-table slots ("NULL means
+// the UART"). A shell redirection SAVES the original stdio fd by duplicating it
+// to a high slot, then restores it afterwards -- so a NULL console slot MUST be
+// duplicatable into a real handle. This is the kernel-level linchpin of busybox
+// redirection (proven end-to-end by the integration check). We verify both save
+// paths ash uses: dup3 to an exact slot, and fcntl(F_DUPFD).
+static int condup_ok;
+static void condup_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    struct file **fds = sched_current_fds();
+    ok = ok && fds && !fds[1];                 // fd 1 starts NULL (console)
+    // dup3(1 -> 10): duplicating the console must succeed and yield a real file.
+    tf.x[8] = SYS_DUP3; tf.x[0] = 1; tf.x[1] = 10; tf.x[2] = 0;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 10) && fds[10] != 0;
+    // fcntl(0, F_DUPFD_CLOEXEC, 11): the save path ash ACTUALLY uses for
+    // redirection. Must return a real new fd (a bogus 0 broke restore).
+    tf.x[8] = SYS_FCNTL; tf.x[0] = 0; tf.x[1] = F_DUPFD_CLOEXEC; tf.x[2] = 11;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 11) && fds[11] != 0;
+    // The saved handle restores cleanly onto a console slot (dup3 back to 1).
+    tf.x[8] = SYS_DUP3; tf.x[0] = 10; tf.x[1] = 1; tf.x[2] = 0;
+    do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 1) && fds[1] != 0;
+    condup_ok = ok ? 1 : -1;
+}
+static void test_syscall_console_fd_dupable(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    condup_ok = 0;
+    sched_init();
+    thread_create(condup_worker, 0, 1);
+    while (condup_ok == 0) { yield(); }
+    KASSERT(condup_ok == 1);
+}
+
+// openat O_APPEND (`>>`): the open must position writes at end-of-file, not 0,
+// or appending silently OVERWRITES from the start. Create /ap.txt = "abc", open
+// it O_APPEND, write "de" -- the file must become "abcde", not "dec".
+static int append_ok;
+static void append_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/ap.txt"; tf.x[2] = O_CREAT | O_RDWR; tf.x[3] = 0;
+    do_syscall(&tf); long fd = (long)tf.x[0];
+    tf.x[8] = SYS_WRITE; tf.x[0] = (uint64_t)fd;
+    tf.x[1] = (uint64_t)(uintptr_t)"abc"; tf.x[2] = 3; do_syscall(&tf);
+    tf.x[8] = SYS_CLOSE; tf.x[0] = (uint64_t)fd; do_syscall(&tf);
+    // Reopen with O_APPEND and write -- must land at the end.
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/ap.txt"; tf.x[2] = O_APPEND | O_RDWR; tf.x[3] = 0;
+    do_syscall(&tf); fd = (long)tf.x[0];
+    ok = ok && (fd >= 3);
+    tf.x[8] = SYS_WRITE; tf.x[0] = (uint64_t)fd;
+    tf.x[1] = (uint64_t)(uintptr_t)"de"; tf.x[2] = 2; do_syscall(&tf);
+    ok = ok && ((long)tf.x[0] == 2);
+    struct file *f = vfs_open("/ap.txt");
+    char buf[8] = {0};
+    ok = ok && f && (vfs_read(f, buf, 5) == 5) && bytes_eq(buf, "abcde", 5);
+    if (f) { vfs_close(f); }
+    append_ok = ok ? 1 : -1;
+}
+static void test_syscall_open_append(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    append_ok = 0;
+    sched_init();
+    thread_create(append_worker, 0, 1);
+    while (append_ok == 0) { yield(); }
+    KASSERT(append_ok == 1);
+}
+
+// mkdirat(dirfd, path, mode): the filesystem `create` op already handles VN_DIR
+// (lays down `.`/`..`, bumps link counts), so mkdirat just resolves the path and
+// asks the VFS to create a directory. We verify the result is a real directory,
+// a second mkdir of the same path is -EEXIST, and a relative path lands in cwd.
+static int mkdir_ok;
+static void mkdir_worker(void *a)
+{
+    (void)a;
+    struct trapframe tf;
+    int ok = 1;
+    tf.x[8] = SYS_MKDIRAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/d"; tf.x[2] = 0755;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == 0);
+    struct vnode *vn = vfs_lookup("/d");
+    ok = ok && vn && (vn->type == VN_DIR);
+    // Second create of the same name must fail with EEXIST, not duplicate it.
+    tf.x[8] = SYS_MKDIRAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/d"; tf.x[2] = 0755;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] == -EEXIST);
+    // A file can then be created inside the new directory.
+    tf.x[8] = SYS_OPENAT; tf.x[0] = (uint64_t)AT_FDCWD;
+    tf.x[1] = (uint64_t)(uintptr_t)"/d/f"; tf.x[2] = O_CREAT | O_RDWR; tf.x[3] = 0;
+    do_syscall(&tf); ok = ok && ((long)tf.x[0] >= 3);
+    ok = ok && (vfs_lookup("/d/f") != 0);
+    mkdir_ok = ok ? 1 : -1;
+}
+static void test_syscall_mkdirat(void)
+{
+    pmm_init(); kheap_init();
+    fs_fresh();
+    mkdir_ok = 0;
+    sched_init();
+    thread_create(mkdir_worker, 0, 1);
+    while (mkdir_ok == 0) { yield(); }
+    KASSERT(mkdir_ok == 1);
+}
+
 // The registry of all tests.
 static const struct ktest tests[] = {
     { "lm: arithmetic",                  test_lm_arithmetic },
@@ -3049,6 +3546,7 @@ static const struct ktest tests[] = {
     { "sched: wait_event early wake",     test_wait_event_early_wake },
     { "console: ring is FIFO",            test_console_ring_fifo },
     { "console: Ctrl-C signals fg",       test_console_ctrlc_signals_foreground },
+    { "console: Ctrl-C signals fg pgrp",  test_tty_intr_signals_fg_pgrp },
     { "syscall: write returns len",       test_syscall_write_returns_len },
     { "syscall: unknown returns -1",      test_syscall_unknown },
     { "syscall: yield returns 0",         test_syscall_yield },
@@ -3060,6 +3558,17 @@ static const struct ktest tests[] = {
     { "syscall: getppid",                 test_getppid_returns_parent },
     { "syscall: fcntl F_GETFL",           test_fcntl_getfl_rdwr },
     { "syscall: clock_gettime",           test_clock_gettime_ok },
+    { "syscall: dup3 dups onto exact fd", test_syscall_dup3 },
+    { "syscall: pipe2 round-trips",       test_syscall_pipe2 },
+    { "syscall: nanosleep blocks",        test_syscall_nanosleep_blocks },
+    { "syscall: fchmodat existence",      test_syscall_fchmodat },
+    { "syscall: utimensat + faccessat",   test_syscall_utimensat_faccessat },
+    { "syscall: ftruncate to zero",       test_syscall_ftruncate },
+    { "syscall: readlinkat errors",       test_syscall_readlinkat_errors },
+    { "syscall: sendfile copies bytes",   test_syscall_sendfile },
+    { "syscall: console fd is dup-able",  test_syscall_console_fd_dupable },
+    { "syscall: openat O_APPEND",         test_syscall_open_append },
+    { "syscall: mkdirat makes a dir",     test_syscall_mkdirat },
     { "vm: user data is private",         test_as_data_is_private },
     { "vm: image maps code",              test_as_image_maps_code },
     { "vm: kernel map is shared",         test_as_kernel_shared },
@@ -3146,6 +3655,9 @@ static const struct ktest tests[] = {
     { "ext2: unlink",                     test_ext2_unlink },
     { "ext2: persists across remount",    test_ext2_persists_remount },
     { "ext2: symlink follows to target",  test_ext2_symlink_follows },
+    { "ext2: symlink create",             test_ext2_symlink_create },
+    { "ext2: rename moves a file",        test_ext2_rename_moves },
+    { "ext2: hard link shares inode",     test_ext2_hardlink },
     { "vfs: mount at /disk",              test_vfs_mount_at },
     { "input: two devices present",       test_input_devices_present },
     { "input: driver present",            test_input_present },

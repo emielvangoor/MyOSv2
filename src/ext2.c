@@ -42,15 +42,18 @@
 #define EXT2_S_IFMT     0xF000
 #define EXT2_S_IFREG    0x8000      // regular file
 #define EXT2_S_IFDIR    0x4000      // directory
+#define EXT2_S_IFLNK    0xA000      // symbolic link
 
 // Full i_mode values we write when creating: type bits | default permissions.
 #define EXT2_MODE_REG   0x81A4      // regular file, rw-r--r-- (0644)
 #define EXT2_MODE_DIR   0x41ED      // directory,    rwxr-xr-x (0755)
+#define EXT2_MODE_LNK   0xA1FF      // symlink,      lrwxrwxrwx (0777)
 
 // Directory-entry file_type codes (the "_2" dir-entry variant). Read ignores
 // these, but mke2fs/Linux expect them set, so we write them on create.
 #define EXT2_FT_REG     1
 #define EXT2_FT_DIR     2
+#define EXT2_FT_SYMLINK 7
 
 // Sectors per ext2 block, in 512-byte units (i_blocks counts these).
 #define SECTORS_PER_BLOCK (EXT2_BLOCK_SIZE / 512)   // 2
@@ -1028,11 +1031,187 @@ int ext2_unlink(struct vnode *dir, const char *name)
     return -1;
 }
 
+// Create a symbolic link named `name` in `dir` whose target is `target`. We
+// write only "fast" symlinks: the target is stored inline in the inode's 60-byte
+// i_block[] area (i_blocks stays 0, which is how ext2_readlink recognizes the
+// fast form). That covers every target up to 60 bytes -- ample for the relative
+// links busybox creates. Longer targets are refused (a "slow" symlink would need
+// a data block). Returns 0 / -1.
+static int ext2_symlink(struct vnode *dir, const char *name, const char *target)
+{
+    uint32_t dinum = inum_of(dir);
+    struct ext2_inode dino;
+    if (read_inode(dinum, &dino) != 0) { return -1; }
+
+    uint32_t tlen = 0; while (target[tlen]) { tlen++; }
+    if (tlen == 0 || tlen > 60) { return -1; }   // fast symlinks only (inline i_block)
+
+    uint32_t inum = alloc_inode(0);
+    if (inum == 0) { return -1; }
+    struct ext2_inode ino;
+    for (unsigned i = 0; i < sizeof(ino); i++) { ((uint8_t *)&ino)[i] = 0; }
+    ino.i_mode = EXT2_MODE_LNK;
+    ino.i_links_count = 1;
+    ino.i_size = tlen;
+    ino.i_blocks = 0;                              // fast symlink => no data blocks
+    char *dst = (char *)ino.i_block;               // target bytes live inline here
+    for (uint32_t i = 0; i < tlen; i++) { dst[i] = target[i]; }
+    if (write_inode(inum, &ino) != 0) { free_inode(inum, 0); return -1; }
+
+    uint8_t nl = 0; while (name[nl] && nl < 255) { nl++; }
+    if (dir_add_entry(&dino, dinum, inum, name, nl, EXT2_FT_SYMLINK) != 0) {
+        free_inode(inum, 0); return -1;
+    }
+    if (write_inode(dinum, &dino) != 0) { return -1; }
+    dir->size = dino.i_size;
+    return 0;
+}
+
+// Remove directory entry `name` from `dino` (caller persists *dino), reclaiming
+// its slot exactly like ext2_unlink -- but WITHOUT touching the target inode (no
+// link decrement, no free). rename re-links the same inode elsewhere, so it must
+// not destroy it. Returns the removed entry's inode (file_type via *ftype if
+// non-NULL), or 0 if `name` was not found.
+static uint32_t dir_unlink_entry(struct ext2_inode *dino, const char *name, uint8_t *ftype)
+{
+    uint32_t nblocks = (uint32_t)((dino->i_size + EXT2_BLOCK_SIZE - 1) / EXT2_BLOCK_SIZE);
+    uint8_t blk[EXT2_BLOCK_SIZE];
+    for (uint32_t bi = 0; bi < nblocks; bi++) {
+        uint32_t phys = bmap(dino, bi);
+        if (phys == 0) { continue; }
+        if (eb_read(phys, blk) != 0) { continue; }
+        uint32_t o = 0, prev = 0;
+        int have_prev = 0;
+        while (o < EXT2_BLOCK_SIZE) {
+            struct ext2_dir_entry *de = (struct ext2_dir_entry *)(blk + o);
+            if (de->rec_len == 0) { break; }
+            if (de->inode != 0 && name_eq(de->name, de->name_len, name)) {
+                uint32_t inum = de->inode;
+                if (ftype) { *ftype = de->file_type; }
+                if (have_prev) {
+                    struct ext2_dir_entry *pd = (struct ext2_dir_entry *)(blk + prev);
+                    pd->rec_len = (uint16_t)(pd->rec_len + de->rec_len);
+                } else {
+                    de->inode = 0;     // first entry in block: leave a hole
+                }
+                if (eb_write(phys, blk) != 0) { return 0; }
+                return inum;
+            }
+            prev = o; have_prev = 1;
+            o += de->rec_len;
+        }
+    }
+    return 0;
+}
+
+// Repoint a directory's ".." entry (in its first data block) at `new_parent`.
+// Used when a directory is moved to a different parent. Returns 0 / -1.
+static int update_dotdot(uint32_t dir_inum, uint32_t new_parent)
+{
+    struct ext2_inode ino;
+    if (read_inode(dir_inum, &ino) != 0) { return -1; }
+    uint32_t phys = bmap(&ino, 0);
+    if (phys == 0) { return -1; }
+    uint8_t blk[EXT2_BLOCK_SIZE];
+    if (eb_read(phys, blk) != 0) { return -1; }
+    uint32_t o = 0;
+    while (o < EXT2_BLOCK_SIZE) {
+        struct ext2_dir_entry *de = (struct ext2_dir_entry *)(blk + o);
+        if (de->rec_len == 0) { break; }
+        if (de->inode != 0 && name_eq(de->name, de->name_len, "..")) {
+            de->inode = new_parent;
+            return eb_write(phys, blk);
+        }
+        o += de->rec_len;
+    }
+    return -1;
+}
+
+// Move/rename: relink the inode behind `oldname` in `odir` to `newname` in
+// `ndir`. The inode itself is untouched (same data, same number) -- only the
+// directory entries change. An existing destination FILE is overwritten; an
+// existing destination directory is refused. Moving a directory across parents
+// repoints its ".." and fixes both parents' link counts. Returns 0 / -1.
+static int ext2_rename(struct vnode *odir, const char *oldname,
+                       struct vnode *ndir, const char *newname)
+{
+    uint32_t oinum = inum_of(odir), ninum = inum_of(ndir);
+
+    struct vnode *srcvn = ext2_lookup(odir, oldname);
+    if (!srcvn) { return -1; }                          // source must exist
+    uint32_t src_inum = inum_of(srcvn);
+    struct ext2_inode src;
+    if (read_inode(src_inum, &src) != 0) { return -1; }
+    uint16_t fmt = src.i_mode & EXT2_S_IFMT;
+    int src_is_dir = (fmt == EXT2_S_IFDIR);
+    uint8_t src_ft = src_is_dir ? EXT2_FT_DIR
+                   : (fmt == EXT2_S_IFLNK) ? EXT2_FT_SYMLINK : EXT2_FT_REG;
+
+    // Overwrite an existing destination file; refuse an existing directory.
+    struct vnode *dstvn = ext2_lookup(ndir, newname);
+    if (dstvn) {
+        if (dstvn->type == VN_DIR) { return -1; }
+        if (ext2_unlink(ndir, newname) != 0) { return -1; }
+    }
+
+    // Link the inode under its new name (re-read ndir: a prior unlink changed it).
+    struct ext2_inode nd;
+    if (read_inode(ninum, &nd) != 0) { return -1; }
+    uint8_t nl = 0; while (newname[nl] && nl < 255) { nl++; }
+    if (dir_add_entry(&nd, ninum, src_inum, newname, nl, src_ft) != 0) { return -1; }
+    if (write_inode(ninum, &nd) != 0) { return -1; }
+
+    // Drop the old entry (inode preserved -- it lives under newname now).
+    struct ext2_inode od;
+    if (read_inode(oinum, &od) != 0) { return -1; }
+    if (dir_unlink_entry(&od, oldname, 0) == 0) { return -1; }
+    if (write_inode(oinum, &od) != 0) { return -1; }
+
+    // Cross-parent directory move: ".." must follow, and link counts shift
+    // (every directory contributes one link to its parent via its "..").
+    if (src_is_dir && oinum != ninum) {
+        update_dotdot(src_inum, ninum);
+        if (read_inode(oinum, &od) == 0) {
+            if (od.i_links_count > 0) { od.i_links_count--; }
+            write_inode(oinum, &od);
+        }
+        if (read_inode(ninum, &nd) == 0) { nd.i_links_count++; write_inode(ninum, &nd); }
+    }
+    return 0;
+}
+
+// Create a hard link `name` in `dir` to the existing inode behind `target`: add
+// a directory entry pointing at that inode and bump its link count, so the file
+// now has two names sharing one inode (and survives until BOTH are unlinked).
+// Hard links to directories are refused (they would corrupt the `..` topology).
+// Returns 0 / -1.
+static int ext2_link(struct vnode *dir, const char *name, struct vnode *target)
+{
+    uint32_t dinum = inum_of(dir);
+    uint32_t tinum = inum_of(target);
+    struct ext2_inode dino, tino;
+    if (read_inode(dinum, &dino) != 0) { return -1; }
+    if (read_inode(tinum, &tino) != 0) { return -1; }
+    uint16_t fmt = tino.i_mode & EXT2_S_IFMT;
+    if (fmt == EXT2_S_IFDIR) { return -1; }      // no hard links to directories
+    uint8_t ft = (fmt == EXT2_S_IFLNK) ? EXT2_FT_SYMLINK : EXT2_FT_REG;
+
+    uint8_t nl = 0; while (name[nl] && nl < 255) { nl++; }
+    if (dir_add_entry(&dino, dinum, tinum, name, nl, ft) != 0) { return -1; }
+    if (write_inode(dinum, &dino) != 0) { return -1; }
+    dir->size = dino.i_size;
+
+    tino.i_links_count++;                        // the inode now has another name
+    if (write_inode(tinum, &tino) != 0) { return -1; }
+    return 0;
+}
+
 const struct vnode_ops ext2_ops = {
     .read = ext2_read, .write = ext2_write,
     .lookup = ext2_lookup, .create = ext2_create, .readdir = ext2_readdir,
     .truncate = ext2_truncate, .unlink = ext2_unlink,
     .readlink = ext2_readlink,   // read a symlink's target (fast or slow form)
+    .symlink = ext2_symlink, .rename = ext2_rename, .link = ext2_link,
 };
 
 // --- mount ---

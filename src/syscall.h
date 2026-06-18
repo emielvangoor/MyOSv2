@@ -8,6 +8,7 @@
 #define O_RDWR     02
 #define O_CREAT    0100
 #define O_TRUNC    01000
+#define O_APPEND   02000   // `>>`: writes go to end-of-file (open at size, not 0)
 
 // Syscall numbers (the user passes one in x8). Phase 28 migrates this ABI to
 // Linux/aarch64 so unmodified musl binaries run. Step 1 (here): carve the
@@ -62,6 +63,25 @@
 // busybox's libc emits. Both paths call the same kernel logic.
 #define SYS_PPOLL          73   // x0=pollfd*, x1=nfds, x2=timespec* (NULL=block), x3=sigmask
 #define SYS_FCNTL          25   // x0=fd, x1=cmd, x2=arg  (file-descriptor control)
+#define SYS_DUP3           24   // x0=oldfd, x1=newfd, x2=flags -> newfd / -errno (musl's dup2())
+#define SYS_PIPE2          59   // x0=int fd[2], x1=flags -> 0 / -errno (musl's pipe())
+#define SYS_NANOSLEEP      101  // x0=const timespec* req, x1=timespec* rem -> 0 (musl's sleep())
+#define SYS_UNLINKAT       35   // x0=dirfd, x1=path, x2=flags -> 0 / -errno (rm/rmdir)
+#define SYS_FCHMODAT       53   // x0=dirfd, x1=path, x2=mode, x3=flags -> 0 / -errno (chmod)
+#define SYS_UTIMENSAT      88   // x0=dirfd, x1=path, x2=times, x3=flags -> 0 / -errno (touch)
+#define SYS_FACCESSAT      48   // x0=dirfd, x1=path, x2=mode, x3=flags -> 0 / -errno (test -e)
+#define SYS_READLINKAT     78   // x0=dirfd, x1=path, x2=buf, x3=bufsiz -> len / -errno
+#define SYS_FTRUNCATE      46   // x0=fd, x1=length -> 0 / -errno (length 0 only)
+#define SYS_SENDFILE       71   // x0=out_fd, x1=in_fd, x2=off*, x3=count -> bytes / -errno
+#define SYS_MKDIRAT        34   // x0=dirfd, x1=path, x2=mode -> 0 / -errno (mkdir)
+#define SYS_SYMLINKAT      36   // x0=target, x1=newdirfd, x2=linkpath -> 0 / -errno (ln -s)
+#define SYS_LINKAT         37   // x0=odirfd,x1=oldpath,x2=ndirfd,x3=newpath,x4=flags (ln)
+#define SYS_RENAMEAT       38   // x0=odirfd, x1=oldpath, x2=ndirfd, x3=newpath -> 0 (mv)
+#define SYS_RENAMEAT2      276  // x0..x3 as renameat, x4=flags -> 0 / -errno (mv)
+
+// AT_* flags + faccessat/unlinkat flag values (Linux/aarch64).
+#define AT_REMOVEDIR        0x200   // unlinkat: remove a directory instead of a file
+#define AT_SYMLINK_NOFOLLOW 0x100   // *at: act on the link itself, not its target
 #define SYS_CLOCK_GETTIME  113  // x0=clockid (ignored), x1=struct timespec*  -> 0
 #define SYS_KILL_LINUX     129  // real aarch64 kill -- legacy SYS_KILL=20 kept for native
 #define SYS_SETPGID_LINUX  154  // real aarch64 setpgid  -- legacy SYS_SETPGID=44 kept
@@ -79,6 +99,7 @@
 #define F_SETFD 2
 #define F_GETFL 3
 #define F_SETFL 4
+#define F_DUPFD_CLOEXEC 1030  // ash saves redirected fds with this (dup + cloexec)
 
 // --- still on old MyOSv2 numbers (migrate in later steps) ---
 #define SYS_SLEEP  3   // x0=ms           -> 0
@@ -88,15 +109,6 @@
 #define SYS_KILL   20  // x0=pid, x1=sig -> 0 / -1
 #define SYS_SIGNAL 21  // x0=sig, x1=handler, x2=trampoline -> 0 / -1
 #define SYS_SIGRETURN 22 // restore the pre-signal context (used by the trampoline)
-#define SYS_SOCKET   31 // x0=type -> fd
-#define SYS_BIND     32 // x0=fd, x1=port -> 0/-1
-#define SYS_SENDTO   33 // x0=fd, x1=buf, x2=len, x3=ip, x4=port -> bytes/-1
-#define SYS_RECVFROM 34 // x0=fd, x1=buf, x2=len, x3=uint*ip, x4=uint16*port -> bytes/-1
-#define SYS_CONNECT  35 // x0=fd, x1=ip, x2=port -> 0/-1 (TCP handshake)
-#define SYS_LISTEN   36 // x0=fd, x1=backlog -> 0/-1 (passive open)
-#define SYS_ACCEPT   37 // x0=fd -> new connected fd, or -1
-#define SYS_POLL     38 // x0=pollfd*, x1=nfds, x2=timeout_ms -> #ready, 0 timeout, -1 EINTR
-#define SYS_SOCKSHUT 39 // x0=fd, x1=how (SHUT_WR/...) -> 0/-1 (TCP half-close)
 #define SYS_SETPGID     44 // x0=pid (0=self), x1=pgid (0=pid's own id) -> 0/-1
 
 // --- MyOSv2-private syscalls (no Linux equivalent) -> high range ---
@@ -110,6 +122,24 @@
 #define SYS_GFX_ACQUIRE (MYOS_SYS_BASE + 7)  // x0=struct gfx_info* -> 0 / -1
 #define SYS_GFX_FLUSH   (MYOS_SYS_BASE + 8)  // x0=x,x1=y,x2=w,x3=h -> 0 / -1
 #define SYS_SEAT_SWITCH (MYOS_SYS_BASE + 9)  // x0=seat (1-based) -> 0 / -1
+
+// MyOSv2's socket API is a custom simplified interface (port-based, no
+// sockaddr), used only by native programs (the Lisp networking primitives over
+// ulib) -- musl binaries use the real Linux socket numbers (198+), which we do
+// not implement. These USED to sit at 31-39, but those are real Linux numbers
+// for the file-management *at family (mknodat/mkdirat/unlinkat/symlinkat/
+// linkat/renameat), so a musl `rm`/`mkdir`/`ln` was silently misrouted to
+// connect/listen/.... Relocated into the private range so the Linux numbers are
+// free; native callers use the SYS_ macros below and recompile transparently.
+#define SYS_SOCKET   (MYOS_SYS_BASE + 10) // x0=type -> fd
+#define SYS_BIND     (MYOS_SYS_BASE + 11) // x0=fd, x1=port -> 0/-1
+#define SYS_SENDTO   (MYOS_SYS_BASE + 12) // x0=fd, x1=buf, x2=len, x3=ip, x4=port -> bytes/-1
+#define SYS_RECVFROM (MYOS_SYS_BASE + 13) // x0=fd, x1=buf, x2=len, x3=uint*ip, x4=uint16*port -> bytes/-1
+#define SYS_CONNECT  (MYOS_SYS_BASE + 14) // x0=fd, x1=ip, x2=port -> 0/-1 (TCP handshake)
+#define SYS_LISTEN   (MYOS_SYS_BASE + 15) // x0=fd, x1=backlog -> 0/-1 (passive open)
+#define SYS_ACCEPT   (MYOS_SYS_BASE + 16) // x0=fd -> new connected fd, or -1
+#define SYS_POLL     (MYOS_SYS_BASE + 17) // x0=pollfd*, x1=nfds, x2=timeout_ms -> #ready/0/-1
+#define SYS_SOCKSHUT (MYOS_SYS_BASE + 18) // x0=fd, x1=how (SHUT_WR/...) -> 0/-1 (TCP half-close)
 
 // Terminal ioctls (asm-generic values) -- enough for isatty()/line editing.
 // musl's isatty() calls ioctl(fd, TCGETS, &termios); a 0 return means the fd

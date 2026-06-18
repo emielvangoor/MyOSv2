@@ -52,9 +52,28 @@ separate per-process mode.
   `user/musl/mycrt.S` for `_start` + the write syscall; TCC's inline asm can't
   emit `svc`, and there's no libc here yet). Two requirements the loader forces:
   build `-static -no-pie` (no dynamic linker) and `-Wl,-Ttext=0x8000000000`
-  (the clean user VA). Verified by `tools/tcc_check.py`. **Next:** a musl libc
-  sysroot on disk (headers + `libc.a` + `crt*.o`) so `#include <stdio.h>` /
-  `printf` link — then a real `hello.c`, and onward toward GCC.
+  (the clean user VA). Verified by `tools/tcc_check.py`.
+- ✅ **B-SP6 — shell I/O redirection + the coreutils syscalls.** Closed the
+  syscall gaps an interactive busybox session actually hits: `dup3`/`pipe2`
+  (musl's `dup2()`/`pipe()`), `nanosleep`, `unlinkat`, `fchmodat`, `utimensat`,
+  `faccessat`, `readlinkat`, `ftruncate`, `sendfile`. Two structural fixes made
+  redirection (`>`/`>>`/`<`/`2>`) work: (1) the legacy socket family had been
+  numbered 31–39 — **the Linux `*at` numbers** (`mknodat`/`mkdirat`/`unlinkat`/
+  `symlinkat`/`linkat`/`renameat`) — so musl `rm`/`mkdir`/`ln` were silently
+  misrouted to `connect`/`listen`/…; the socket calls moved to the private
+  `0x1000+` range. (2) stdin/stdout/stderr are NULL fd slots ("NULL = console"),
+  which a shell can't *save* before redirecting; they are now duplicatable into a
+  **console-backed `struct file`**, and `fcntl(F_DUPFD_CLOEXEC)` (ash's save
+  path) returns a real fd, and `openat(O_APPEND)` appends. Verified by
+  `tools/redirect_check.py` + KTESTs.
+- ✅ **B-SP7 — file management on the ext2 root.** `mkdir`/`ln -s`/`ln`/`mv` all
+  work, via `mkdirat`/`symlinkat`/`linkat`/`renameat`/`renameat2` over new ext2
+  vnode ops: `ext2_symlink` (fast inline-target links), `ext2_rename` (relink the
+  inode under a new name; fix `..`/link-counts on a cross-parent dir move), and
+  `ext2_link` (a second name + bumped link count); `mkdirat` reuses the existing
+  `create`-a-`VN_DIR` path. Verified by `tools/filemgmt_check.py` + ext2 KTESTs.
+  **Not yet:** `rmdir`/`rm -r` (directory removal — `unlink` still refuses dirs).
+  **Next:** onward toward GCC.
 
 ## Decomposition (each its own spec → plan → build)
 

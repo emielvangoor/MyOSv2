@@ -16,6 +16,10 @@ struct vnode_ops {
     int (*truncate)(struct vnode *vn);          // shrink to 0 bytes (O_TRUNC)
     int (*unlink)(struct vnode *dir, const char *name); // remove an entry from dir
     int (*readlink)(struct vnode *vn, char *buf, int len);  // read a symlink's target
+    int (*symlink)(struct vnode *dir, const char *name, const char *target); // make a symlink
+    int (*rename)(struct vnode *odir, const char *oldname,
+                  struct vnode *ndir, const char *newname);  // move/rename an entry
+    int (*link)(struct vnode *dir, const char *name, struct vnode *target); // hard link
 };
 
 struct vnode {
@@ -51,5 +55,8 @@ int           vfs_readdir(struct vnode *dir, int index, char *name_out);
 int           vfs_truncate(struct vnode *vn);   // O_TRUNC: reset the file to 0 bytes
 int           vfs_unlink(const char *path);     // remove a file/empty entry by path
 int           vfs_readlink(struct vnode *vn, char *buf, int len); // copy a symlink target into buf
+int           vfs_symlink(const char *linkpath, const char *target); // create symlink at linkpath
+int           vfs_rename(const char *oldpath, const char *newpath);  // move/rename oldpath -> newpath
+int           vfs_link(const char *oldpath, const char *newpath);    // hard-link newpath -> oldpath's inode
 void          vfs_close(struct file *f);
 struct file  *file_dup(struct file *f);   // bump the reference count; returns f
