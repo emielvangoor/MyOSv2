@@ -19,9 +19,9 @@
 // The kernel PTY (src/pty.c) gives the shell a genuine tty: isatty() is true and
 // tcsetattr() really switches raw/cooked, so vi can take over the screen.
 //
-// Phase 2 scope: bring up the pipeline end to end -- spawn the shell, render its
-// screen, and feed it printable keys + Enter/Backspace/Tab. Full key encoding
-// (arrows, function keys, modifiers, signal chars) is Phase 3.
+// Keys flow through libvterm's encoder (printable + arrows/F-keys/editing keys +
+// Shift/Ctrl/Alt). Ctrl-C is delivered to us (via SYS_SET_RAWKB) and forwarded
+// to the pty, whose discipline decides SIGINT (cooked) vs raw 0x03 (vi).
 
 #include <stdint.h>
 #include <stddef.h>
@@ -254,7 +254,7 @@ int main(void)
     svc5(SYS_SET_RAWKB, 1, 0, 0, 0, 0);
 
     int fd[2];
-    if (openpt(fd) != 0) { return 1; }
+    if (openpt(fd) != 0) {return 1; }
     int master = fd[0], slave = fd[1];
     g_master = master;
 
@@ -272,8 +272,13 @@ int main(void)
         dup2(slave, 0); dup2(slave, 1); dup2(slave, 2);
         if (slave > 2) { close(slave); }
         setenv("TERM", "xterm", 1);
+        // The MyOSv2 native shell (/bin/sh). It runs full-screen TUIs cleanly --
+        // busybox `vi`, `less`, etc. exec from it and take over the screen. (The
+        // busybox `sh` applet itself hangs at startup over this pty: its job-
+        // control init wants controlling-terminal support -- TIOCSCTTY, SIGTTOU/
+        // SIGTTIN -- the pty does not implement yet. Tracked as a follow-up.)
         char *argv[] = { "sh", NULL };
-        execv("/bin/sh", argv);     // /bin/sh -> busybox sh applet
+        execv("/bin/sh", argv);
         _exit(127);
     }
     close(slave);
