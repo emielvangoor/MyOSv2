@@ -96,9 +96,13 @@ photograph itself: `(screenshot "/shot.ppm")`.
   including one a busybox-sh put in its own group, while the shell survives. Both
   the legacy `signal`/`sigreturn` and the real-numbered `rt_sigaction`/
   `rt_sigreturn` feed one delivery path, so musl binaries install handlers too.
-  (Interrupting a CPU-bound *Lisp eval* in the graphical frame is a known gap —
-  the frame polls input, so a runaway eval isn't seen until the input ISR learns
-  to spot Ctrl-C, as the UART one does.)
+  (Interrupting a CPU-bound *Lisp eval* in the graphical frame is a known gap.
+  Detecting C-c mid-eval is solvable — drain + a Ctrl-C line-discipline in the
+  input ISR, as the UART has — but that alone wedges the frame: the REPL
+  evaluates *in-process inside the event loop* (`frame-tick`), so `longjmp`-ing
+  out of the interrupted `lm_eval` unwinds the loop machinery and leaves the
+  frame inconsistent. A clean fix needs the eval isolated from the event loop —
+  e.g. run REPL evals in a forked child so C-c kills the child untouched.)
 - **Block device** — a **virtio-blk** disk driver on a generic virtio-mmio +
   virtqueue layer, reading and writing 512-byte sectors.
 - **Persistent filesystem** — a real on-disk **ext2** filesystem mounted as the
