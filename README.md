@@ -276,6 +276,17 @@ photograph itself: `(screenshot "/shot.ppm")`.
   program's **SGR escape sequences** into `face` properties — so `busybox ls`
   streams into the buffer with its directories rendered in color, the raw
   `ESC[1;34m` bytes stripped, not shown.
+- **VT100 terminal — `vi` runs full-screen** — the frame is deliberately *not*
+  a terminal (it strips cursor-addressing escapes), so a real one ships
+  alongside it: **`/bin/term`**, a standalone full-screen terminal on its own
+  seat (`Ctrl-Alt-F2`). It links **libvterm** (the VT100/xterm screen model Emacs
+  `vterm` and Neovim use), runs a shell on a genuine **kernel pseudo-terminal**
+  (`src/pty.c`: master/slave rings + a real termios line discipline — `isatty()`
+  is true and `tcsetattr()` actually switches raw/cooked), and blits the cell
+  grid straight to virtio-gpu with the anti-aliased font. Keystrokes are encoded
+  through libvterm (arrows, F-keys, Ctrl/Alt, and `^C` forwarded to the pty), so
+  full-screen TUIs like **`vi`** finally render correctly — cursor addressing,
+  the `~` column, reverse-video status line and all.
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to
