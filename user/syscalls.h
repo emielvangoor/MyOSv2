@@ -35,15 +35,6 @@
 #define SYS_KILL   20
 #define SYS_SIGNAL 21
 #define SYS_SIGRETURN 22
-#define SYS_SOCKET   31
-#define SYS_BIND     32
-#define SYS_SENDTO   33
-#define SYS_RECVFROM 34
-#define SYS_CONNECT  35
-#define SYS_LISTEN   36
-#define SYS_ACCEPT   37
-#define SYS_POLL     38
-#define SYS_SOCKSHUT 39
 #define SYS_SETPGID     44
 
 #define SYS_REPORT      (MYOS_SYS_BASE + 0)
@@ -56,3 +47,14 @@
 #define SYS_GFX_ACQUIRE (MYOS_SYS_BASE + 7)
 #define SYS_GFX_FLUSH   (MYOS_SYS_BASE + 8)
 #define SYS_SEAT_SWITCH (MYOS_SYS_BASE + 9)
+// Socket family relocated off the Linux file-management numbers (31-39) -- see
+// the long note in src/syscall.h. Native-only (musl uses Linux socket 198+).
+#define SYS_SOCKET   (MYOS_SYS_BASE + 10)
+#define SYS_BIND     (MYOS_SYS_BASE + 11)
+#define SYS_SENDTO   (MYOS_SYS_BASE + 12)
+#define SYS_RECVFROM (MYOS_SYS_BASE + 13)
+#define SYS_CONNECT  (MYOS_SYS_BASE + 14)
+#define SYS_LISTEN   (MYOS_SYS_BASE + 15)
+#define SYS_ACCEPT   (MYOS_SYS_BASE + 16)
+#define SYS_POLL     (MYOS_SYS_BASE + 17)
+#define SYS_SOCKSHUT (MYOS_SYS_BASE + 18)

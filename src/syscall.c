@@ -88,6 +88,102 @@ static void resolve_path(const char *path, char *out, int outsz)
     out[olen] = 0;
 }
 
+// Resolve a user PATH (dirfd is AT_FDCWD) and return 0 if it names an existing
+// vnode, else -ENOENT. The metadata-setting *at calls we don't fully implement
+// -- fchmodat (no stored mode bits) and utimensat (no stored timestamps) -- are
+// existence-checked no-ops built on this: they succeed on a real path and fail
+// on a missing one, which is all `chmod`/`touch` need to behave correctly.
+static long path_exists_ret(uint64_t upath)
+{
+    char path[256];
+    resolve_path((const char *)(uintptr_t)upath, path, sizeof(path));
+    return vfs_lookup(path) ? 0 : -ENOENT;
+}
+
+// Create a pipe and install its two ends in the current process's fd table,
+// writing {readfd, writefd} into ufd[0..1]. Returns 0, or a negative errno.
+// Shared by the legacy SYS_PIPE (native programs) and SYS_PIPE2 (the real
+// aarch64 number musl emits) so the careful field-init + slot-allocation logic
+// lives in exactly one place.
+static long pipe_make(int *ufd)
+{
+    struct file **fds = sched_current_fds();
+    if (!fds) { return -EFAULT; }
+    struct pipe *p = pipe_alloc();
+    struct file *rf = kmalloc(sizeof(struct file));
+    struct file *wf = kmalloc(sizeof(struct file));
+    // EVERY field must be initialized: kmalloc doesn't zero, and the read/write/
+    // close paths dispatch on ->sock before ->pipe -- a recycled block that used
+    // to be a socket file would otherwise hand this pipe a stale socket pointer
+    // (found live: pipelines returned 0 bytes after a socket-using program had
+    // exited).
+    rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->sock = 0; rf->writable = 0; rf->ref = 1;
+    wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->sock = 0; wf->writable = 1; wf->ref = 1;
+    // Allocate from fd 3 up: fds 0/1/2 stay reserved for stdin/stdout/stderr
+    // (NULL there means "the console"), so a pipe never clobbers them.
+    int r = -1, w = -1;
+    for (int i = 3; i < 16 && r < 0; i++) { if (!fds[i]) { fds[i] = rf; r = i; } }
+    for (int i = 3; i < 16 && w < 0; i++) { if (!fds[i]) { fds[i] = wf; w = i; } }
+    if (r < 0 || w < 0) {                // no room: undo
+        if (r >= 0) { fds[r] = 0; } vfs_close(rf); vfs_close(wf);
+        return -EMFILE;
+    }
+    ufd[0] = r; ufd[1] = w;
+    return 0;
+}
+
+// --- The console as a real file ------------------------------------------
+//
+// stdin/stdout/stderr are NULL fd-table slots by default ("NULL means the UART
+// console" -- see SYS_READ/SYS_WRITE). That shortcut is fine until a shell tries
+// to REDIRECT (`cmd > file`): ash first SAVES the original stdout by duplicating
+// it to a high fd, runs the command with the file dup'd onto fd 1, then restores
+// fd 1 from the saved copy. Duplicating a NULL slot has nothing to dup -> EBADF,
+// and ash's read loop then spins on the bad descriptor.
+//
+// The fix: let a console slot be duplicated into a real `struct file` backed by
+// this console device vnode. vfs_read/vfs_write route to console_dev_*, so a
+// dup'd console fd behaves exactly like the NULL one. vfs_close only frees the
+// `struct file` (never the vnode), so this single static vnode is shared safely.
+static int console_dev_read(struct vnode *vn, uint64_t off, void *buf, uint64_t len)
+{
+    (void)vn; (void)off;
+    if (len == 0) { return 0; }
+    int ch = console_getc();             // BLOCKS until a byte (or a signal)
+    if (ch < 0) { return 0; }            // interrupted -> 0 (matches the fd-0 path)
+    *(char *)buf = (char)ch;
+    return 1;
+}
+static int console_dev_write(struct vnode *vn, uint64_t off, const void *buf, uint64_t len)
+{
+    (void)vn; (void)off;
+    const char *s = buf;
+    for (uint64_t i = 0; i < len; i++) { uart_putc(s[i]); }
+    return (int)len;
+}
+static const struct vnode_ops console_ops = {
+    .read = console_dev_read, .write = console_dev_write,
+};
+static struct vnode console_vnode = { .type = VN_FILE, .size = 0, .ops = &console_ops, .priv = 0 };
+
+static struct file *console_file_new(void)
+{
+    struct file *f = kmalloc(sizeof(struct file));
+    f->vnode = &console_vnode; f->off = 0; f->pipe = 0; f->sock = 0; f->writable = 1; f->ref = 1;
+    return f;
+}
+
+// Produce a duplicate handle for fd `from` in table `fds`, to be installed in
+// another slot by dup2/dup3/fcntl(F_DUPFD). A real open file is ref-bumped; a
+// NULL stdio slot (0/1/2) materializes a fresh console-backed file so the shell
+// can save/restore it. Any other NULL slot is a genuine bad descriptor (NULL).
+static struct file *dup_fd_handle(struct file **fds, int from)
+{
+    if (fds[from]) { return file_dup(fds[from]); }
+    if (from >= 0 && from <= 2) { return console_file_new(); }
+    return 0;
+}
+
 long do_syscall(struct trapframe *tf)
 {
     uint64_t num = tf->x[8];
@@ -127,6 +223,7 @@ long do_syscall(struct trapframe *tf)
         }
         if (!f) { ret = -ENOENT; break; }
         if ((flags & O_TRUNC) && f->vnode) { vfs_truncate(f->vnode); f->off = 0; }
+        if ((flags & O_APPEND) && f->vnode) { f->off = f->vnode->size; }  // `>>`: write at EOF
         ret = -EMFILE;
         for (int i = 3; i < 16; i++) {
             if (!fds[i]) { fds[i] = f; ret = i; break; }
@@ -290,6 +387,19 @@ long do_syscall(struct trapframe *tf)
         sleep_ms(tf->x[0]);
         ret = 0;
         break;
+    case SYS_NANOSLEEP: {                    // x0=const timespec* req, x1=timespec* rem
+        // musl's sleep()/usleep()/nanosleep() all funnel here. A timespec is two
+        // longs {tv_sec, tv_nsec}; we collapse it to whole milliseconds (our
+        // timer's resolution) and reuse the SYS_SLEEP blocking path. We never
+        // return EINTR mid-sleep, so `rem` (the unslept remainder) is always 0
+        // and left untouched.
+        const long *req = (const long *)(uintptr_t)tf->x[0];
+        if (!req) { ret = -EFAULT; break; }
+        uint64_t ms = (uint64_t)req[0] * 1000 + (uint64_t)req[1] / 1000000;
+        sleep_ms(ms);
+        ret = 0;
+        break;
+    }
     case SYS_EXIT:                           // single thread; we're single-threaded
     case SYS_EXIT_GROUP:                      // musl's exit() -> exit_group
         thread_exit((int)tf->x[0]);          // x0 = exit status; does not return
@@ -356,6 +466,55 @@ long do_syscall(struct trapframe *tf)
         ret = 0;
         break;
     }
+    case SYS_FTRUNCATE: {                    // x0=fd, x1=length
+        // Our filesystems can only truncate to ZERO (vfs_truncate frees all the
+        // file's blocks; there is no extend). length 0 -- the common `> file`
+        // case -- is honored; any nonzero length is refused with EINVAL rather
+        // than silently leaving the file unchanged.
+        uint64_t fd = tf->x[0];
+        long length = (long)tf->x[1];
+        struct file **fds = sched_current_fds();
+        if (!fds || fd >= 16 || !fds[fd] || !fds[fd]->vnode) { ret = -EBADF; break; }
+        if (length != 0) { ret = -EINVAL; break; }
+        ret = (vfs_truncate(fds[fd]->vnode) == 0) ? 0 : -EIO;
+        if (ret == 0) { fds[fd]->off = 0; }
+        break;
+    }
+    case SYS_SENDFILE: {                     // x0=out_fd, x1=in_fd, x2=off*, x3=count
+        // Copy up to `count` bytes from in_fd to out_fd inside the kernel (no
+        // bounce through user space). musl's cat/cp use it. in_fd must be a
+        // readable file. If off is non-NULL, copying starts at *off and *off is
+        // advanced, leaving in_fd's own offset untouched (the POSIX contract);
+        // if NULL, in_fd's offset is used and advanced.
+        uint64_t out = tf->x[0], in = tf->x[1];
+        long *off = (long *)(uintptr_t)tf->x[2];
+        uint64_t count = tf->x[3];
+        struct file **fds = sched_current_fds();
+        if (!fds || in >= 16 || out >= 16 || !fds[in] || !fds[out] || !fds[in]->vnode) {
+            ret = -EBADF; break;
+        }
+        uint64_t saved = fds[in]->off;
+        if (off) { fds[in]->off = (uint64_t)*off; }
+        long total = 0;
+        char buf[512];
+        while (count > 0) {
+            uint64_t chunk = count < sizeof(buf) ? count : sizeof(buf);
+            int n = vfs_read(fds[in], buf, chunk);   // advances fds[in]->off
+            if (n <= 0) { break; }                   // EOF or error
+            int written = 0;
+            while (written < n) {                    // drain the chunk to out_fd
+                int w = vfs_write(fds[out], buf + written, (uint64_t)(n - written));
+                if (w <= 0) { break; }
+                written += w;
+            }
+            total += written;
+            count -= (uint64_t)n;
+            if (written < n) { break; }              // out_fd stalled: stop
+        }
+        if (off) { *off = (long)fds[in]->off; fds[in]->off = saved; }  // restore in's pos
+        ret = total;
+        break;
+    }
     case SYS_NEWFSTATAT: {                    // x0=dirfd, x1=path, x2=statbuf, x3=flags
         char path[256];
         resolve_path((const char *)(uintptr_t)tf->x[1], path, sizeof(path));
@@ -363,6 +522,90 @@ long do_syscall(struct trapframe *tf)
         if (!vn) { ret = -ENOENT; break; }
         fill_stat((void *)(uintptr_t)tf->x[2], vn);
         ret = 0;
+        break;
+    }
+    case SYS_FCHMODAT:                        // x0=dirfd, x1=path, x2=mode, x3=flags
+        // No stored permission bits (single-user: all files are root's and fully
+        // accessible), so this is an existence-checked no-op -- enough for
+        // busybox `chmod` to succeed on a real file, fail on a missing one.
+        ret = path_exists_ret(tf->x[1]);
+        break;
+    case SYS_UTIMENSAT:                       // x0=dirfd, x1=path, x2=times, x3=flags
+        // No stored timestamps yet, so updating them is a no-op; we still verify
+        // the path exists so busybox `touch EXISTING` succeeds (it creates the
+        // file first via openat O_CREAT) and `touch` of an unresolvable path fails.
+        ret = path_exists_ret(tf->x[1]);
+        break;
+    case SYS_FACCESSAT:                       // x0=dirfd, x1=path, x2=mode, x3=flags
+        // access()/faccessat() asks "can I R/W/X this?". Single-user root can do
+        // anything, so the only question that matters is existence (F_OK).
+        ret = path_exists_ret(tf->x[1]);
+        break;
+    case SYS_READLINKAT: {                    // x0=dirfd, x1=path, x2=buf, x3=bufsiz
+        // Copy a symlink's target into the user buffer, returning the byte count
+        // (NOT NUL-terminated -- the readlink contract). EINVAL if the path is
+        // not a symlink, ENOENT if it does not exist. busybox `readlink` and the
+        // applet-symlink resolution on the ext2 root drive this.
+        char path[256];
+        resolve_path((const char *)(uintptr_t)tf->x[1], path, sizeof(path));
+        struct vnode *vn = vfs_lookup(path);
+        if (!vn) { ret = -ENOENT; break; }
+        if (vn->type != VN_SYMLINK) { ret = -EINVAL; break; }
+        int n = vfs_readlink(vn, (char *)(uintptr_t)tf->x[2], (int)tf->x[3]);
+        ret = (n < 0) ? -EINVAL : n;
+        break;
+    }
+    case SYS_UNLINKAT: {                      // x0=dirfd, x1=path, x2=flags
+        // Remove a directory entry. AT_REMOVEDIR selects rmdir-style removal of a
+        // directory; both route to vfs_unlink (the FS decides whether a non-empty
+        // directory is removable). busybox `rm`/`rmdir` drive this. vfs_unlink
+        // returns -1 on any failure; surface it as -ENOENT (the usual cause).
+        char path[256];
+        resolve_path((const char *)(uintptr_t)tf->x[1], path, sizeof(path));
+        ret = (vfs_unlink(path) == 0) ? 0 : -ENOENT;
+        break;
+    }
+    case SYS_MKDIRAT: {                       // x0=dirfd, x1=path, x2=mode
+        // The filesystem's create op already builds a directory when asked for
+        // VN_DIR (`.`/`..` + link counts), so mkdir is just "create a VN_DIR".
+        // Reject an existing path with EEXIST (don't create a duplicate entry).
+        char path[256];
+        resolve_path((const char *)(uintptr_t)tf->x[1], path, sizeof(path));
+        if (vfs_lookup(path)) { ret = -EEXIST; break; }
+        ret = vfs_create(path, VN_DIR) ? 0 : -ENOENT;   // ENOENT: missing parent dir
+        break;
+    }
+    case SYS_SYMLINKAT: {                     // x0=target, x1=newdirfd, x2=linkpath
+        // symlinkat(target, newdirfd, linkpath): the link's PATH is resolved
+        // against the cwd; the TARGET is stored verbatim (it is resolved lazily
+        // at every traversal, not now). `ln -s` drives this.
+        char link[256];
+        resolve_path((const char *)(uintptr_t)tf->x[2], link, sizeof(link));
+        if (vfs_lookup(link)) { ret = -EEXIST; break; }
+        ret = (vfs_symlink(link, (const char *)(uintptr_t)tf->x[0]) == 0) ? 0 : -ENOENT;
+        break;
+    }
+    case SYS_RENAMEAT:                        // x0=odirfd,x1=oldpath,x2=ndirfd,x3=newpath
+    case SYS_RENAMEAT2: {                      // ... x4=flags (ignored: no EXCHANGE/NOREPLACE)
+        // Move/rename within the filesystem. busybox `mv` calls rename(2), which
+        // musl emits as renameat or renameat2; both land here. Cross-filesystem
+        // moves (EXDEV) aren't possible -- there is one root fs -- so mv never
+        // needs its copy fallback. dirfds are AT_FDCWD (paths resolve to cwd).
+        char oldp[256], newp[256];
+        resolve_path((const char *)(uintptr_t)tf->x[1], oldp, sizeof(oldp));
+        resolve_path((const char *)(uintptr_t)tf->x[3], newp, sizeof(newp));
+        ret = (vfs_rename(oldp, newp) == 0) ? 0 : -ENOENT;
+        break;
+    }
+    case SYS_LINKAT: {                        // x0=odirfd,x1=oldpath,x2=ndirfd,x3=newpath,x4=flags
+        // Hard link: newpath becomes a second name for oldpath's inode. `ln`
+        // (without -s) drives this. dirfds are AT_FDCWD. We don't honor
+        // AT_SYMLINK_FOLLOW in x4 -- vfs_link resolves oldpath the usual way.
+        char oldp[256], newp[256];
+        resolve_path((const char *)(uintptr_t)tf->x[1], oldp, sizeof(oldp));
+        resolve_path((const char *)(uintptr_t)tf->x[3], newp, sizeof(newp));
+        if (vfs_lookup(newp)) { ret = -EEXIST; break; }
+        ret = (vfs_link(oldp, newp) == 0) ? 0 : -ENOENT;
         break;
     }
     case SYS_GETDENTS64: {                   // x0=fd, x1=buf, x2=count -> bytes / 0 (end)
@@ -475,41 +718,48 @@ long do_syscall(struct trapframe *tf)
     case SYS_SHM_MAP:                        // x0 = handle
         ret = (long)shm_map(sched_current_as(), (int)tf->x[0]);
         break;
-    case SYS_PIPE: {                         // x0 = int fd[2]
-        int *ufd = (int *)(uintptr_t)tf->x[0];
-        struct file **fds = sched_current_fds();
-        ret = -1;
-        if (!fds) { break; }
-        struct pipe *p = pipe_alloc();
-        struct file *rf = kmalloc(sizeof(struct file));
-        struct file *wf = kmalloc(sizeof(struct file));
-        // EVERY field must be initialized: kmalloc doesn't zero, and the read/
-        // write/close paths dispatch on ->sock before ->pipe -- a recycled
-        // block that used to be a socket file would otherwise hand this pipe
-        // a stale socket pointer (found live: pipelines returned 0 bytes after
-        // any socket-using program had exited).
-        rf->vnode = 0; rf->off = 0; rf->pipe = p; rf->sock = 0; rf->writable = 0; rf->ref = 1;
-        wf->vnode = 0; wf->off = 0; wf->pipe = p; wf->sock = 0; wf->writable = 1; wf->ref = 1;
-        // Allocate from fd 3 up: fds 0/1/2 stay reserved for stdin/stdout/stderr
-        // (NULL there means "the console"), so a pipe never clobbers them.
-        int r = -1, w = -1;
-        for (int i = 3; i < 16 && r < 0; i++) { if (!fds[i]) { fds[i] = rf; r = i; } }
-        for (int i = 3; i < 16 && w < 0; i++) { if (!fds[i]) { fds[i] = wf; w = i; } }
-        if (r < 0 || w < 0) {                // no room: undo
-            if (r >= 0) { fds[r] = 0; } vfs_close(rf); vfs_close(wf);
-            break;
-        }
-        ufd[0] = r; ufd[1] = w; ret = 0;
+    case SYS_PIPE: {                         // x0 = int fd[2]  (legacy: returns -1 on error)
+        long r = pipe_make((int *)(uintptr_t)tf->x[0]);
+        ret = (r == 0) ? 0 : -1;             // native callers expect -1, not -errno
+        break;
+    }
+    case SYS_PIPE2: {                        // x0 = int fd[2], x1 = flags
+        // The real aarch64 number musl's pipe() emits. The flags arg carries
+        // O_CLOEXEC/O_NONBLOCK, neither of which we track yet, so it is ignored.
+        // Negative-errno return (unlike legacy SYS_PIPE) so musl sets errno.
+        ret = pipe_make((int *)(uintptr_t)tf->x[0]);
         break;
     }
     case SYS_DUP2: {                         // x0 = oldfd, x1 = newfd
         struct file **fds = sched_current_fds();
         uint64_t o = tf->x[0], n = tf->x[1];
-        if (!fds || o >= 16 || n >= 16 || !fds[o]) { ret = -1; break; }
+        if (!fds || o >= 16 || n >= 16) { ret = -1; break; }
         if (o != n) {
+            struct file *dup = dup_fd_handle(fds, (int)o);  // materializes console for 0/1/2
+            if (!dup) { ret = -1; break; }
             if (fds[n]) { vfs_close(fds[n]); }
-            fds[n] = file_dup(fds[o]);
+            fds[n] = dup;
         }
+        ret = (long)n;
+        break;
+    }
+    case SYS_DUP3: {                         // x0=oldfd, x1=newfd, x2=flags
+        // The real aarch64 number musl's dup2()/dup3() emit (aarch64 Linux has
+        // no plain dup2). Like SYS_DUP2 it forces the duplicate into the EXACT
+        // slot newfd -- a shell needs this for `>file` (open the file, then dup
+        // it onto fd 1). It differs from dup2 in ONE way: dup3(fd, fd, ...) is an
+        // error (EINVAL) rather than a silent success. The flags arg carries only
+        // O_CLOEXEC, which we don't track, so it is ignored. Negative-errno so
+        // musl's wrapper sets errno correctly. dup_fd_handle lets the console fds
+        // (0/1/2) be duplicated -- the linchpin of shell redirection save/restore.
+        struct file **fds = sched_current_fds();
+        uint64_t o = tf->x[0], n = tf->x[1];
+        if (!fds || o >= 16 || n >= 16) { ret = -EBADF; break; }
+        if (o == n) { ret = -EINVAL; break; }
+        struct file *dup = dup_fd_handle(fds, (int)o);
+        if (!dup) { ret = -EBADF; break; }
+        if (fds[n]) { vfs_close(fds[n]); }
+        fds[n] = dup;
         ret = (long)n;
         break;
     }
@@ -753,15 +1003,29 @@ long do_syscall(struct trapframe *tf)
         case F_SETFD: ret = 0; break;
         case F_GETFL: ret = 2; break;   // O_RDWR
         case F_SETFL: ret = 0; break;
-        case F_DUPFD: {                 // x0=fd, x2=lowest acceptable new fd
+        case F_DUPFD:                   // x0=fd, x2=lowest acceptable new fd
+        case F_DUPFD_CLOEXEC: {         // same, plus set close-on-exec (untracked -> ignored)
+            // ash SAVES every redirected fd with fcntl(fd, F_DUPFD_CLOEXEC, 10)
+            // so the original survives the redirect and can be restored after.
+            // We don't track the cloexec bit, so it behaves exactly like F_DUPFD;
+            // the crucial part is returning a REAL new fd (a bogus 0 here made
+            // ash's restore a no-op, so `cmd < file` left fd 0 stuck on the file
+            // and the shell read EOF and exited).
+            // ash SAVES a redirected fd with fcntl(fd, F_DUPFD, 10) -- the most
+            // common save path -- so the console slots (0/1/2) must be dup-able
+            // here too (dup_fd_handle materializes a console-backed file).
             struct file **fds = sched_current_fds();
             uint64_t fd = tf->x[0];
             int min = (int)tf->x[2];
-            if (!fds || fd >= 16 || !fds[fd]) { ret = -EBADF; break; }
+            if (!fds || fd >= 16) { ret = -EBADF; break; }
             if (min < 0) { min = 0; }
             ret = -EMFILE;
             for (int i = min; i < 16; i++) {
-                if (!fds[i]) { fds[i] = file_dup(fds[fd]); ret = i; break; }
+                if (!fds[i]) {
+                    struct file *dup = dup_fd_handle(fds, (int)fd);
+                    if (!dup) { ret = -EBADF; break; }
+                    fds[i] = dup; ret = i; break;
+                }
             }
             break;
         }

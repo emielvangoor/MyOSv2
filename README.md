@@ -154,6 +154,22 @@ photograph itself: `(screenshot "/shot.ppm")`.
   the busybox multicall binary. ext2 grew read-only **symlink** support and the
   VFS follows them during path lookup; `rt_sigaction`/`getpgid`/`ppoll` round out
   the job-control syscalls ash needs.
+- **I/O redirection + the coreutils syscalls** — `>`, `>>`, `<`, `2>`, and
+  pipelines all work in the shell. stdin/stdout/stderr are modelled as a
+  **console-backed file** so ash can save and restore a redirected fd
+  (`dup3`/`pipe2` are musl's `dup2()`/`pipe()`; `fcntl(F_DUPFD_CLOEXEC)` returns
+  a real fd; `openat(O_APPEND)` appends). The everyday commands have their
+  syscalls too: `rm` (`unlinkat`), `chmod` (`fchmodat`), `touch` (`utimensat`),
+  `sleep` (`nanosleep`), `cat` (`sendfile`), plus `readlinkat`/`faccessat`/
+  `ftruncate`. The legacy MyOSv2 socket calls had squatted on the Linux `*at`
+  numbers 31–39 (silently misrouting `rm`/`mkdir`/`ln` to `connect`/`listen`/…);
+  they moved to a private range so the Linux numbers are free.
+- **File management on the ext2 root** — `mkdir`, `ln -s`, `ln` (hard), and `mv`
+  all work on disk. ext2 grew write-side directory ops: **symlink** creation
+  (fast inline targets), **rename** (relink an inode under a new name, fixing
+  `..` and link counts when a directory changes parent), and **hard links**
+  (a second name sharing one inode); `mkdir` reuses the directory-create path.
+  (`rmdir`/`rm -r` are still TODO -- directory *removal* isn't wired yet.)
 - **Compiles C *on the machine*, against a real libc** — `/bin/tcc` is a
   static-musl [TinyCC](https://repo.or.cz/tinycc.git) that runs on MyOSv2 and
   compiles + links C in one process. A **musl sysroot is baked onto the ext2
