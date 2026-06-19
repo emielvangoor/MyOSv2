@@ -21,6 +21,7 @@
 (load "/lib/fr-files.l")
 (load "/lib/fr-mini.l")
 (load "/lib/fr-help.l")
+(load "/lib/fr-term.l")
 
 ;; ---- ANSI SGR escapes -> face text properties (the ansi-color.el analog) --
 ;;
@@ -348,12 +349,15 @@ only what changed -- an idle machine costs nothing."
                (if (eq (buffer-mode (current-buffer)) 'repl-mode) (prompt) nil)
                (redisplay))
       nil))
-  (if animate
-      ;; Animation heartbeat: poll input, repaint at ~25Hz so live surface
-      ;; renderers show. (The blocking path below stays the idle default.)
+  (if (or animate *vterms*)
+      ;; Heartbeat: poll input + any live vterms, repaint at ~30Hz. A live
+      ;; surface renderer (the teapot) or a running terminal must keep updating
+      ;; without waiting on a keystroke. (The blocking path below is the idle
+      ;; default -- an idle machine still costs nothing.)
       (progn (let ((ev (read-event-nowait)))
                (if ev (dispatch ev) nil))
-             (sleep 40))
+             (vterm-poll-all)
+             (sleep 30))
     (dispatch (read-event)))
   (flush-output)
   (redisplay))

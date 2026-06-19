@@ -9,7 +9,10 @@
 #pragma once
 #include <stdint.h>
 
-#define PIPE_SIZE 4096
+// 16 KiB: large enough that a vterm helper's whole screen-update batch (a full
+// 24x80 repaint is a few KiB) fits in the pipe and is written in one atomic
+// shot, so the frame never reads a half-written batch. (Was 4096.)
+#define PIPE_SIZE 16384
 
 struct file;   // from vfs.h (a pipe end is a file with ->pipe set)
 

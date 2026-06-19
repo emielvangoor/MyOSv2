@@ -134,6 +134,12 @@ Minor maps take precedence over the major mode (Emacs order)."
     (pending-cx (handle-cx ev))                           ; C-x <key>
     ((eq (car ev) 'mouse)
      (select-window-at (cadr ev) (caddr ev)))
+    ;; A focused vterm in char mode swallows keys and forwards them to its
+    ;; program -- EXCEPT C-x / C-g, which stay the frame's escape so you can
+    ;; always C-x o away or M-x out. (Mouse handled above; minibuffer/C-x
+    ;; sequences handled before this, so they still work.)
+    ((and (vterm-active-p) (not (vterm-frame-key-p ev)))
+     (vterm-feed-event ev))
     ((eq (car ev) 'meta)
      (if (= (cadr ev) 120) (mb-start 'mx)                 ; M-x
        (run-mode-or-global ev)))

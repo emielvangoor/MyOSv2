@@ -35,7 +35,7 @@ DEP  := $(OBJ:.o=.d)
 PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest teapot
 # The Lisp library: .l files copied into $(BUILD)/rootfs/lib/ and baked onto the
 # ext2 disk image; /bin/lisp loads them from /lib at startup.
-LISP_FILES  := bootstrap system modes fr-repl fr-edit fr-modes fr-keys fr-files fr-mini fr-help frame
+LISP_FILES  := bootstrap system modes fr-repl fr-edit fr-modes fr-keys fr-files fr-mini fr-help fr-term frame
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 
@@ -142,7 +142,7 @@ print-musl = $(shell $(MUSL_CC) -print-file-name=$(1))
 #                      no symlink support, so the image must hold real files)
 #   /usr/lib/       -- musl crt1/crti/crtn/libc.a + libtcc1.a (TCC's compiler-
 #                      support runtime; tcc-compiled programs need both)
-$(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(BUILD)/user/term.elf $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
+$(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(BUILD)/user/vterm.elf $(PREBUILT_ELFS) $(BUILD)/user/mycrt.elf \
                    $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) \
                    user/demo/colors.c | $(BUILD)
 	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test $(BUILD)/rootfs/bin $(BUILD)/rootfs/lib
@@ -154,7 +154,7 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(BUILD)/user/term.elf $(PREBUILT_E
 	cp $(BUILD)/user/lm.elf $(BUILD)/rootfs/bin/lisp
 	for p in $(PROGS) $(MUSL_PROGS) $(PREBUILT_PROGS); do \
 	  cp $(BUILD)/user/$$p.elf $(BUILD)/rootfs/bin/$$p; done
-	cp $(BUILD)/user/term.elf $(BUILD)/rootfs/bin/term   # /bin/term: VT100 terminal
+	cp $(BUILD)/user/vterm.elf $(BUILD)/rootfs/bin/vterm   # /bin/vterm: terminal helper
 
 	# busybox applet names: each is a symlink -> busybox, so a bare `ls`/`cat`/...
 	# in busybox sh resolves (via the kernel's symlink-following path lookup) to
@@ -248,10 +248,11 @@ $(BUILD)/user/%.elf: user/musl/%.c | $(BUILD)
 	mkdir -p $(BUILD)/user
 	$(MUSL_CC) -static -no-pie -Os -Wl,-Ttext-segment=$(MUSL_TEXT) -o $@ $<
 
-# /bin/term: a standalone full-screen VT100 terminal (musl static) that links the
-# vendored libvterm and renders with the kernel's font_aa glyphs (-Isrc). An
-# explicit rule (not the generic user/musl/%.c one) so we can add libvterm's
-# objects + include paths. -w silences libvterm's third-party warnings.
+# /bin/vterm: the terminal "helper" (musl static) that the Lisp frame starts and
+# drives over pipes -- it links the vendored libvterm and a kernel pty, and
+# speaks a line protocol (keys in, screen-grid updates out). An explicit rule
+# (not the generic user/musl/%.c one) so we can add libvterm's objects + include
+# paths. -w silences libvterm's third-party warnings.
 LIBVTERM_SRC  := $(wildcard user/libvterm/src/*.c)
 LIBVTERM_OBJS := $(patsubst user/libvterm/src/%.c,$(BUILD)/user/libvterm/%.o,$(LIBVTERM_SRC))
 LIBVTERM_INC  := -Iuser/libvterm/include -Iuser/libvterm/src
@@ -260,10 +261,10 @@ $(BUILD)/user/libvterm/%.o: user/libvterm/src/%.c | $(BUILD)
 	@mkdir -p $(BUILD)/user/libvterm
 	$(MUSL_CC) -static -no-pie -Os -w $(LIBVTERM_INC) -c $< -o $@
 
-$(BUILD)/user/term.elf: user/musl/term.c $(LIBVTERM_OBJS) src/font_aa.h | $(BUILD)
+$(BUILD)/user/vterm.elf: user/musl/vterm.c $(LIBVTERM_OBJS) | $(BUILD)
 	mkdir -p $(BUILD)/user
 	$(MUSL_CC) -static -no-pie -Os -Wl,-Ttext-segment=$(MUSL_TEXT) \
-	  $(LIBVTERM_INC) -o $@ user/musl/term.c $(LIBVTERM_OBJS)
+	  $(LIBVTERM_INC) -o $@ user/musl/vterm.c $(LIBVTERM_OBJS)
 
 # Prebuilt binaries: just copy them into place for the blob.
 $(BUILD)/user/%.elf: user/musl/%.bin | $(BUILD)
