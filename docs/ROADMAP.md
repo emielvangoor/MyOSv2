@@ -639,6 +639,50 @@ showing raw `ESC[..m` escape bytes.
 
 ---
 
+## Phase 31 — `M-x vterm`: a Unix terminal in a buffer  ✅ DONE
+
+Full-screen TUIs (busybox `sh`, `vi`, `less`) run **inside a frame buffer**, the
+Emacs way — not on a separate seat. The frame stays pure Lisp; a small C helper
+process owns libvterm and a kernel pty, and speaks a line protocol over pipes.
+**Spec:** `docs/superpowers/specs/2026-06-18-vt100-terminal-design.md`
+
+- ✅ **31.1 — kernel pseudo-terminal**: `src/pty.c` + `pty.h` — master/slave
+  rings with a real **termios line discipline** (canonical line editing + VERASE,
+  ECHO, raw mode, ISIG→SIGINT, OPOST/ONLCR). `SYS_OPENPT` returns a
+  {master, slave} pair; `SYS_IOCTL` routes TCGETS/TCSETS*/TIOC[GS]WINSZ/PGRP to
+  the fd's `struct pty`; `poll_scan` learns the pty. 6 KTESTs (cooked line on
+  RET, ERASE edits, ECHO bounce, raw passthrough, ONLCR, ISIG). `src/string.c`
+  (mem*) added because the larger `struct file` made gcc emit an implicit memset;
+  `PIPE_SIZE` 4096→16384.
+- ✅ **31.2 — libvterm helper (`/bin/vterm`)**: libvterm 0.3.3 (neovim fork)
+  vendored under `user/libvterm/`; `user/musl/vterm.c` links it against musl,
+  owns the pty, forks the shell on the slave, and translates between libvterm's
+  screen model and a line protocol — keys in (`u`/`k`/`s`), screen out
+  (`z` geometry, `p` cell-run, `c` cursor, `f` flush, `x` exit).
+- ✅ **31.3 — `vterm-mode` (`user/lisp/fr-term.l`)**: pure-Lisp major mode that
+  forks the helper, polls its pipe each `frame-tick`, mirrors the grid into the
+  buffer (text + ANSI faces, cursor = point) and forwards keys; `C-x`/`C-g` stay
+  the frame's escape (char-mode vs copy-mode via `M-x`). Registered as a major
+  mode; `M-x vterm` launches it.
+- ✅ **31.4 — controlling-tty / job control**: busybox ash's job-control startup
+  spins until it is the tty's foreground group; the fix was `SYS_SETSID` moving
+  the caller into its **own process group** (`t->pgid = t->id`), plus the helper
+  doing `tcsetpgrp(0, getpid())` pre-exec. busybox `sh` now runs with line
+  editing, job control and coloured `ls`; `vi` edits a file full-screen from it.
+- ✅ **31.5 — per-keystroke rendering**: the helper sets `VTERM_DAMAGE_ROW`
+  merge but must call `vterm_screen_flush_damage()` before reading its dirty set,
+  or libvterm holds each row's cell damage until a later multi-row write evicts
+  it — so typed glyphs stayed invisible until RET. One-line fix in the helper's
+  `flush_damage()`. Verified by QMP screendump **before** pressing RET: typed
+  text appears as you type, in the shell and inside `vi`.
+
+Open follow-ups (none block the flow): arrows are cooked to C-p/C-n/C-b/C-f
+before Lisp sees them (vi uses hjkl); terminfo isn't staged (busybox vi is fine
+on `TERM=xterm`; ncurses/less want it); `string-concat` still caps at ~2048
+bytes (worked around by reading small pipe chunks).
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
@@ -661,8 +705,10 @@ the current path.
   EL0 process (a sub-feature of mmap, skipped for now).
 - **Display server (user space)** — a process that owns the screen: desktop +
   mouse cursor + back-buffer compositing.
-- **Window protocol + terminal client** — clients render into shared buffers; the
-  shell runs in a window.
+- ~~**Window protocol + terminal client** — clients render into shared buffers;
+  the shell runs in a window.~~ — **done differently**: external renderers use
+  shared-memory surface buffers (25.6) and the shell runs in a buffer via
+  `M-x vterm` (Phase 31).
 - **i3-style tiling window manager** — tiling tree, workspaces, keybindings,
   borders, status bar.
 - ~~virtio-input (mouse + keyboard)~~ — **built in 25.1.**
