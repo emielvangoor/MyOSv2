@@ -143,3 +143,8 @@ up to the next unescaped quote. (\\uXXXX is not decoded in M1.)"
 (defun json-get (obj key)
   "Value for KEY in a json-parse object (alist), or nil."
   (if obj (if (equal (car (car obj)) key) (cdr (car obj)) (json-get (cdr obj) key)) nil))
+
+(defun json-encode-string (s)
+  "Wrap S as a JSON string literal (quotes + escapes) -- e.g. for OpenAI tool_call
+arguments, which are themselves a JSON string."
+  (string-concat "\"" (json-escape s) "\""))

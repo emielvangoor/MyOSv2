@@ -27,6 +27,7 @@
 (load "/lib/assistant-apply.l") ; the hybrid gate (before tools/assistant use it)
 (load "/lib/assistant-tools.l")
 (load "/lib/assistant.l")
+(load "/lib/assistant-openrouter.l")  ; the OpenRouter provider (after assistant.l)
 (assistant-load-all)            ; restore Claude-built features from /lib/claude
 
 ;; ---- ANSI SGR escapes -> face text properties (the ansi-color.el analog) --

@@ -5,10 +5,27 @@
 ;;; defvar.)
 
 (setq *assistant-name* "emiel")              ; overridable persona name
-(setq *assistant-endpoint-host* "10.0.2.2")  ; proxy by default (M1)
+(setq *assistant-provider* 'openrouter)      ; 'openrouter | 'anthropic
+(setq *assistant-endpoint-host* "10.0.2.2")  ; TCP target (the host TLS proxy)
+(setq *assistant-host* "openrouter.ai")      ; HTTP Host: header (the real service)
 (setq *assistant-endpoint-port* 8787)
-(setq *assistant-model* "claude-sonnet-4-6")
+(setq *assistant-model* "anthropic/claude-3.5-sonnet")  ; an OpenRouter model slug
 (setq *assistant-max-tokens* 1024)
+
+;; Dispatch the per-round request + the tool-result turn by provider, so the
+;; agentic loop below is provider-agnostic.
+(defun assistant--round (messages on-piece)
+  (if (eq *assistant-provider* 'openrouter)
+      (or--round messages on-piece) (ac--round messages on-piece)))
+
+(defun assistant--append-tool (messages tid tname tin result)
+  (if (eq *assistant-provider* 'openrouter)
+      (or--append-tool messages tid tname tin result)
+      (string-concat messages          ; the Anthropic Messages shape (M2)
+        ",{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\""
+        tid "\",\"name\":\"" tname "\",\"input\":" tin "}]}"
+        ",{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\""
+        tid "\",\"content\":\"" (json-escape result) "\"}]}")))
 
 (defun assistant--first-line (s)
   (let ((nl (string-search "\n" s)))
@@ -122,16 +139,13 @@ back until it answers in prose. Returns the final assistant text."
                          (json-escape prompt) "\"}"))
         (final "") (go t))
     (while go
-      (let ((r (ac--round messages on-piece)))
+      (let ((r (assistant--round messages on-piece)))
         (let ((text (nth 0 r)) (tid (nth 1 r)) (tname (nth 2 r)) (tin (nth 3 r)))
           (if (not tid)
               (progn (setq final text) (setq go nil))     ; no tool -> done
             (let ((result (assistant-tool-run tname (json-parse tin))))
-              (setq messages (string-concat messages
-                ",{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\""
-                tid "\",\"name\":\"" tname "\",\"input\":" tin "}]}"
-                ",{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\""
-                tid "\",\"content\":\"" (json-escape result) "\"}]}")))))))
+              (setq messages
+                (assistant--append-tool messages tid tname tin result)))))))
     final))
 
 ;;; ---- M1 UI shim: M-x emiel -> stream a reply into the *emiel* buffer -------

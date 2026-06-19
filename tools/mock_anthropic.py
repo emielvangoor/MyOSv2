@@ -77,6 +77,25 @@ def _final_stream():
     return out
 
 
+def _openai_tool_payload():
+    return (
+      'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":null,'
+      '"tool_calls":[{"index":0,"id":"call_1","type":"function",'
+      '"function":{"name":"eval_lisp","arguments":""}}]}}]}\r\n\r\n'
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+      '"function":{"arguments":"{\\"code\\":\\"(+ 1 2)\\"}"}}]}}]}\r\n\r\n'
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\r\n\r\n'
+      'data: [DONE]\r\n\r\n')
+
+
+def _openai_final_payload():
+    return (
+      'data: {"choices":[{"index":0,"delta":{"content":"The"}}]}\r\n\r\n'
+      'data: {"choices":[{"index":0,"delta":{"content":" answer is 3."}}]}\r\n\r\n'
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\r\n\r\n'
+      'data: [DONE]\r\n\r\n')
+
+
 def _serve_conn(conn):
     try:
         head, body = _read_request(conn)
@@ -84,6 +103,11 @@ def _serve_conn(conn):
         if path == b"/chunked":               # chunked-decoding test (Anthropic SSE)
             payload = "".join(_sse(p) for p in REPLY_PIECES)
             conn.sendall(_chunked(payload))
+        elif b"chat/completions" in path:      # OpenRouter / OpenAI, chunked
+            if b'"role":"tool"' in body or b'"role": "tool"' in body:
+                conn.sendall(_chunked(_openai_final_payload()))
+            else:
+                conn.sendall(_chunked(_openai_tool_payload()))
         elif b"tool_result" in body:          # second turn -> final prose
             conn.sendall(_final_stream().encode())
         elif b'"tools"' in body:              # tools-enabled turn -> ask for a tool

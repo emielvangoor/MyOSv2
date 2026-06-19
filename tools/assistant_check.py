@@ -137,9 +137,11 @@ def main() -> int:
         # runs it, sends tool_result, and the mock returns "The answer is 3."
         ok &= check(s, '(load "/lib/assistant-tools.l")', "", "reload tools for loop")
         ok &= check(s, '(load "/lib/assistant.l")', "", "reload assistant.l")
+        ok &= check(s, '(load "/lib/assistant-openrouter.l")', "", "load openrouter")
         ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "port for loop")
+        ok &= check(s, "(setq *assistant-provider* 'anthropic)", "", "provider anthropic")
         ok &= check(s, '(assistant-converse "what is 1+2?" (lambda (p) nil))',
-                    "The answer is 3.", "agentic loop runs a tool and finishes")
+                    "The answer is 3.", "agentic loop (anthropic) runs a tool")
 
         # M2 Task 6: persistence -- write a feature, load it, find it in the manifest.
         ok &= check(s, '(assistant-persist "greet" "(defun greet () \\"hi\\")")',
@@ -154,6 +156,14 @@ def main() -> int:
         ok &= check(s, '(load "/lib/assistant.l")', "", "reload assistant.l (gate UI)")
         ok &= check(s, '(progn (assistant-accept) t)', "t", "assistant-accept callable")
         ok &= check(s, '(progn (assistant-undo) t)', "t", "assistant-undo callable")
+
+        # M3 Task 4: the full OpenRouter agentic loop (OpenAI format, chunked,
+        # tool_calls). The mock asks for eval_lisp(+ 1 2) then answers in prose.
+        ok &= check(s, '(load "/lib/assistant-openrouter.l")', "", "reload openrouter")
+        ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "port for OR loop")
+        ok &= check(s, "(setq *assistant-provider* 'openrouter)", "", "provider openrouter")
+        ok &= check(s, '(assistant-converse "what is 1+2?" (lambda (p) nil))',
+                    "The answer is 3.", "OpenRouter loop runs a tool and finishes")
 
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
