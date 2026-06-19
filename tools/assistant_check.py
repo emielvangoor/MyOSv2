@@ -109,6 +109,16 @@ def main() -> int:
                     '(new-calc-fn 2 3))',
                     "5", "persistent redefinition is NOT applied (still +)")
 
+        # M2 Task 3: the tools.
+        ok &= check(s, '(load "/lib/assistant-tools.l")', "", "load assistant-tools.l")
+        ok &= check(s, '(assistant-tool-run "eval_lisp" (list (cons "code" "(+ 4 5)")))',
+                    "9", "tool eval_lisp computes")
+        ok &= check(s, '(string-search "string-concat" '
+                    '(assistant-tool-run "introspect_image" (list (cons "filter" "string-conc"))))',
+                    "", "tool introspect_image lists symbols")
+        ok &= check(s, '(assistant-tool-run "read_file" (list (cons "path" "/lib/json.l")))',
+                    "json.l", "tool read_file reads /lib/json.l")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:
