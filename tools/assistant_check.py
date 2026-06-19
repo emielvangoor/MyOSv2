@@ -54,6 +54,17 @@ def main() -> int:
             '(string-ref (json-string-value "{\\"text\\":\\"a\\\\nb\\"}" "text") 1)',
             "10", "json-string-value decodes newline escape")
 
+        # M2: recursive json-parse + json-get.
+        ok &= check(s, '(json-get (json-parse "{\\"a\\":1,\\"b\\":\\"hi\\"}") "b")',
+                    '"hi"', "json-parse object string field")
+        ok &= check(s, '(json-get (json-parse "{\\"a\\":42}") "a")',
+                    "42", "json-parse object number field")
+        ok &= check(s, '(nth 1 (json-get (json-parse "{\\"xs\\":[7,8,9]}") "xs"))',
+                    "8", "json-parse nested array")
+        ok &= check(s,
+            '(json-get (json-get (json-parse "{\\"o\\":{\\"k\\":\\"v\\"}}") "o") "k")',
+            '"v"', "json-parse nested object")
+
         # Guest -> host: connect to the mock at the gateway address (10.0.2.2).
         ok &= check(s, "(setq mfd (socket 'stream))", "", "make socket")
         ok &= check(s, f'(connect mfd "10.0.2.2" {port})', "0", "connect to mock 10.0.2.2")
