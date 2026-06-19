@@ -146,7 +146,7 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(BUILD)/user/term.elf $(PREBUILT_E
                    $(BUILD)/user/libtcc1.a $(patsubst %,user/lisp/%.l,$(LISP_FILES)) \
                    user/demo/colors.c | $(BUILD)
 	rm -rf $(BUILD)/rootfs && mkdir -p $(BUILD)/rootfs/test $(BUILD)/rootfs/bin $(BUILD)/rootfs/lib
-	printf '(run-bg "lisp" "-frame")\n(run-bg "term")\n' > $(BUILD)/rootfs/init.l
+	printf '(run-bg "lisp" "-frame")\n' > $(BUILD)/rootfs/init.l
 	printf 'ext2-small-file-ok\n' > $(BUILD)/rootfs/test/small.txt
 	yes 0123456789ABCDEF | head -c 16384 > $(BUILD)/rootfs/test/big.bin
 	# --- /bin: the userland ELFs (init == lisp == lm.elf) ---
