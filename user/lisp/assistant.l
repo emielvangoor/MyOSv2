@@ -7,7 +7,7 @@
 (setq *assistant-endpoint-host* "10.0.2.2")  ; TCP target (the host TLS proxy)
 (setq *assistant-host* "openrouter.ai")      ; HTTP Host: header (the real service)
 (setq *assistant-endpoint-port* 8787)
-(setq *assistant-model* "anthropic/claude-3.5-sonnet")  ; an OpenRouter model slug
+(setq *assistant-model* "anthropic/claude-haiku-4.5")  ; an OpenRouter model slug
 
 (defun assistant--first-line (s)
   (let ((nl (string-search "\n" s)))

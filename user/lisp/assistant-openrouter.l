@@ -16,6 +16,7 @@
 (defun or--headers (blen)
   (list (string-concat "Host: " *assistant-host*)
         "Content-Type: application/json"
+        "User-Agent: MyOSv2-emiel/0.1"
         (string-concat "Authorization: Bearer " (assistant--api-key))
         (string-concat "Content-Length: " blen) "Connection: close"))
 
