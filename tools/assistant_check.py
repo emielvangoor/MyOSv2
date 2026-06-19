@@ -81,6 +81,10 @@ def main() -> int:
         ok &= check(s, '(assistant-stream "say hi" (lambda (piece) nil))',
                     "Hello from the mock.", "assistant-stream assembles reply")
 
+        # UI shim machinery loads (the buffer/streaming command is frame-only,
+        # smoke-tested by hand; here we just confirm the helpers are defined).
+        ok &= check(s, "(stringp (assistant--buffer-name))", "t", "buffer-name builds")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:

@@ -55,3 +55,35 @@ each text_delta, and return the full assembled assistant text."
                                  (on-piece piece)) nil))
             nil))))
     acc))
+
+;;; ---- M1 UI shim: M-x emiel -> stream a reply into the *emiel* buffer -------
+;;; Free-text prompt entry (a minibuffer "ask" key) and the dynamic rename via
+;;; set-assistant-name both land in milestone 4; M1 ships a proof-of-life greet.
+
+(setq *assistant-buffer* nil)
+
+(defun assistant--buffer-name () (string-concat "*" *assistant-name* "*"))
+
+(defun assistant--buffer ()
+  "The (memoised) assistant conversation buffer."
+  (if *assistant-buffer* *assistant-buffer*
+    (progn (setq *assistant-buffer* (make-buffer (assistant--buffer-name)))
+           *assistant-buffer*)))
+
+(defun assistant-ask (prompt)
+  "Open the assistant buffer and stream a reply to PROMPT into it."
+  (let ((b (assistant--buffer)))
+    (set-buffer b) (goto-char (buffer-length))
+    (insert (string-concat "\n> " prompt "\n"))
+    (insert (string-concat *assistant-name* ": "))
+    (redisplay)
+    (assistant-stream prompt
+      (lambda (piece)
+        (set-buffer b) (goto-char (buffer-length)) (insert piece) (redisplay)))
+    (set-buffer b) (goto-char (buffer-length)) (insert "\n") (redisplay)))
+
+(defun emiel ()
+  "M-x emiel: greet the assistant; its reply streams into the *emiel* buffer.
+(Free-text prompt entry arrives in milestone 4.)"
+  (interactive)
+  (assistant-ask "Introduce yourself in one short sentence."))

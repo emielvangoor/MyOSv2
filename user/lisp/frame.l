@@ -22,6 +22,9 @@
 (load "/lib/fr-mini.l")
 (load "/lib/fr-help.l")
 (load "/lib/fr-term.l")
+(load "/lib/json.l")            ; the assistant (Phase 32): JSON + HTTP/SSE + agent
+(load "/lib/http.l")
+(load "/lib/assistant.l")
 
 ;; ---- ANSI SGR escapes -> face text properties (the ansi-color.el analog) --
 ;;
