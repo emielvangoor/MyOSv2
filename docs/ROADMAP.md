@@ -683,6 +683,56 @@ bytes (worked around by reading small pipe chunks).
 
 ---
 
+## Phase 32 — Claude in the image: a native AI agent that rewrites the OS  ⏳ PLANNED
+
+Make Claude a **co-resident of the live Lisp image**: describe a feature in plain
+language and the OS grows it, because the agent generates Lisp and the running
+image `eval`s it — no compile, no link, no reboot. Need a calculator? It didn't
+exist a second ago and now it does. The thing a Unix process can't be (it can't
+`eval` itself): **the OS as the agent.** The assistant's name lives in a Lisp
+variable (`*assistant-name*`, default `"emiel"`) and is overridable from inside
+the image; `M-x emiel` talks to it. **Spec:**
+`docs/superpowers/specs/2026-06-19-assistant-in-the-image-design.md`
+
+Decision: a **native Lisp agent** (HTTPS client to the Anthropic Messages API +
+a tool-execution loop), NOT the Node-based Claude Code binary — that needs real
+threads+futex, JIT-executable mmap, libuv's epoll/eventfd/timerfd backend, a C++
+runtime and BoringSSL (a multi-month port, and still not "the OS as the agent").
+Safety is **hybrid-by-scope**: ephemeral generated forms (a fresh `defun`, a
+buffer) auto-eval instantly; persistent ones (file writes, redefining an existing
+symbol, permanent commands) pause for a one-key preview+accept, with per-change
+undo. Kept features persist to `/lib/claude/` and survive reboot — the OS
+accretes the features you ask for.
+
+Milestones (each its own spec→plan→build→notes cycle, gated on `make test`):
+
+- ⏳ **32.1 — proof of life** *(no kernel work)*: a Lisp HTTP/JSON client
+  (`http.l` + `json.l`, streamed to avoid the 2048-byte `string-concat` cap) and
+  a minimal `assistant-converse` loop that streams a real Messages API reply into
+  the `*emiel*` buffer — via a **host-side TLS-terminating proxy** on the
+  user-net gateway (`10.0.2.2`), so there is zero crypto in the OS on day one.
+  Verified by `tools/assistant_check.py` against a deterministic mock SSE
+  endpoint (hermetic, tokenless).
+- ⏳ **32.2 — tools + the apply gate**: `introspect-image` (symbols + living
+  source), `eval-lisp`, file + busybox tools; the ephemeral/persistent
+  classifier, per-symbol-snapshot undo, and `/lib/claude` boot-manifest
+  persistence. "Make me a calculator" creates and runs it; a `frame-tick`
+  redefinition is gated and undoable.
+- ⏳ **32.3 — TLS (drop the proxy)**: vendor **BearSSL** (small, pure-C, no-heap,
+  bare-metal-friendly) over the existing sockets, add a `getrandom` syscall to
+  seed it, embed trust anchors; flip `*assistant-endpoint*` to
+  `https://api.anthropic.com`. A direct HTTPS turn with no proxy. (Caveats:
+  plaintext API key on disk, weak VM entropy — both noted in the spec, neither
+  blocks the flow.)
+- ⏳ **32.4 — polish**: `assistant-mode` niceties, a minibuffer "ask" key
+  (one-line "just do X" from anywhere), the boot manifest, richer tools
+  (apply-patch-style edits, multi-file features).
+
+Builds on: the Lisp machine (24), sockets + TCP/IP (21–22), DNS (`resolve`),
+M-x vterm / busybox (31), the mode system (28), text properties + faces (30).
+
+---
+
 ## Later / advanced (capable-OS extensions, after the capstone)
 
 - **SMP (multicore).** Secondary-core boot (PSCI `CPU_ON`), per-CPU data,
