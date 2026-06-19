@@ -626,6 +626,9 @@ static Lobj cook_event(struct input_event *evp)
             return 0;
         }
         if (ev.value != 1) { return 0; }                 /* key releases */
+        if (ev.code == 28 && ck_shift) {                 /* Shift-Enter -> meta-RET */
+            return make_cons(intern("meta"), make_cons(FIXNUM(10), Qnil));
+        }
         if (ev.code < sizeof(keymap_lo)) {
             char c = (ck_shift ? keymap_hi : keymap_lo)[ev.code];
             if (c) {

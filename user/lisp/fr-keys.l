@@ -141,8 +141,10 @@ Minor maps take precedence over the major mode (Emacs order)."
     ((and (vterm-active-p) (not (vterm-frame-key-p ev)))
      (vterm-feed-event ev))
     ((eq (car ev) 'meta)
-     (if (= (cadr ev) 120) (mb-start 'mx)                 ; M-x
-       (run-mode-or-global ev)))
+     (cond ((= (cadr ev) 120) (mb-start 'mx))             ; M-x
+           ((= (cadr ev) 10)                              ; Shift-RET: literal newline
+            (if (read-only-p) (echo "buffer is read-only") (insert (string-from-char 10))))
+           (t (run-mode-or-global ev))))
     (pending-ch
      (setq pending-ch nil)
      (if (run-key ev help-keymap) nil (echo "unbound C-h key")))

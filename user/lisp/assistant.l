@@ -53,9 +53,10 @@ back until it answers in prose. Returns the final assistant text."
                 (or--append-tool messages tid tname tin result)))))))
     final))
 
-;;; ---- M1 UI shim: M-x emiel -> stream a reply into the *emiel* buffer -------
-;;; Free-text prompt entry (a minibuffer "ask" key) and the dynamic rename via
-;;; set-assistant-name both land in milestone 4; M1 ships a proof-of-life greet.
+;;; ---- M-x emiel: an interactive conversation buffer -------------------------
+;;; assistant-mode: RET sends the typed prompt to the agent; Shift-RET (cooked to
+;;; meta-RET by cook_event) inserts a literal newline. The user's pending input
+;;; runs from the buffer-local 'assistant-input-start to the buffer end.
 
 (setq *assistant-buffer* nil)
 
@@ -67,24 +68,58 @@ back until it answers in prose. Returns the final assistant text."
     (progn (setq *assistant-buffer* (make-buffer (assistant--buffer-name)))
            *assistant-buffer*)))
 
-(defun assistant-ask (prompt)
-  "Open the assistant buffer and stream a reply to PROMPT into it."
-  (let ((b (assistant--buffer)))
-    (set-buffer b) (goto-char (buffer-length))
-    (insert (string-concat "\n> " prompt "\n"))
-    (insert (string-concat *assistant-name* ": "))
-    (redisplay)
-    (assistant-converse prompt              ; the agentic loop -- tools + gate
-      (lambda (piece)
-        (set-buffer b) (goto-char (buffer-length)) (insert piece) (redisplay)))
-    (set-buffer b) (goto-char (buffer-length)) (insert "\n") (redisplay)
-    (assistant-show-pending)))
+(defun assistant--prompt ()
+  "Write a fresh input prompt at the end and record where the user's input begins."
+  (let ((b (current-buffer)))
+    (goto-char (buffer-length))
+    (insert "> ")
+    (buffer-local-set b 'assistant-input-start (buffer-length))
+    (redisplay)))
+
+(defun assistant--blank (s)
+  "t if S is empty or only whitespace."
+  (let ((n (string-length s)) (i 0) (blank t))
+    (while (< i n)
+      (let ((c (string-ref s i)))
+        (if (or (= c 32) (= c 10) (= c 13) (= c 9)) nil (setq blank nil)))
+      (setq i (+ i 1)))
+    blank))
+
+(defun assistant-self-insert (ch) (insert (string-from-char ch)))
+
+(defun assistant-send ()
+  "RET in assistant-mode: send the typed prompt and stream the reply, then lay a
+fresh prompt. A blank input just redraws the prompt."
+  (let ((b (current-buffer)))
+    (let ((start (buffer-local-get b 'assistant-input-start 0)))
+      (let ((prompt (buffer-substring start (buffer-length))))
+        (if (assistant--blank prompt) (assistant--prompt)
+          (progn
+            (goto-char (buffer-length))
+            (insert (string-concat "\n" *assistant-name* ": "))
+            (redisplay)
+            (assistant-converse prompt
+              (lambda (piece)
+                (set-buffer b) (goto-char (buffer-length)) (insert piece) (redisplay)))
+            (set-buffer b) (goto-char (buffer-length)) (insert "\n\n")
+            (assistant-show-pending)
+            (assistant--prompt)))))))
+
+(defun assistant-return () (assistant-send))
+
+(register-mode 'assistant-mode
+  (list 'fundamental-mode nil 'assistant-self-insert 'assistant-return nil
+        "Assistant mode: RET sends the prompt; Shift-RET inserts a newline."
+        "Assistant"))
 
 (defun emiel ()
-  "M-x emiel: greet the assistant; its reply streams into the *emiel* buffer.
-(Free-text prompt entry arrives in milestone 4.)"
+  "M-x emiel: open an interactive conversation with the assistant. Type a prompt
+and press RET to send; Shift-RET inserts a newline."
   (interactive)
-  (assistant-ask "Introduce yourself in one short sentence."))
+  (let ((b (assistant--buffer)))
+    (set-buffer b)
+    (set-major-mode b 'assistant-mode)
+    (assistant--prompt)))
 
 ;;; ---- gate UI (Phase 32.2): review/accept persistent changes, undo ----------
 
