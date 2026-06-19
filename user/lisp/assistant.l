@@ -155,13 +155,42 @@ back until it answers in prose. Returns the final assistant text."
     (insert (string-concat "\n> " prompt "\n"))
     (insert (string-concat *assistant-name* ": "))
     (redisplay)
-    (assistant-stream prompt
+    (assistant-converse prompt              ; the agentic loop -- tools + gate
       (lambda (piece)
         (set-buffer b) (goto-char (buffer-length)) (insert piece) (redisplay)))
-    (set-buffer b) (goto-char (buffer-length)) (insert "\n") (redisplay)))
+    (set-buffer b) (goto-char (buffer-length)) (insert "\n") (redisplay)
+    (assistant-show-pending)))
 
 (defun emiel ()
   "M-x emiel: greet the assistant; its reply streams into the *emiel* buffer.
 (Free-text prompt entry arrives in milestone 4.)"
   (interactive)
   (assistant-ask "Introduce yourself in one short sentence."))
+
+;;; ---- gate UI (Phase 32.2): review/accept persistent changes, undo ----------
+
+(defun assistant-show-pending ()
+  "Insert any queued persistent forms into *emiel* for review."
+  (let ((b (assistant--buffer)))
+    (set-buffer b) (goto-char (buffer-length))
+    (if *assistant-pending*
+        (foreach (lambda (p)
+                   (insert (string-concat "\n[pending] " (car p)
+                            "\n  M-x emiel-accept  /  M-x emiel-undo\n")))
+                 *assistant-pending*)
+      nil)
+    (redisplay)))
+
+(defun emiel-accept ()
+  "M-x emiel-accept: apply the oldest queued persistent change."
+  (interactive)
+  (let ((b (assistant--buffer)))
+    (set-buffer b) (goto-char (buffer-length))
+    (insert (string-concat "\n" (assistant-accept) "\n")) (redisplay)))
+
+(defun emiel-undo ()
+  "M-x emiel-undo: roll back the most recent applied redefinition."
+  (interactive)
+  (let ((b (assistant--buffer)))
+    (set-buffer b) (goto-char (buffer-length))
+    (insert (string-concat "\n" (assistant-undo) "\n")) (redisplay)))

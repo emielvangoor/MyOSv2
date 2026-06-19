@@ -136,6 +136,11 @@ def main() -> int:
                     '(at-read-file (list (cons "path" "/lib/claude/manifest.l"))))',
                     "", "manifest records the feature")
 
+        # M2 Task 7: gate UI machinery loads (the buffer commands are frame-only).
+        ok &= check(s, '(load "/lib/assistant.l")', "", "reload assistant.l (gate UI)")
+        ok &= check(s, '(progn (assistant-accept) t)', "t", "assistant-accept callable")
+        ok &= check(s, '(progn (assistant-undo) t)', "t", "assistant-undo callable")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:
