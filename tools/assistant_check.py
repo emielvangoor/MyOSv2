@@ -119,6 +119,14 @@ def main() -> int:
         ok &= check(s, '(assistant-tool-run "read_file" (list (cons "path" "/lib/json.l")))',
                     "json.l", "tool read_file reads /lib/json.l")
 
+        # M2 Task 5: the agentic loop. The mock asks for eval_lisp(+ 1 2); the OS
+        # runs it, sends tool_result, and the mock returns "The answer is 3."
+        ok &= check(s, '(load "/lib/assistant-tools.l")', "", "reload tools for loop")
+        ok &= check(s, '(load "/lib/assistant.l")', "", "reload assistant.l")
+        ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "port for loop")
+        ok &= check(s, '(assistant-converse "what is 1+2?" (lambda (p) nil))',
+                    "The answer is 3.", "agentic loop runs a tool and finishes")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:
