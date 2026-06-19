@@ -59,6 +59,21 @@ def main() -> int:
         ok &= check(s, f'(connect mfd "10.0.2.2" {port})', "0", "connect to mock 10.0.2.2")
         ok &= check(s, "(close mfd)", "", "close mock socket")
 
+        # http-post-sse: drive the mock, collect each frame's text into *seen*.
+        ok &= check(s, '(load "/lib/http.l")', "", "load http.l")
+        setup = (
+          '(progn (setq seen "") '
+          '(http-post-sse "10.0.2.2" %d "/v1/messages" '
+          '  (list "Host: 10.0.2.2" "Content-Type: application/json" '
+          '        "Content-Length: 2" "Connection: close") '
+          '  (list "{}") '
+          '  (lambda (ev data) '
+          '    (if (equal ev "content_block_delta") '
+          '        (setq seen (string-concat seen (json-string-value data "text"))) nil))) '
+          ' seen)'
+        ) % port
+        ok &= check(s, setup, "Hello from the mock.", "http-post-sse streams SSE frames")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:
