@@ -74,6 +74,13 @@ def main() -> int:
         ) % port
         ok &= check(s, setup, "Hello from the mock.", "http-post-sse streams SSE frames")
 
+        # assistant-stream: a full turn against the mock returns the assembled reply.
+        ok &= check(s, '(load "/lib/assistant.l")', "", "load assistant.l")
+        ok &= check(s, '(setq *assistant-endpoint-host* "10.0.2.2")', "", "set host")
+        ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "set port")
+        ok &= check(s, '(assistant-stream "say hi" (lambda (piece) nil))',
+                    "Hello from the mock.", "assistant-stream assembles reply")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:
