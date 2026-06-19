@@ -38,6 +38,19 @@ def main() -> int:
         # a plain ASCII char is unchanged.
         ok &= check(s, '(json-escape "abc")', '"abc"', "json-escape passthrough")
 
+        # json-string-value: pull a decoded string field out of a JSON blob.
+        ok &= check(s,
+            '(json-string-value "{\\"type\\":\\"text_delta\\",\\"text\\":\\"Hi there\\"}" "text")',
+            '"Hi there"', "json-string-value reads text field")
+        # missing key -> nil
+        ok &= check(s,
+            '(json-string-value "{\\"a\\":\\"b\\"}" "text")',
+            "nil", "json-string-value missing key -> nil")
+        # an escaped newline inside the value decodes to one char (10).
+        ok &= check(s,
+            '(string-ref (json-string-value "{\\"text\\":\\"a\\\\nb\\"}" "text") 1)',
+            "10", "json-string-value decodes newline escape")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:
