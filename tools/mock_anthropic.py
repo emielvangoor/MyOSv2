@@ -17,7 +17,7 @@ def _sse(piece):
 
 
 def _read_request(conn):
-    """Read headers + any Content-Length body, so we can branch on its content."""
+    """Read headers + any Content-Length body. Returns (head_bytes, body_bytes)."""
     data = b""
     while b"\r\n\r\n" not in data:
         chunk = conn.recv(65536)
@@ -35,7 +35,22 @@ def _read_request(conn):
         if not chunk:
             break
         body += chunk
-    return body
+    return head, body
+
+
+def _chunked(payload):
+    """Frame PAYLOAD (a str) as an HTTP chunked text/event-stream, split into
+    ~40-byte chunks so the decoder is exercised across chunk boundaries."""
+    out = (b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+           b"Transfer-Encoding: chunked\r\n\r\n")
+    data = payload.encode()
+    i = 0
+    while i < len(data):
+        piece = data[i:i + 40]
+        out += ("%x\r\n" % len(piece)).encode() + piece + b"\r\n"
+        i += 40
+    out += b"0\r\n\r\n"
+    return out
 
 
 def _tool_use_stream():
@@ -64,8 +79,12 @@ def _final_stream():
 
 def _serve_conn(conn):
     try:
-        body = _read_request(conn)
-        if b"tool_result" in body:            # second turn -> final prose
+        head, body = _read_request(conn)
+        path = head.split(b"\r\n", 1)[0].split(b" ")[1] if head else b""
+        if path == b"/chunked":               # chunked-decoding test (Anthropic SSE)
+            payload = "".join(_sse(p) for p in REPLY_PIECES)
+            conn.sendall(_chunked(payload))
+        elif b"tool_result" in body:          # second turn -> final prose
             conn.sendall(_final_stream().encode())
         elif b'"tools"' in body:              # tools-enabled turn -> ask for a tool
             conn.sendall(_tool_use_stream().encode())

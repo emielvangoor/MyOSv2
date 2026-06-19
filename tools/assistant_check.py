@@ -123,6 +123,16 @@ def main() -> int:
                     '(at-read-file (list (cons "path" "/lib/json.l")))) 2048)',
                     "t", "read_file returns >2048 bytes (no cap)")
 
+        # M3 Task 1: chunked transfer decoding (the /chunked path is chunked SSE).
+        chunked = (
+          '(progn (setq seen "") '
+          '(http-post-sse "10.0.2.2" %d "/chunked" '
+          '  (list "Host: 10.0.2.2" "Content-Length: 2" "Connection: close") (list "{}") '
+          '  (lambda (ev data) (if (equal ev "content_block_delta") '
+          '    (setq seen (string-concat seen (json-string-value data "text"))) nil))) seen)'
+        ) % port
+        ok &= check(s, chunked, "Hello from the mock.", "http decodes chunked SSE")
+
         # M2 Task 5: the agentic loop. The mock asks for eval_lisp(+ 1 2); the OS
         # runs it, sends tool_result, and the mock returns "The answer is 3."
         ok &= check(s, '(load "/lib/assistant-tools.l")', "", "reload tools for loop")
