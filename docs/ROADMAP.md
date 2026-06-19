@@ -706,13 +706,17 @@ accretes the features you ask for.
 
 Milestones (each its own spec→plan→build→notes cycle, gated on `make test`):
 
-- ⏳ **32.1 — proof of life** *(no kernel work)*: a Lisp HTTP/JSON client
-  (`http.l` + `json.l`, streamed to avoid the 2048-byte `string-concat` cap) and
-  a minimal `assistant-converse` loop that streams a real Messages API reply into
-  the `*emiel*` buffer — via a **host-side TLS-terminating proxy** on the
-  user-net gateway (`10.0.2.2`), so there is zero crypto in the OS on day one.
-  Verified by `tools/assistant_check.py` against a deterministic mock SSE
-  endpoint (hermetic, tokenless).
+- ✅ **32.1 — proof of life** *(no kernel work beyond a dotted-quad
+  `net_resolve`)*: a Lisp HTTP/JSON client (`http.l` + `json.l`, streamed to
+  avoid the 2048-byte `string-concat` cap) and `assistant-stream`, which streams
+  a real Messages API reply into the `*emiel*` buffer — via a **host-side
+  TLS-terminating proxy** on the user-net gateway (`10.0.2.2`), so there is zero
+  crypto in the OS on day one. `M-x emiel` greets you; `*assistant-name*`
+  (default `"emiel"`) names the buffer + reply label. Verified by
+  `tools/assistant_check.py` against a deterministic mock SSE endpoint (hermetic,
+  tokenless) **and** a live-frame screendump. Plan:
+  `docs/superpowers/plans/2026-06-19-assistant-milestone-1.md` · Notes:
+  `docs/notes/phase-32.md`.
 - ⏳ **32.2 — tools + the apply gate**: `introspect-image` (symbols + living
   source), `eval-lisp`, file + busybox tools; the ephemeral/persistent
   classifier, per-symbol-snapshot undo, and `/lib/claude` boot-manifest
