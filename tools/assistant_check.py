@@ -96,6 +96,19 @@ def main() -> int:
         # smoke-tested by hand; here we just confirm the helpers are defined).
         ok &= check(s, "(stringp (assistant--buffer-name))", "t", "buffer-name builds")
 
+        # M2 Task 2: the apply gate.
+        ok &= check(s, '(load "/lib/assistant-apply.l")', "", "load assistant-apply.l")
+        ok &= check(s, '(assistant-apply "(defun new-calc-fn (a b) (+ a b))")',
+                    "applied", "ephemeral defun auto-applies")
+        ok &= check(s, "(new-calc-fn 2 3)", "5", "applied function is callable")
+        ok &= check(s, '(assistant-classify "(defun assistant-apply (x) x)")',
+                    "persistent", "redefining existing fn -> persistent")
+        ok &= check(s, '(assistant-classify "(write-file \\"/x\\" \\"y\\")")',
+                    "persistent", "file write -> persistent")
+        ok &= check(s, '(progn (assistant-apply "(defun new-calc-fn (a b) (* a b))") '
+                    '(new-calc-fn 2 3))',
+                    "5", "persistent redefinition is NOT applied (still +)")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:
