@@ -47,8 +47,50 @@ Put your key in `/lib/claude/api-key` (one line), then in the OS:
 - `json-escape` / `json-string-value` inherit the 2048-byte `string-concat` cap
   (fine for short M1 prompts; M2 streams).
 
-### Next (32.2)
+## 32.2 — tools + the apply gate  ✅ DONE
 
-Tools (`introspect-image`, `eval-lisp`, file + bash) and the hybrid apply gate
-(ephemeral auto-eval, persistent preview+accept) with undo and `/lib/claude`
-persistence — where "make me a calculator" first works.
+The proof-of-life stream became a real agent: Claude calls tools, the OS runs
+them, and generated Lisp installs itself into the live image. Plan:
+`docs/superpowers/plans/2026-06-19-assistant-milestone-2.md`.
+
+### What shipped
+
+- `json.l` — a real recursive `json-parse` + `json-get` (decode tool inputs),
+  alongside the M1 SSE text extractor.
+- `assistant-apply.l` — **the hybrid gate**: `assistant-classify` (a fresh defun
+  / plain computation is *ephemeral* → auto-eval; redefining an existing
+  function or any file/registry write is *persistent* → queued), `assistant-apply`,
+  `assistant-accept`, and `assistant-undo` (per-symbol snapshot rollback). Plus
+  `/lib/claude` persistence (`assistant-persist` + a boot manifest loaded by
+  `assistant-load-all`).
+- `assistant-tools.l` — the tools: `eval_lisp` (gated), `introspect_image`
+  (symbols + kind), `function_source` (living source), `read_file`, `write_file`
+  (gated), `run_bash` (busybox) + the JSON tool schemas.
+- `assistant.l` — `assistant-converse`: the agentic loop. Parses streamed
+  `tool_use` blocks (id/name + `input_json_delta` fragments), runs the tool,
+  appends `tool_use` + `tool_result` turns, loops until the model answers in
+  prose. `M-x emiel` now drives this loop; `M-x emiel-accept` / `emiel-undo`
+  manage the gate.
+- New kernel-adjacent: a `mkdir` Lisp primitive (`SYS_MKDIRAT` wrapper) so
+  `/lib/claude` can be created.
+- Verified: `tools/assistant_check.py` against the two-turn mock (tool_use →
+  run → tool_result → final), **and** a live-frame screendump of the loop
+  (`docs/images/phase-32-agent.png`): `M-x emiel` → `eval_lisp(+ 1 2)` →
+  "The answer is 3.".
+
+### Known limits (M2)
+
+- Tool results / `read_file` / `introspect` are built with `string-concat`, so
+  they cap at ~2048 bytes. Lifting this wants a **dynamic `string-concat`** (a
+  worthwhile `lm_core.c` change) — then file reads, the transcript, and JSON
+  escaping all stop truncating.
+- The classifier is deliberately conservative; a novel persistent form that
+  doesn't name a known write-op could slip through as ephemeral — revisit the
+  rule as real usage surfaces cases.
+- The real API's chunked encoding still needs `http.l` de-chunking or a
+  de-chunking proxy (carried from M1) before going fully proxy-free.
+
+### Next (32.3)
+
+Vendor BearSSL + a `getrandom` syscall, embed trust anchors, and flip
+`*assistant-endpoint*` to `https://api.anthropic.com` — drop the proxy.

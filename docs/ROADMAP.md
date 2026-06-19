@@ -717,11 +717,15 @@ Milestones (each its own spec→plan→build→notes cycle, gated on `make test`
   tokenless) **and** a live-frame screendump. Plan:
   `docs/superpowers/plans/2026-06-19-assistant-milestone-1.md` · Notes:
   `docs/notes/phase-32.md`.
-- ⏳ **32.2 — tools + the apply gate**: `introspect-image` (symbols + living
-  source), `eval-lisp`, file + busybox tools; the ephemeral/persistent
-  classifier, per-symbol-snapshot undo, and `/lib/claude` boot-manifest
-  persistence. "Make me a calculator" creates and runs it; a `frame-tick`
-  redefinition is gated and undoable.
+- ✅ **32.2 — tools + the apply gate**: `introspect_image` (symbols + living
+  source), `eval_lisp`, `function_source`, `read_file`, `write_file`, `run_bash`;
+  the agentic `assistant-converse` loop (parse streamed `tool_use`, run, loop
+  `tool_result`); the ephemeral/persistent classifier with per-symbol-snapshot
+  undo; `/lib/claude` boot-manifest persistence (+ a `mkdir` primitive). A fresh
+  defun auto-applies; redefining an existing function is gated and undoable.
+  Verified by `tools/assistant_check.py` (two-turn tool_use mock) and a live
+  screendump of the loop (`docs/images/phase-32-agent.png`). Notes:
+  `docs/notes/phase-32.md`.
 - ⏳ **32.3 — TLS (drop the proxy)**: vendor **BearSSL** (small, pure-C, no-heap,
   bare-metal-friendly) over the existing sockets, add a `getrandom` syscall to
   seed it, embed trust anchors; flip `*assistant-endpoint*` to
