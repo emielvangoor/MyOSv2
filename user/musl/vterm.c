@@ -218,9 +218,20 @@ int main(int argc, char **argv)
         setsid();
         dup2(slave, 0); dup2(slave, 1); dup2(slave, 2);
         if (slave > 2) { close(slave); }
+        // Make our own (new) process group the tty's FOREGROUND group BEFORE we
+        // exec the shell, so busybox ash's job-control startup -- which spins in
+        // `while (tcgetpgrp(tty) != getpgrp()) ...` until it is foreground --
+        // sees a match immediately instead of hanging (there is no controlling-
+        // terminal race because we set it here, in the child, pre-exec).
+        tcsetpgrp(0, getpid());
         setenv("TERM", "xterm", 1);
+        // The native MyOSv2 shell. It runs full-screen TUIs cleanly -- busybox
+        // vi/less exec from it and take over the buffer. (busybox `sh` itself
+        // still hangs over this pty: ash's interactive job control wants a real
+        // controlling terminal -- sessions, TIOCSCTTY, SIGTTIN/SIGTTOU -- which
+        // the pty does not implement yet. Tracked as a follow-up.)
         char *av[] = { "sh", NULL };
-        execv("/bin/sh", av);                 // native shell (runs busybox vi/less)
+        execv("/bin/sh", av);
         _exit(127);
     }
     close(slave);
