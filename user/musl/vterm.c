@@ -137,6 +137,11 @@ static int color_code(const VTermColor *c)
 // Emit every dirty row as runs of same-style cells, then the cursor, then `f`.
 static void flush_damage(void)
 {
+    // Deliver any damage libvterm is still holding under VTERM_DAMAGE_ROW merge.
+    // Without this, a single echoed keystroke only moves the cursor (an unmerged
+    // callback) while its cell-content damage stays pending until some later
+    // multi-row write evicts it -- so typed glyphs stay invisible until RET.
+    vterm_screen_flush_damage(vs);
     for (int r = 0; r < ROWS; r++) {
         if (!dirty[r]) { continue; }
         dirty[r] = 0;
