@@ -168,6 +168,10 @@ $(BUILD)/disk.img: $(USER_ELFS) $(MUSL_ELFS) $(BUILD)/user/vterm.elf $(PREBUILT_
 	# --- /lib: the Lisp library + the crt tcc links against ---
 	for f in $(LISP_FILES); do cp user/lisp/$$f.l $(BUILD)/rootfs/lib/$$f.l; done
 	cp $(BUILD)/user/mycrt.elf $(BUILD)/rootfs/lib/mycrt.o
+	# --- the assistant's OpenRouter key, from the gitignored .openrouter-key
+	#     (so it survives `make`'s rm -rf rootfs). Optional: absent -> no key. ---
+	mkdir -p $(BUILD)/rootfs/lib/claude
+	if [ -f .openrouter-key ]; then cp .openrouter-key $(BUILD)/rootfs/lib/claude/api-key; fi
 	# --- seed C sources; persist once edited on-device ---
 	printf '#include <stdio.h>\nint main(void){\n  printf("hello from tcc on myosv2: x=%%d s=%%s\\n", 42, "ok");\n  return 0;\n}\n' > $(BUILD)/rootfs/hello.c
 	printf 'void puts(const char *);\nint main(void){\n  puts("hello from tcc on myosv2\\n");\n  return 0;\n}\n' > $(BUILD)/rootfs/hellobare.c

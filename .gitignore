@@ -5,3 +5,6 @@ compile_commands.json
 __pycache__/
 .superpowers/
 disk.img
+
+# OpenRouter API key (staged into the disk by the Makefile; never commit)
+.openrouter-key

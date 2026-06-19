@@ -24,6 +24,12 @@
 
 (defun http--is-chunked (hdr) (if (string-search "chunked" hdr) t nil))
 
+(defun http--ok200 (hdr)
+  "t if the status line (first line of the header block HDR) is a 200."
+  (let ((nl (string-search "\n" hdr)))
+    (let ((line (if nl (substring hdr 0 nl) hdr)))
+      (if (string-search " 200" line) t nil))))
+
 (defun http--hex (s)               ; leading hex digits -> integer (ignores ;ext)
   (let ((n (string-length s)) (i 0) (val 0) (go t))
     (while (and go (< i n))
@@ -64,7 +70,7 @@
 (defun http--read-stream (fd on-event)
   "Read FD to EOF, strip headers (decoding chunked transfer-encoding), then frame
 SSE lines from the body and dispatch each frame."
-  (let ((raw "") (hdr-done nil) (chunked nil) (cstate -1)
+  (let ((raw "") (hdr-done nil) (ok200 t) (chunked nil) (cstate -1)
         (body "") (ev "message") (data "") (go t))
     (while go
       (let ((chunk (fd-read fd 4096)))
@@ -75,6 +81,7 @@ SSE lines from the body and dispatch each frame."
                 (let ((b (string-search (string-concat http-crlf http-crlf) raw)))
                   (if b (progn
                           (setq chunked (http--is-chunked (substring raw 0 b)))
+                          (setq ok200 (http--ok200 (substring raw 0 b)))
                           (setq raw (substring raw (+ b 4) (string-length raw)))
                           (setq hdr-done t))
                     nil))
@@ -86,26 +93,31 @@ SSE lines from the body and dispatch each frame."
                         (setq body (string-concat body (nth 0 r)))
                         (setq raw (nth 1 r)) (setq cstate (nth 2 r)))
                     (progn (setq body (string-concat body raw)) (setq raw "")))
-                  (let ((nl (string-search "\n" body)))
-                    (while nl
-                      (let ((line (http--strip-cr (substring body 0 nl))))
-                        (setq body (substring body (+ nl 1) (string-length body)))
-                        (cond
-                          ((= (string-length line) 0)
-                           (http--dispatch ev data on-event)
-                           (setq ev "message") (setq data ""))
-                          ((and (>= (string-length line) 6)
-                                (equal (substring line 0 6) "event:"))
-                           (setq ev (http--trim-leading-space
-                                      (substring line 6 (string-length line)))))
-                          ((and (>= (string-length line) 5)
-                                (equal (substring line 0 5) "data:"))
-                           (setq data (http--trim-leading-space
-                                        (substring line 5 (string-length line)))))
-                          (t nil)))
-                      (setq nl (string-search "\n" body)))))
+                  ;; A non-200 reply is a plain error body, not SSE: hold it whole
+                  ;; and report it at EOF so the user sees WHAT went wrong.
+                  (if ok200
+                    (let ((nl (string-search "\n" body)))
+                      (while nl
+                        (let ((line (http--strip-cr (substring body 0 nl))))
+                          (setq body (substring body (+ nl 1) (string-length body)))
+                          (cond
+                            ((= (string-length line) 0)
+                             (http--dispatch ev data on-event)
+                             (setq ev "message") (setq data ""))
+                            ((and (>= (string-length line) 6)
+                                  (equal (substring line 0 6) "event:"))
+                             (setq ev (http--trim-leading-space
+                                        (substring line 6 (string-length line)))))
+                            ((and (>= (string-length line) 5)
+                                  (equal (substring line 0 5) "data:"))
+                             (setq data (http--trim-leading-space
+                                          (substring line 5 (string-length line)))))
+                            (t nil)))
+                        (setq nl (string-search "\n" body))))
+                    nil))
               nil)))))
-    (http--dispatch ev data on-event)))   ; flush a final frame with no blank line
+    (if ok200 (http--dispatch ev data on-event)      ; flush a trailing SSE frame
+      (on-event "http-error" body))))                ; or report the error body
 
 (defun http-post-sse (host port path header-lines body-parts on-event)
   "POST to HOST:PORT PATH; HEADER-LINES are \"Key: value\" strings, BODY-PARTS a

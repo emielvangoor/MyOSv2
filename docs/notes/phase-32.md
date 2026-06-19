@@ -116,10 +116,17 @@ Run a TLS proxy on the host (the guest reaches it at `10.0.2.2`):
 
     socat TCP-LISTEN:8787,reuseaddr,fork OPENSSL:openrouter.ai:443
 
-or a tiny Python `ssl` forwarder. Put your OpenRouter key (`sk-or-...`) in
-`/lib/claude/api-key` (one line), set a model with
-`(setq *assistant-model* "anthropic/claude-3.5-sonnet")`, then `M-x emiel`.
-(Chunked is handled in-OS, so a passthrough proxy is fine.)
+or a tiny Python `ssl` forwarder. Put your OpenRouter key (`sk-or-...`) in a
+**gitignored `.openrouter-key`** at the repo root — the Makefile stages it into
+`/lib/claude/api-key` on every build, so it survives `make`'s `rm -rf rootfs`
+(never commit the key; `.openrouter-key` is in `.gitignore`). Default model is
+`anthropic/claude-haiku-4.5`; change with `(setq *assistant-model* "...")`. Then
+`M-x emiel`. (Chunked is handled in-OS, so a passthrough proxy is fine.)
+
+If something's wrong, the agent now **says so** instead of going blank: a missing
+proxy → "could not reach the endpoint -- is the TLS proxy running?"; a 401/404 →
+the API's error message (e.g. a bad model slug or key). `http.l` parses the HTTP
+status and routes a non-200 body to an `http-error` event.
 
 ### Next (32.4)
 

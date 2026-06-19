@@ -31,27 +31,39 @@
 ;; One OpenRouter round -> (text tool-id tool-name tool-args-json).
 (defun or--round (messages-json on-piece)
   (let ((parts (or--request-parts messages-json))
-        (text "") (tid nil) (tname nil) (tin ""))
-    (http-post-sse *assistant-endpoint-host* *assistant-endpoint-port*
+        (text "") (tid nil) (tname nil) (tin "") (err nil))
+    (let ((ok (http-post-sse *assistant-endpoint-host* *assistant-endpoint-port*
       "/api/v1/chat/completions" (or--headers (ac--blen parts)) parts
       (lambda (ev data)
-        (if (equal data "[DONE]") nil
-          (let ((choice (car (json-get (json-parse data) "choices"))))
-            (if choice
-                (let ((delta (json-get choice "delta")))
-                  (let ((c (json-get delta "content")))
-                    (if (and c (> (string-length c) 0))
-                        (progn (setq text (string-concat text c)) (on-piece c)) nil))
-                  (let ((tcs (json-get delta "tool_calls")))
-                    (if tcs
-                        (let ((tc (car tcs)))
-                          (let ((idv (json-get tc "id"))) (if idv (setq tid idv) nil))
-                          (let ((fn (json-get tc "function")))
-                            (let ((nm (json-get fn "name"))) (if nm (setq tname nm) nil))
-                            (let ((ag (json-get fn "arguments")))
-                              (if ag (setq tin (string-concat tin ag)) nil))))
-                      nil)))
-              nil)))))
+        (cond
+          ((equal ev "http-error")           ; non-200: show the API's message
+           (let ((m (json-string-value data "message")))
+             (setq err (string-concat "[error] " (if m m data)))))
+          ((equal data "[DONE]") nil)
+          (t (let ((choice (car (json-get (json-parse data) "choices"))))
+               (if choice
+                   (let ((delta (json-get choice "delta")))
+                     (let ((c (json-get delta "content")))
+                       (if (and c (> (string-length c) 0))
+                           (progn (setq text (string-concat text c)) (on-piece c)) nil))
+                     (let ((tcs (json-get delta "tool_calls")))
+                       (if tcs
+                           (let ((tc (car tcs)))
+                             (let ((idv (json-get tc "id"))) (if idv (setq tid idv) nil))
+                             (let ((fn (json-get tc "function")))
+                               (let ((nm (json-get fn "name"))) (if nm (setq tname nm) nil))
+                               (let ((ag (json-get fn "arguments")))
+                                 (if ag (setq tin (string-concat tin ag)) nil))))
+                         nil)))
+                 nil))))))))
+      ;; Surface failures as the reply text so the user is never left guessing.
+      (cond (err (setq text err) (on-piece err))
+            ((not ok)
+             (setq text "[could not reach the endpoint -- is the TLS proxy running on the host? (socat ... OPENSSL:openrouter.ai:443)]")
+             (on-piece text))
+            ((and (= (string-length text) 0) (not tid))
+             (setq text "[empty reply from the model]") (on-piece text))
+            (t nil)))
     (list text tid tname tin)))
 
 (defun or--append-tool (messages tid tname tin result)
