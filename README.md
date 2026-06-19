@@ -288,8 +288,9 @@ photograph itself: `(screenshot "/shot.ppm")`.
   cursor = point — and forwards keystrokes; **no foreign C is linked into the
   frame**. So `vi` finally renders correctly *inside a window* — the `~` column,
   the reverse-video status line, cursor addressing and all — and char-mode/
-  copy-mode toggle like real vterm. (busybox `sh` itself needs controlling-tty
-  support the pty doesn't have yet; the native `sh` runs busybox `vi`/`less`.)
+  copy-mode toggle like real vterm. It runs **busybox `sh`** with job control,
+  line editing and coloured `ls`, and `vi` launches from it full-screen
+  in-buffer — the whole point.
 - **init IS the Lisp machine** — PID 1 is `/bin/lisp`: the OS **boots into a
   Lisp REPL** (which refuses to die on EOF — it's init). The C shell survives
   as an ordinary command: `(run "sh")` drops you into it, `exit` falls back to
