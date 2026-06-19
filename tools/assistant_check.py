@@ -11,6 +11,7 @@ Run from the repo root:  python3 tools/assistant_check.py
 import sys
 sys.path.insert(0, "tools")
 from lm_harness import boot_to_serve, connect_repl, repl_roundtrip
+import mock_anthropic
 
 
 def check(sock, form, want, label):
@@ -23,6 +24,8 @@ def check(sock, form, want, label):
 
 
 def main() -> int:
+    port = mock_anthropic.start()
+    print(f"mock endpoint on 127.0.0.1:{port} (guest sees 10.0.2.2:{port})")
     q = boot_to_serve()
     try:
         s = connect_repl()
@@ -50,6 +53,11 @@ def main() -> int:
         ok &= check(s,
             '(string-ref (json-string-value "{\\"text\\":\\"a\\\\nb\\"}" "text") 1)',
             "10", "json-string-value decodes newline escape")
+
+        # Guest -> host: connect to the mock at the gateway address (10.0.2.2).
+        ok &= check(s, "(setq mfd (socket 'stream))", "", "make socket")
+        ok &= check(s, f'(connect mfd "10.0.2.2" {port})', "0", "connect to mock 10.0.2.2")
+        ok &= check(s, "(close mfd)", "", "close mock socket")
 
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
