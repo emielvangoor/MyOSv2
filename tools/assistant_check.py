@@ -40,6 +40,11 @@ def main() -> int:
                     "92", "json-escape quote starts with backslash")
         # a plain ASCII char is unchanged.
         ok &= check(s, '(json-escape "abc")', '"abc"', "json-escape passthrough")
+        # a control char (ESC 0x1b) becomes  (6 chars) -- not raw (invalid JSON).
+        ok &= check(s, '(string-length (json-escape (string-from-char 27)))',
+                    "6", "json-escape control char -> \\u00XX (6 chars)")
+        ok &= check(s, '(string-ref (json-escape (string-from-char 27)) 5)',
+                    "98", "json-escape ESC ends in 'b' (\\u001b)")
 
         # json-string-value: pull a decoded string field out of a JSON blob.
         ok &= check(s,

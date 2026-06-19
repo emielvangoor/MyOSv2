@@ -7,8 +7,13 @@
 ;;; 2048 bytes -- keep escaped strings short (M1 prompts are) and build CRLF
 ;;; from (string-from-char 13).
 
+(defun json--hexdigit (n) (if (< n 10) (+ 48 n) (+ 87 n)))   ; 0-9 -> '0'..; 10+ -> 'a'..
+
 (defun json-escape (s)
-  "S with the characters JSON requires escaped (quote, backslash, control)."
+  "S with the characters JSON requires escaped: quote, backslash, and EVERY
+control char (< 0x20) -- the common ones as \\n/\\r/\\t, the rest as \\u00XX.
+Tool output (e.g. ANSI colour from busybox ls) carries raw ESC bytes; leaving
+them unescaped makes the request body invalid JSON."
   (let ((n (string-length s)) (out "") (i 0))
     (while (< i n)
       (let ((c (string-ref s i)))
@@ -17,8 +22,12 @@
             (cond ((= c 34) "\\\"")          ; "
                   ((= c 92) "\\\\")          ; backslash
                   ((= c 10) "\\n")           ; LF
-                  ((= c 13) "\\r")           ; CR (literal backslash-r in output)
+                  ((= c 13) "\\r")           ; CR
                   ((= c 9)  "\\t")           ; TAB
+                  ((< c 32)                  ; any other control char -> \u00XX
+                   (string-concat "\\u00"
+                     (string-from-char (json--hexdigit (/ c 16)))
+                     (string-from-char (json--hexdigit (% c 16)))))
                   (t (string-from-char c))))))
       (setq i (+ i 1)))
     out))
