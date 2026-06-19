@@ -8,6 +8,7 @@
 (setq *assistant-host* "openrouter.ai")      ; HTTP Host: header (the real service)
 (setq *assistant-endpoint-port* 8787)
 (setq *assistant-model* "anthropic/claude-haiku-4.5")  ; an OpenRouter model slug
+(setq *assistant-history* "")   ; the running transcript (JSON message turns); memory
 
 (defun assistant--first-line (s)
   (let ((nl (string-search "\n" s)))
@@ -36,22 +37,35 @@
 (defun ac--blen (parts)
   (let ((blen 0)) (foreach (lambda (p) (setq blen (+ blen (string-length p)))) parts) blen))
 
+(defun assistant--error-p (s)
+  "t if S is empty or a bracketed diagnostic like [error]/[could not ...]."
+  (or (= (string-length s) 0) (= (string-ref s 0) 91)))   ; 91 = '['
+
 (defun assistant-converse (prompt on-piece)
-  "Agentic loop: send PROMPT, run any tool the model asks for, loop tool_result
-back until it answers in prose. Returns the final assistant text."
-  (let ((messages
-          (string-concat "{\"role\":\"user\",\"content\":\""
-                         (json-escape prompt) "\"}"))
+  "Agentic loop with MEMORY: prepend the running transcript (*assistant-history*),
+send PROMPT, run any tool the model asks for, loop tool_result back until it
+answers in prose, then fold the whole exchange (incl. tool turns + the final
+reply) back into the transcript. Returns the final assistant text. A failed turn
+is NOT remembered, so a retry is clean."
+  (let ((user-turn (string-concat "{\"role\":\"user\",\"content\":\""
+                                  (json-escape prompt) "\"}"))
         (final "") (go t))
-    (while go
-      (let ((r (or--round messages on-piece)))
-        (let ((text (nth 0 r)) (tid (nth 1 r)) (tname (nth 2 r)) (tin (nth 3 r)))
-          (if (not tid)
-              (progn (setq final text) (setq go nil))     ; no tool -> done
-            (let ((result (assistant-tool-run tname (json-parse tin))))
-              (setq messages
-                (or--append-tool messages tid tname tin result)))))))
-    final))
+    (let ((messages (if (= (string-length *assistant-history*) 0) user-turn
+                      (string-concat *assistant-history* "," user-turn))))
+      (while go
+        (let ((r (or--round messages on-piece)))
+          (let ((text (nth 0 r)) (tid (nth 1 r)) (tname (nth 2 r)) (tin (nth 3 r)))
+            (if (not tid)
+                (progn (setq final text) (setq go nil))   ; no tool -> done
+              (let ((result (assistant-tool-run tname (json-parse tin))))
+                (setq messages
+                  (or--append-tool messages tid tname tin result)))))))
+      ;; remember the exchange only when it actually succeeded
+      (if (assistant--error-p final) nil
+        (setq *assistant-history*
+          (string-concat messages ",{\"role\":\"assistant\",\"content\":\""
+                         (json-escape final) "\"}")))
+      final)))
 
 ;;; ---- M-x emiel: an interactive conversation buffer -------------------------
 ;;; assistant-mode: RET sends the typed prompt to the agent; Shift-RET (cooked to
@@ -109,7 +123,8 @@ fresh prompt. A blank input just redraws the prompt."
 
 (register-mode 'assistant-mode
   (list 'fundamental-mode nil 'assistant-self-insert 'assistant-return nil
-        "Assistant mode: RET sends the prompt; Shift-RET inserts a newline."
+        "Assistant mode: RET sends the prompt; Shift-RET inserts a newline.
+M-x emiel-reset forgets the conversation."
         "Assistant"))
 
 (defun emiel ()
@@ -148,3 +163,12 @@ and press RET to send; Shift-RET inserts a newline."
   (let ((b (assistant--buffer)))
     (set-buffer b) (goto-char (buffer-length))
     (insert (string-concat "\n" (assistant-undo) "\n")) (redisplay)))
+
+;; Defined AFTER `emiel` so `emiel` interns first and wins M-x's "emiel" match.
+(defun emiel-reset ()
+  "M-x emiel-reset: forget the conversation and start fresh."
+  (interactive)
+  (setq *assistant-history* "")
+  (let ((b (assistant--buffer)))
+    (set-buffer b) (goto-char (buffer-length))
+    (insert "\n-- conversation reset --\n") (assistant--prompt)))

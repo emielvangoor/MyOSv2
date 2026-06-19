@@ -155,6 +155,11 @@ def main() -> int:
         ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "port for OR loop")
         ok &= check(s, '(assistant-converse "what is 1+2?" (lambda (p) nil))',
                     "The answer is 3.", "OpenRouter loop runs a tool and finishes")
+        # memory: the exchange is folded into the running transcript.
+        ok &= check(s, '(if (string-search "1+2" *assistant-history*) "yes" "no")',
+                    "yes", "history remembers the user turn")
+        ok &= check(s, '(if (string-search "The answer is 3" *assistant-history*) "yes" "no")',
+                    "yes", "history remembers the assistant reply")
 
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
