@@ -35,7 +35,7 @@ DEP  := $(OBJ:.o=.d)
 PROGS       := sh true false hello mtest shmtest wc loop catch ping dnsq http httpd polldemo lm evtest gfxtest surftest fptest teapot
 # The Lisp library: .l files copied into $(BUILD)/rootfs/lib/ and baked onto the
 # ext2 disk image; /bin/lisp loads them from /lib at startup.
-LISP_FILES  := bootstrap system modes fr-repl fr-edit fr-modes fr-keys fr-files fr-mini fr-help fr-term frame
+LISP_FILES  := bootstrap system modes fr-repl fr-edit fr-modes fr-keys fr-files fr-mini fr-help fr-term frame json
 USER_COMMON := user/crt0.S user/ulib.c
 USER_ELFS   := $(patsubst %,$(BUILD)/user/%.elf,$(PROGS))
 
