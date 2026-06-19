@@ -2455,6 +2455,20 @@ static void test_icmp_ping(void)
     KASSERT(net_ping(IP_GATEWAY, &ms) == 0);                  // gateway answers echo
 }
 
+static void test_resolve_dotted_quad(void)
+{
+    // The dotted-quad fast path returns before any net I/O, so this needs no
+    // virtio_net_init -- it is pure parsing of the host string.
+    uint32_t ip = 0;
+    KASSERT(net_resolve("10.0.2.2", &ip) == 0);
+    KASSERT(ip == IP_GATEWAY);                                // 0x0a000202
+    ip = 0;
+    KASSERT(net_resolve("1.2.3.4", &ip) == 0);
+    KASSERT(ip == 0x01020304u);
+    // (A non-quad host falls through to DNS, which needs an initialised stack;
+    //  that path is covered by the live DNS tests, not here.)
+}
+
 // --- DNS encode/decode (Phase 22, pure -- no network) ---
 
 static void test_dns_build_query(void)
@@ -3833,6 +3847,7 @@ static const struct ktest tests[] = {
     { "net: internet checksum",           test_inet_checksum },
     { "net: ARP resolve gateway",         test_arp_resolve },
     { "net: ICMP ping gateway",           test_icmp_ping },
+    { "net: resolve dotted-quad literal", test_resolve_dotted_quad },
     { "dns: build A query",               test_dns_build_query },
     { "dns: parse A record",              test_dns_parse_a_record },
     { "dns: skip CNAME to A",             test_dns_parse_skips_cname },

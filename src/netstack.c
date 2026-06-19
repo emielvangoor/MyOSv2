@@ -434,8 +434,32 @@ static void udp_input(uint32_t src_ip, const uint8_t *p, int len)
     socket_udp_input(src_ip, sport, dport, data, dlen);
 }
 
+// Recognise a bare IPv4 literal "a.b.c.d" (each octet 0..255) without DNS, so a
+// caller can connect() straight to an address (e.g. the host proxy 10.0.2.2).
+static int parse_dotted_quad(const char *s, uint32_t *ip)
+{
+    uint32_t parts[4]; int pi = 0; uint32_t cur = 0; int digits = 0;
+    for (const char *p = s; ; p++) {
+        if (*p >= '0' && *p <= '9') {
+            cur = cur * 10u + (uint32_t)(*p - '0');
+            if (cur > 255u) { return -1; }
+            digits = 1;
+        } else if (*p == '.' || *p == '\0') {
+            if (!digits || pi >= 4) { return -1; }
+            parts[pi++] = cur; cur = 0; digits = 0;
+            if (*p == '\0') { break; }
+        } else {
+            return -1;                       // a letter -> it's a hostname
+        }
+    }
+    if (pi != 4) { return -1; }
+    *ip = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+    return 0;
+}
+
 int net_resolve(const char *host, uint32_t *ip)
 {
+    if (parse_dotted_quad(host, ip) == 0) { return 0; }   // literal IP -> no DNS
     static uint16_t qid;
     static uint16_t next_sport = 50000;       // ephemeral source-port cursor
     uint16_t id = ++qid;
