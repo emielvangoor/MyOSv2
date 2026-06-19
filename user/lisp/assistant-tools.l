@@ -1,11 +1,8 @@
 ;;; assistant-tools.l -- what the agent can DO (Phase 32.2). Each tool takes an
 ;;; alist of decoded arguments and returns a string (the tool_result content).
 ;;; eval-lisp routes through the apply gate so persistent changes are deferred.
-;;;
-;;; NOTE: tool results are built with string-concat, which caps at 2048 bytes,
-;;; so read_file / introspect return at most ~2KB (the agent should filter /
-;;; read targeted ranges). Lifting this needs a dynamic string-concat -- a
-;;; separate kernel change worth doing later.
+;;; (string-concat is dynamic since 32.2, so read_file / introspect are no longer
+;;; capped -- whole files come back.)
 
 (defun at--arg (args key) (json-get args key))   ; alist lookup, nil if absent
 

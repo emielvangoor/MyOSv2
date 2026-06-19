@@ -118,6 +118,10 @@ def main() -> int:
                     "", "tool introspect_image lists symbols")
         ok &= check(s, '(assistant-tool-run "read_file" (list (cons "path" "/lib/json.l")))',
                     "json.l", "tool read_file reads /lib/json.l")
+        # string-concat is now dynamic: read_file of a >2KB file is not truncated.
+        ok &= check(s, '(> (string-length '
+                    '(at-read-file (list (cons "path" "/lib/json.l")))) 2048)',
+                    "t", "read_file returns >2048 bytes (no cap)")
 
         # M2 Task 5: the agentic loop. The mock asks for eval_lisp(+ 1 2); the OS
         # runs it, sends tool_result, and the mock returns "The answer is 3."

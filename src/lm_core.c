@@ -869,21 +869,39 @@ DEFUN("string-length", Fstrlen, 1, 1) {
     return FIXNUM((int64_t)((LString *)PTR(s))->len);
 }
 DEFUN("string-concat", Fstrcat, 0, -1) {
-    (void)env; char buf[2048]; int n = 0;
-    while (!IS_NIL(args)) {
-        Lobj s = CAR(args);
+    (void)env;
+    // Two passes so the result has no fixed cap: measure, allocate exactly, fill.
+    // Fixnums stringify to decimal. The buffer is handed straight to the LString
+    // (GC frees ->data with lm_free, exactly as make_string/lm_strdup do).
+    size_t total = 0;
+    for (Lobj a = args; !IS_NIL(a); a = CDR(a)) {
+        Lobj s = CAR(a);
         if (IS_STRING(s)) {
-            const char *d = ((LString *)PTR(s))->data;
-            while (*d && n < (int)sizeof(buf) - 1) { buf[n++] = *d++; }
+            total += ((LString *)PTR(s))->len;
         } else if (IS_FIXNUM(s)) {
             Writer w; char tmp[24]; writer_to_buffer(&w, tmp, sizeof(tmp));
             w_long(&w, FIXNUM_VAL(s));
-            for (int i = 0; tmp[i] && n < (int)sizeof(buf) - 1; i++) { buf[n++] = tmp[i]; }
+            total += lm_strlen(tmp);
         }
-        args = CDR(args);
+    }
+    char *buf = lm_alloc(total + 1);
+    size_t n = 0;
+    for (Lobj a = args; !IS_NIL(a); a = CDR(a)) {
+        Lobj s = CAR(a);
+        if (IS_STRING(s)) {
+            LString *ls = (LString *)PTR(s);
+            for (size_t i = 0; i < ls->len; i++) { buf[n++] = ls->data[i]; }
+        } else if (IS_FIXNUM(s)) {
+            Writer w; char tmp[24]; writer_to_buffer(&w, tmp, sizeof(tmp));
+            w_long(&w, FIXNUM_VAL(s));
+            for (int i = 0; tmp[i]; i++) { buf[n++] = tmp[i]; }
+        }
     }
     buf[n] = 0;
-    return make_string(buf);
+    LString *out = gc_alloc(sizeof(LString), TAG_STRING);
+    out->data = buf;
+    out->len = n;
+    return TAGGED(out, TAG_STRING);
 }
 DEFUN("symbol-name", Fsymname, 1, 1) {
     (void)env; Lobj s = CAR(args);

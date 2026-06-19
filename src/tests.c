@@ -2979,6 +2979,12 @@ static void test_lm_strings(void)
     KASSERT(lm_is("(equal \"hi\" \"hi\")", "t"));
     KASSERT(lm_is("(type-of 5)", "fixnum"));
     KASSERT(lm_is("(type-of 'x)", "symbol"));
+    // string-concat must grow past the old fixed 2048-byte buffer: eight nested
+    // doublings of a 10-char seed -> 2560 chars (was silently capped at 2047).
+    KASSERT(lm_is(
+      "(defun dup (s) (string-concat s s))"
+      " (string-length (dup (dup (dup (dup (dup (dup (dup (dup \"0123456789\")))))))))",
+      "2560"));
 }
 
 static void test_lm_gc_keeps_roots(void)

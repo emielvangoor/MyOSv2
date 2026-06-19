@@ -80,10 +80,10 @@ them, and generated Lisp installs itself into the live image. Plan:
 
 ### Known limits (M2)
 
-- Tool results / `read_file` / `introspect` are built with `string-concat`, so
-  they cap at ~2048 bytes. Lifting this wants a **dynamic `string-concat`** (a
-  worthwhile `lm_core.c` change) — then file reads, the transcript, and JSON
-  escaping all stop truncating.
+- ~~Tool results / `read_file` / `introspect` cap at ~2048 bytes.~~ **Fixed:**
+  `string-concat` is now dynamic (two-pass, exact-size alloc in `lm_core.c`;
+  KTEST `lm: strings` concatenates past 2560 bytes), so file reads, the
+  transcript, JSON escaping and tool results no longer truncate.
 - The classifier is deliberately conservative; a novel persistent form that
   doesn't name a known write-op could slip through as ephemeral — revisit the
   rule as real usage surfaces cases.
