@@ -53,30 +53,6 @@ def _chunked(payload):
     return out
 
 
-def _tool_use_stream():
-    out = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
-    out += ('event: content_block_start\r\ndata: {"type":"content_block_start",'
-            '"index":0,"content_block":{"type":"tool_use","id":"toolu_1",'
-            '"name":"eval_lisp","input":{}}}\r\n\r\n')
-    out += ('event: content_block_delta\r\ndata: {"type":"content_block_delta",'
-            '"index":0,"delta":{"type":"input_json_delta",'
-            '"partial_json":"{\\"code\\":\\"(+ 1 2)\\"}"}}\r\n\r\n')
-    out += ('event: content_block_stop\r\ndata: {"type":"content_block_stop","index":0}\r\n\r\n')
-    out += ('event: message_delta\r\ndata: {"type":"message_delta",'
-            '"delta":{"stop_reason":"tool_use"}}\r\n\r\n')
-    out += ('event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n')
-    return out
-
-
-def _final_stream():
-    out = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
-    for piece in ["The", " answer", " is", " 3", "."]:
-        out += ('event: content_block_delta\r\ndata: {"type":"content_block_delta",'
-                '"index":0,"delta":{"type":"text_delta","text":"%s"}}\r\n\r\n' % piece)
-    out += ('event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n')
-    return out
-
-
 def _openai_tool_payload():
     return (
       'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":null,'
@@ -108,11 +84,7 @@ def _serve_conn(conn):
                 conn.sendall(_chunked(_openai_final_payload()))
             else:
                 conn.sendall(_chunked(_openai_tool_payload()))
-        elif b"tool_result" in body:          # second turn -> final prose
-            conn.sendall(_final_stream().encode())
-        elif b'"tools"' in body:              # tools-enabled turn -> ask for a tool
-            conn.sendall(_tool_use_stream().encode())
-        else:                                 # plain M1 turn -> the greeting
+        else:                                 # any other path -> a plain SSE greeting
             out = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
             out += "event: message_start\r\ndata: {\"type\":\"message_start\"}\r\n\r\n"
             for p in REPLY_PIECES:

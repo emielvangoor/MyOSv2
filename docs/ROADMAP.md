@@ -726,15 +726,26 @@ Milestones (each its own spec→plan→build→notes cycle, gated on `make test`
   Verified by `tools/assistant_check.py` (two-turn tool_use mock) and a live
   screendump of the loop (`docs/images/phase-32-agent.png`). Notes:
   `docs/notes/phase-32.md`.
-- ⏳ **32.3 — TLS (drop the proxy)**: vendor **BearSSL** (small, pure-C, no-heap,
+- ✅ **32.3 — OpenRouter provider**: run the agent through **OpenRouter** (your
+  own key, OpenRouter bills you, Claude + any model through one endpoint) — a
+  fully-supported path, no client impersonation. Adds HTTP **chunked
+  transfer-decoding** to `http.l` (real endpoints stream chunked) and an
+  OpenAI chat-completions request/SSE/`tool_calls` path
+  (`assistant-openrouter.l`) — the only provider (the Anthropic path was removed).
+  Auth is `Authorization: Bearer`; `Host:` is `openrouter.ai` while the TCP target
+  stays the proxy. Verified by `tools/assistant_check.py` (chunked decode + an
+  OpenAI two-turn tool_calls mock). Plan:
+  `docs/superpowers/plans/2026-06-19-assistant-milestone-3-openrouter.md`. (Also
+  shipped here: a **dynamic `string-concat`** — the 2048-byte cap is gone, so file
+  reads / transcripts / JSON no longer truncate.)
+- ⏳ **32.4 — TLS (drop the proxy)**: vendor **BearSSL** (small, pure-C, no-heap,
   bare-metal-friendly) over the existing sockets, add a `getrandom` syscall to
-  seed it, embed trust anchors; flip `*assistant-endpoint*` to
-  `https://api.anthropic.com`. A direct HTTPS turn with no proxy. (Caveats:
-  plaintext API key on disk, weak VM entropy — both noted in the spec, neither
-  blocks the flow.)
-- ⏳ **32.4 — polish**: `assistant-mode` niceties, a minibuffer "ask" key
-  (one-line "just do X" from anywhere), the boot manifest, richer tools
-  (apply-patch-style edits, multi-file features).
+  seed it, embed trust anchors; point `*assistant-endpoint-host*` straight at
+  `openrouter.ai:443`. A direct HTTPS turn with no proxy. (Caveats: plaintext key
+  on disk, weak VM entropy — neither blocks the flow.)
+- ⏳ **32.5 — polish**: `assistant-mode` niceties, a minibuffer "ask" key
+  (one-line "just do X" from anywhere), richer tools (apply-patch-style edits,
+  multi-file features).
 
 Builds on: the Lisp machine (24), sockets + TCP/IP (21–22), DNS (`resolve`),
 M-x vterm / busybox (31), the mode system (28), text properties + faces (30).

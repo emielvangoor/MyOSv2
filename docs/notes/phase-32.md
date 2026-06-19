@@ -90,7 +90,38 @@ them, and generated Lisp installs itself into the live image. Plan:
 - The real API's chunked encoding still needs `http.l` de-chunking or a
   de-chunking proxy (carried from M1) before going fully proxy-free.
 
-### Next (32.3)
+## 32.3 — OpenRouter provider  ✅ DONE
 
-Vendor BearSSL + a `getrandom` syscall, embed trust anchors, and flip
-`*assistant-endpoint*` to `https://api.anthropic.com` — drop the proxy.
+The agent runs through **OpenRouter** (your own key, OpenRouter bills you, Claude
++ any model through one endpoint) — a supported path, no client impersonation.
+Plan: `docs/superpowers/plans/2026-06-19-assistant-milestone-3-openrouter.md`.
+
+- `http.l` — **chunked transfer-decoding** (`http--dechunk`, a small size→data→CRLF
+  state machine), so real endpoints that stream `Transfer-Encoding: chunked` work.
+- `assistant-openrouter.l` — the OpenAI chat-completions wire format: request
+  builder + tool schemas (`type:function`), the streamed-delta parser
+  (`choices[].delta.content` / `.tool_calls` with `id`/`name` + accumulated
+  `arguments`), `Authorization: Bearer` auth, and the OpenAI tool-result turn
+  (`role:assistant` tool_calls + `role:tool`). Endpoint
+  `POST /api/v1/chat/completions`, `Host: openrouter.ai`.
+- `assistant.l` — the Anthropic Messages path was **removed**; `assistant-converse`
+  drives the OpenRouter round directly. `*assistant-model*` defaults to an
+  OpenRouter slug (e.g. `anthropic/claude-3.5-sonnet`).
+- Verified: `tools/assistant_check.py` — chunked decode + a chunked OpenAI
+  two-turn `tool_calls` mock; the full loop returns the final prose.
+
+### Live use
+
+Run a TLS proxy on the host (the guest reaches it at `10.0.2.2`):
+
+    socat TCP-LISTEN:8787,reuseaddr,fork OPENSSL:openrouter.ai:443
+
+or a tiny Python `ssl` forwarder. Put your OpenRouter key (`sk-or-...`) in
+`/lib/claude/api-key` (one line), set a model with
+`(setq *assistant-model* "anthropic/claude-3.5-sonnet")`, then `M-x emiel`.
+(Chunked is handled in-OS, so a passthrough proxy is fine.)
+
+### Next (32.4)
+
+Vendor BearSSL + a `getrandom` syscall, embed trust anchors, point
+`*assistant-endpoint-host*` straight at `openrouter.ai:443` — drop the proxy.

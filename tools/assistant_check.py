@@ -85,12 +85,9 @@ def main() -> int:
         ) % port
         ok &= check(s, setup, "Hello from the mock.", "http-post-sse streams SSE frames")
 
-        # assistant-stream: a full turn against the mock returns the assembled reply.
+        # Load the agent modules (provider module after assistant.l).
         ok &= check(s, '(load "/lib/assistant.l")', "", "load assistant.l")
-        ok &= check(s, '(setq *assistant-endpoint-host* "10.0.2.2")', "", "set host")
-        ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "set port")
-        ok &= check(s, '(assistant-stream "say hi" (lambda (piece) nil))',
-                    "Hello from the mock.", "assistant-stream assembles reply")
+        ok &= check(s, '(load "/lib/assistant-openrouter.l")', "", "load openrouter")
 
         # UI shim machinery loads (the buffer/streaming command is frame-only,
         # smoke-tested by hand; here we just confirm the helpers are defined).
@@ -133,16 +130,6 @@ def main() -> int:
         ) % port
         ok &= check(s, chunked, "Hello from the mock.", "http decodes chunked SSE")
 
-        # M2 Task 5: the agentic loop. The mock asks for eval_lisp(+ 1 2); the OS
-        # runs it, sends tool_result, and the mock returns "The answer is 3."
-        ok &= check(s, '(load "/lib/assistant-tools.l")', "", "reload tools for loop")
-        ok &= check(s, '(load "/lib/assistant.l")', "", "reload assistant.l")
-        ok &= check(s, '(load "/lib/assistant-openrouter.l")', "", "load openrouter")
-        ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "port for loop")
-        ok &= check(s, "(setq *assistant-provider* 'anthropic)", "", "provider anthropic")
-        ok &= check(s, '(assistant-converse "what is 1+2?" (lambda (p) nil))',
-                    "The answer is 3.", "agentic loop (anthropic) runs a tool")
-
         # M2 Task 6: persistence -- write a feature, load it, find it in the manifest.
         ok &= check(s, '(assistant-persist "greet" "(defun greet () \\"hi\\")")',
                     "saved", "persist writes /lib/claude/<name>.l")
@@ -161,7 +148,6 @@ def main() -> int:
         # tool_calls). The mock asks for eval_lisp(+ 1 2) then answers in prose.
         ok &= check(s, '(load "/lib/assistant-openrouter.l")', "", "reload openrouter")
         ok &= check(s, f'(setq *assistant-endpoint-port* {port})', "", "port for OR loop")
-        ok &= check(s, "(setq *assistant-provider* 'openrouter)", "", "provider openrouter")
         ok &= check(s, '(assistant-converse "what is 1+2?" (lambda (p) nil))',
                     "The answer is 3.", "OpenRouter loop runs a tool and finishes")
 
