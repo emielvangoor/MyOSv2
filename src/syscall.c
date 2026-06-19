@@ -1073,9 +1073,13 @@ long do_syscall(struct trapframe *tf)
         break;
     }
     case SYS_SETSID: {
-        // "Start a new session": we have no session objects, so just report a
-        // plausible new session id (our own pid). Keeps setsid()-callers happy.
+        // "Start a new session": the caller becomes session + process-group
+        // LEADER of a fresh group named after itself. We have no session objects,
+        // but we MUST move it into its own group (pgid = id) -- otherwise it keeps
+        // the parent's inherited pgid, and busybox ash's job-control loop
+        // (while tcgetpgrp(tty) != getpgrp()) never matches and spins forever.
         struct thread *t = sched_current();
+        if (t) { t->pgid = t->id; }
         ret = t ? t->id : 1;
         break;
     }
