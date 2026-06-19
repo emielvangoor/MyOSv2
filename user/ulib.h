@@ -4,6 +4,7 @@ long sys_write(int fd, const void *buf, long len);
 long sys_read(int fd, void *buf, long len);
 long sys_open(const char *path);
 long sys_creat(const char *path);  // open, creating the file if missing
+long sys_mkdir(const char *path);  // create a directory (EEXIST -> negative)
 long sys_close(int fd);
 void sys_exit(int code);
 long sys_getpid(void);

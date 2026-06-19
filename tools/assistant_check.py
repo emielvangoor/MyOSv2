@@ -127,6 +127,15 @@ def main() -> int:
         ok &= check(s, '(assistant-converse "what is 1+2?" (lambda (p) nil))',
                     "The answer is 3.", "agentic loop runs a tool and finishes")
 
+        # M2 Task 6: persistence -- write a feature, load it, find it in the manifest.
+        ok &= check(s, '(assistant-persist "greet" "(defun greet () \\"hi\\")")',
+                    "saved", "persist writes /lib/claude/<name>.l")
+        ok &= check(s, '(progn (assistant-load-all) (greet))',
+                    '"hi"', "persisted feature loads")
+        ok &= check(s, '(string-search "greet" '
+                    '(at-read-file (list (cons "path" "/lib/claude/manifest.l"))))',
+                    "", "manifest records the feature")
+
         print("ALL PASS" if ok else "SOME FAILED")
         return 0 if ok else 1
     finally:

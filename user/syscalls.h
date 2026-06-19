@@ -12,6 +12,7 @@
 #define SYS_GETPID 172
 #define SYS_YIELD  124
 #define SYS_OPENAT 56
+#define SYS_MKDIRAT 34
 #define SYS_BRK    214
 #define SYS_MUNMAP 215
 #define SYS_MMAP   222

@@ -42,6 +42,7 @@ long sys_write(int fd, const void *b, long n) { return sysret(syscall3(SYS_WRITE
 long sys_read(int fd, void *b, long n)        { return sysret(syscall3(SYS_READ, fd, (long)b, n)); }
 long sys_open(const char *p)                  { return sysret(syscall5(SYS_OPENAT, AT_FDCWD, (long)p, 0, 0, 0)); }
 long sys_creat(const char *p)                 { return sysret(syscall5(SYS_OPENAT, AT_FDCWD, (long)p, O_CREAT|O_WRONLY|O_TRUNC, 0666, 0)); }
+long sys_mkdir(const char *p)                 { return sysret(syscall5(SYS_MKDIRAT, AT_FDCWD, (long)p, 0777, 0, 0)); }
 long sys_close(int fd)                        { return sysret(syscall3(SYS_CLOSE, fd, 0, 0)); }
 void sys_exit(int c)                          { syscall3(SYS_EXIT, c, 0, 0); }
 long sys_getpid(void)                         { return syscall3(SYS_GETPID, 0, 0, 0); }

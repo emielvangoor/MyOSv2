@@ -71,3 +71,30 @@ function-info returns (lambda params body); rebuild the defun and re-eval."
         (setq *assistant-undo* (cdr *assistant-undo*))
         "undone")
     "nothing to undo"))
+
+;;; ---- persistence: kept features land in /lib/claude and reload at boot ------
+
+(defun aa--write (path content)
+  (let ((fd (creat path)))
+    (if (< fd 0) nil (progn (fd-write fd content) (close fd) t))))
+
+(defun aa--slurp (path)
+  "Whole file as a string, or \"\" if absent (capped at 4096 -- M2 manifests are small)."
+  (let ((fd (open path)))
+    (if (< fd 0) ""
+      (let ((c (fd-read fd 4096))) (close fd) (if c c "")))))
+
+(defun assistant-persist (name code)
+  "Save CODE as /lib/claude/NAME.l and append a loader to the manifest."
+  (mkdir "/lib/claude")                       ; harmless if it already exists
+  (let ((path (string-concat "/lib/claude/" name ".l")))
+    (aa--write path (string-concat code "\n"))
+    (aa--write "/lib/claude/manifest.l"
+      (string-concat (aa--slurp "/lib/claude/manifest.l")
+                     "(load \"" path "\")\n"))
+    "saved"))
+
+(defun assistant-load-all ()
+  "Load every persisted feature (the manifest). Safe to call at boot."
+  (let ((fd (open "/lib/claude/manifest.l")))
+    (if (< fd 0) nil (progn (close fd) (load "/lib/claude/manifest.l")))))

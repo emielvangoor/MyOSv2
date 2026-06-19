@@ -168,6 +168,13 @@ DEFSYS("creat", Screat, 1, 1) {
     return FIXNUM(sys_creat(req_string(CAR(args), "creat: path must be a string")));
 }
 
+/* (mkdir path) -> t on success or if it already exists, nil on other error. */
+DEFSYS("mkdir", Smkdir, 1, 1) {
+    (void)env;
+    long r = sys_mkdir(req_string(CAR(args), "mkdir: path must be a string"));
+    return (r == 0 || r == -17 /* EEXIST */) ? Qt : Qnil;
+}
+
 /* (close fd) -> nil. */
 DEFSYS("close", Sclose, 1, 1) {
     (void)env;
@@ -314,7 +321,7 @@ void lm_sys_register(void)
 {
     register_Sgetpid(); register_Sfork(); register_Sexec(); register_Swait();
     register_Sexit(); register_Skill(); register_Ssetpgid(); register_Ssleep();
-    register_Sopen(); register_Screat(); register_Sclose(); register_Sfdread(); register_Sfdwrite();
+    register_Sopen(); register_Screat(); register_Smkdir(); register_Sclose(); register_Sfdread(); register_Sfdwrite();
     register_Spipe(); register_Sdup2(); register_Sreaddir();
     register_Ssocket(); register_Sbind(); register_Slisten(); register_Saccept();
     register_Sconnect();
